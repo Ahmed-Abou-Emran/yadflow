@@ -493,12 +493,12 @@ the file wins).
 | Route | `id` (never renamed), `name`, `description?`, `steps` (author steps and standalone review steps, or `{ id, optional }`; the engine adds each gate's `<id>-review` itself), `bindings`, `retired`, `provider`. A route has no `level` field: it is worked out from its steps' phases. The `lane` route is the one whose steps sit in the Build loop phase. |
 
 **Behaviours** are the engine's own, never invented by a team: `work-item-source` (epic), `locks-contract`
-(architecture), `ends-shape` (stories), `parallel-with-build` (test-cases), `product-level` (foundation),
+(architecture), `ends-shape` (stories), `parallel-with-build` (test-cases), `product-level` (foundation, and the retired discovery),
 `spec-source`, `code-change`, `ci-gates`, `merge-gate` (Build). The engine keeps the list of them (the
 behaviour registry). A Shape or Foundation behaviour fixes its step's artifact name, because the CI
 checks read those files by name, and its step must keep its gate, except `parallel-with-build`, whose
-step may drop it. A
-Build behaviour's step writes code in a repo, so it has no artifact name to fix; `merge-gate` must stay a
+step may drop it.
+A Build behaviour's step writes code in a repo, so it has no artifact name to fix; `merge-gate` must stay a
 `review` step. Each behaviour also has a rule about routes: for example, every feature route through Shape
 has exactly one `ends-shape` step (the `lane` route, which runs in Build, has none).
 
