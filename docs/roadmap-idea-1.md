@@ -495,7 +495,7 @@ the file wins).
 **Behaviours** are the engine's own, never invented by a team: `work-item-source` (epic), `locks-contract`
 (architecture), `ends-shape` (stories), `parallel-with-build` (test-cases), `product-level` (foundation),
 `spec-source`, `code-change`, `ci-gates`, `merge-gate` (Build). The engine keeps the list of them (the
-behaviour registry). A Shape behaviour fixes its step's artifact name, because the CI checks read those
+behaviour registry). A Shape or Foundation behaviour fixes its step's artifact name, because the CI checks read those
 files by name, and its step must keep its gate, except `parallel-with-build`, whose step may drop it. A
 Build behaviour's step writes code in a repo, so it has no artifact name to fix; `merge-gate` must stay a
 `review` step. Each behaviour also has a rule about routes: for example, every feature route through Shape
@@ -509,6 +509,8 @@ has exactly one `ends-shape` step (the `lane` route, which runs in Build, has no
 - No two steps share an artifact name. A review branch is found by its artifact's name, so two steps with
   the same name would silently share one gate.
 - An artifact name fixed by a behaviour cannot change.
+- A behaviour's gate rule holds: a Shape or Foundation behaviour's step keeps its gate (except
+  `parallel-with-build`), and `merge-gate` stays a `review` step.
 - **Unknown values do not break an older yadflow:** an unknown key is kept, and a step with an unknown
   behaviour, kind or artifact type cannot be used for new epics, while the rest of the file still loads.
 
@@ -779,13 +781,13 @@ versions that holds an open gate — and only a newer shape number makes it warn
 | E134 | **Lifecycle spine 1 — extract the catalogue, no behaviour change.** `cli/lifecycle/defaults/1.json` and `cli/lifecycle.mjs` (loader, `normalizeLifecycle`, the hand-written `lifecycleProblems`, the behaviour registry); `STEPS`, `LIFECYCLE_PROFILES`, `PHASES`, `PRODUCT_PHASES` and `BUILD_STEP_ORDER` become views of it, proven equal to today's by tests that compare them field by field; the `skills/sdlc/config.yaml` copy is generated and checked; a release-check step refuses a changed past default; `cli/lifecycle/lifecycle.schema.json` for editors. | M | E51 |
 | E135 | **Spine 2 — the team's file.** `.sdlc/lifecycle.json` read as the effective lifecycle and passed to every reader; `yad lifecycle show \| test \| init`; `yad doctor` `lifecycle:*` (invalid, unknown, behind, extends-newer, route-in-use-removed); `yad update` prints the upgrade hint when the team file is behind the shipped default, so a team does not silently miss new defaults; a broken file falls back loudly and seeding refuses. | M | E134 |
 | E136 | **Spine 3 — behaviours replace step-id literals** across `cli/` and the step skills (a skill asks `yad lifecycle show --origin <id> --json`, with its old literal as the fallback); built-in steps can be renamed. `ends-shape` carries its review side too: `touchedDomains` and `advanceState` read `stories-review` by id today. | L | E135 |
-| E137 | **Spine 4 — `yad step add \| remove \| modify \| order`** (with `--dry-run`); a team's own gated Shape step; generic folder and set hashing. | M | E136 |
-| E138 | **Spine 5 — Shape steps without a gate:** `yad step done`; `yad fold` closes one on a local ledger, and CI reads the `Yad-Step:` trailer on a verified one; the step is seeded with `locked: false`, because an older yadflow reads an unknown locked step as a gate and would wait on it forever. | M | E137 |
+| E137 | **Spine 4 — `yad step add \| remove \| modify \| order`** (with `--dry-run`); a team's own gated Shape step, seeded with `locked: false` (an older yadflow reads an unknown locked step as a gate); generic folder and set hashing. | M | E136 |
+| E138 | **Spine 5 — Shape steps without a gate:** `yad step done`; `yad fold` closes one on a local ledger, and CI reads the `Yad-Step:` trailer on a verified one; seeded with `locked: false` as E137's team steps are; without it an older yadflow would wait forever on an ungated step, since no review ever closes it. | M | E137 |
 | E139 | **Spine 6 — skill bindings move into the lifecycle file;** `yad skill bind / unbind` write there once it exists; `.sdlc/skills.json` read only, with `yad doctor` `skills:superseded`. | M | E136 |
 | E140 | **Spine 7 — the Build order comes from the definition** (the `lane` route); a team's own loop step; `yad lane seed`; `yad dial`, `yad doctor` and `yad-run` follow it; a team's own lane step starts with its dial on `human` (a person moves it on). | L | E136 |
 | E141 | **Spine 8 — `yad lifecycle upgrade`**, the three-way merge (`cli/lifecycle-merge.mjs`), refusal first. | L | E138 + E139 + E140 |
 | E142 | **Spine 9 — plugins:** `yad plugin add \| remove \| list \| upgrade`; the record of where a fragment comes from (its source, licence and the day it was checked) uses the same form as the toolbox's vetting record (E88); `yad detect` finds fragments; offline; `yad plugin add` prints how many extra approvals a plugin's `riskTags` add to its gates. | L | E141 |
-| E143 | **Spine 10 — generic authoring:** a `yad-author` skill driven by a step's definition, so a team's step runs without a skill of its own (E53 then turns the same brief into a dedicated skill); adds the step fields that skill reads (`template`, `brief`) and `gate.persona`, which the review assistant reads; artifact status, the PR template and the docs site read the definition. | M | E142 |
+| E143 | **Spine 10 — generic authoring:** a `yad-author` skill driven by a step's definition, so a team's step runs without a skill of its own (E53 then turns the same brief into a dedicated skill); adds the step fields that skill reads (`template`, `brief`) and `gate.persona`, the agent lens `yad-review-gate` uses to help the author address review comments (today a fixed list in that skill); artifact status, the PR template and the docs site read the definition. | M | E142 |
 | E144 | **Spine 11 — the next major: stop reading `.sdlc/skills.json`.** Its lines are folded into the lifecycle file by a migration; file shape 11. | M | E143 |
 | E54 | Change ONE epic's chain — add, remove or reorder a step on an existing epic, under `yad skip`'s ledger rules (on a verified Product only while the epic is new). **Narrowed 2026-10-03:** the row's bare title grew into [the lifecycle spine](#the-lifecycle-spine), rows E134–E144; this row keeps only the per-epic part, after E137. | S | E137 |
 | E55 | Record skill name, version and hash on every run | S | E51 |
