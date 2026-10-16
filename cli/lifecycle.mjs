@@ -371,7 +371,8 @@ export function lifecycleProblems(raw) {
     }
     // THE FILES A STEP CLAIMS: its artifact, its `extraPaths`, and — for a `set` — each file the set lists
     // (the engine commits those as the step's files, directly in the epic folder). Each must be a clean
-    // path inside the epic folder; a `.sdlc` path is ledger unless yadflow ships it; a name yadflow ships
+    // path inside the epic folder; a `.sdlc` path is ledger unless it is exactly a path yadflow ships for
+    // this step's origin; a name yadflow ships
     // belongs to that yadflow step only; and no two steps may claim files a review branch finds by one key
     // (`artifactKey`), or they would share one gate (checked after every step is read, below).
     const isYadflow = isObj(s.provider) && s.provider.id === 'yadflow';
@@ -380,9 +381,10 @@ export function lifecycleProblems(raw) {
     const artPath = isObj(n.artifact) && typeof n.artifact.path === 'string' && n.artifact.path ? n.artifact.path : null;
     // A step from a newer yadflow — a `provider.version` this release never shipped for its origin, or an
     // origin this release does not know at all — or with an artifact type this release does not know may
-    // have moved its files on purpose. Every file rule of this step (reserved names, the ledger, the
-    // behaviour's names, the files it shipped with) then reports it unusable here, never a broken file
-    // (the unknown-value rule).
+    // have moved its files on purpose. Every rule about which names it may claim (reserved names, the
+    // ledger, the behaviour's names, the files it shipped with) then reports it unusable here, never a
+    // broken file (the unknown-value rule). The shape rules (a clean path, no name twice, no story-like
+    // name) and the rules between two steps stay errors.
     const shippedVersion = origin !== null ? byOrigin.get(origin)?.version : undefined;
     const newer = (origin !== null && shippedVersion === undefined)
       || (shippedVersion !== undefined && Number.isInteger(s.provider.version) && s.provider.version > shippedVersion)
