@@ -166,11 +166,14 @@ is in [`RELEASING.md`](RELEASING.md).
 So `main` can take any number of merges — including a half-finished engine change or a
 docs-only fix — without anyone on `npx yadflow` seeing a new version. A `docs:` commit no longer
 bumps a version (the old `docs → patch` rule is gone). The release check that must pass before
-that fast-forward is `scripts/release-check.sh` — eight steps: tests and coverage, the golden
+that fast-forward is `scripts/release-check.sh` — nine steps: tests and coverage, the golden
 compatibility test, a migration preview on a real v3 project, a fresh install, `yad doctor` on what it
 creates, the migration guide when the file shape moved, a check that the gate-sync CI fragments trust
 the major this release publishes, and a check that every toolbox tool was vetted (licence and source) in
-the last 180 days — `node scripts/vet-check.mjs` says which tools to re-vet and how. Run it yourself with `npm run release-check`.
+the last 180 days — `node scripts/vet-check.mjs` says which tools to re-vet and how — and a check that
+no lifecycle default an earlier release shipped (`cli/lifecycle/defaults/<n>.json`) has changed since
+(`bash scripts/lifecycle-defaults-check.sh`; a change to the default is a new file with the next number).
+Run it yourself with `npm run release-check`.
 
 A second branch, **`next`**, publishes to `yadflow@next` instead of `yadflow@latest`. That is where a
 major goes first, so a release that changes the shape of people's project files reaches only those who
