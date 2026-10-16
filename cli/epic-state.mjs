@@ -2289,7 +2289,7 @@ export function markInReview(state, step, close = null) {
 //
 // THE DATA IS IN JSON NOW (E134). The rows are no longer written here: they are built from the shipped
 // lifecycle default, `cli/lifecycle/defaults/1.json`, by `expandSteps` (cli/lifecycle.mjs). In that file
-// an author step names its gate once (`gate: { riskTags }`) and the gate row below is derived from it.
+// an author step names its gate once (`gate: { riskTags }`) and its gate row is derived from that.
 // The rows, their fields and their order are exactly what this table held before; a test compares them
 // with a frozen copy (`cli/fixtures/lifecycle-v4-catalogue.json`).
 //

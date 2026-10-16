@@ -161,7 +161,7 @@ const CASES = [
   ['route empty', (d) => { route(d, 'chore').steps = []; }, /a route needs at least one step/],
   ['route step missing', (d) => { route(d, 'chore').steps.push('ghost'); }, /step "ghost" does not exist/],
   ['route step twice', (d) => { route(d, 'chore').steps.push('epic'); }, /step "epic" is listed twice/],
-  ['route mixes levels', (d) => { route(d, 'chore').steps.push('spec'); }, /mix the product level, the Shape phases and the Build loop/],
+  ['route mixes levels', (d) => { route(d, 'chore').steps.push('spec'); }, /mix the product level, the Shape phases, the Build loop and the Run phases/],
   ['feature route without ends-shape', (d) => { route(d, 'chore').steps = ['epic']; }, /exactly 1 step with behaviour "ends-shape"; it has 0/],
   ['product route with two product-level steps', (d) => { route(d, 'foundation').steps.push('discovery'); }, /exactly 1 step with behaviour "product-level"; it has 2/],
   ['feature route with two contract steps', (d) => {
@@ -169,6 +169,37 @@ const CASES = [
     route(d, 'classic').steps.push('api');
   }, /at most 1 step with behaviour "locks-contract"; it has 2/],
   ['no lane', (d) => { d.routes = d.routes.filter((r) => r.id !== 'lane'); }, /exactly one Build lane route/],
+  // Review round 1: a behaviour keeps its file name wherever it goes, and yadflow's steps keep theirs.
+  ['work-item-source moved to a new step', (d) => {
+    step(d, 'epic').behaviours = [];
+    d.steps.push({ id: 'intake', name: 'Intake', phase: 'discover', kind: 'author', artifact: { type: 'file', path: 'intake.md' },
+      gate: { riskTags: [] }, behaviours: ['work-item-source'] });
+    for (const r of d.routes) if (r.steps.includes('epic')) r.steps.unshift('intake');
+  }, /behaviour "work-item-source" needs the artifact "epic.md"/],
+  ['ends-shape moved to a new step', (d) => {
+    step(d, 'stories').behaviours = [];
+    d.steps.push({ id: 'backlog', name: 'Backlog', phase: 'plan', kind: 'author', artifact: { type: 'folder', path: 'backlog/' },
+      gate: { riskTags: [] }, behaviours: ['ends-shape'] });
+    for (const r of d.routes) if (r.steps.includes('stories')) r.steps.push('backlog');
+  }, /behaviour "ends-shape" needs the artifact "stories\/"/],
+  ['origin changed to escape the fixed name', (d) => { step(d, 'architecture').provider.origin = 'arch2'; step(d, 'architecture').artifact.path = 'arch.md'; }, /"provider.origin" must be the id of a step yadflow ships/],
+  ['origin used twice', (d) => { step(d, 'tasks').provider.origin = 'spec'; }, /already has the origin "spec"/],
+  ['a yadflow step loses its behaviour and its file name', (d) => { step(d, 'test-cases').behaviours = []; step(d, 'test-cases').artifact.path = 'qa.md'; }, /its artifact must stay "test-cases.md"/],
+  // Review round 1: a wrong type is reported, never read as empty.
+  ['skills not a list', (d) => { step(d, 'epic').skills = 'yad-epic'; }, /"skills" must be a list of names/],
+  ['behaviours not a list', (d) => { step(d, 'checks').behaviours = 'ci-gates'; }, /"behaviours" must be a list of names/],
+  ['optional not a boolean', (d) => { step(d, 'ui-design').optional = 'yes'; }, /"optional" must be true or false/],
+  ['provider not an object', (d) => { step(d, 'tasks').provider = 'x'; }, /"provider" must be/],
+  ['replaces not a string', (d) => { step(d, 'foundation').replaces = ['discovery']; }, /"replaces" must be a step id/],
+  ['extends not a string', (d) => { d.extends = ['yadflow-default@1']; }, /"extends" must look like/],
+  ['plugins not a list', (d) => { d.plugins = {}; }, /"plugins" must be a list/],
+  ['over not a list', (d) => { d.phases[4].over = 'story'; }, /"over" must be a list of words/],
+  ['built not a boolean', (d) => { d.phases[5].built = 'no'; }, /"built" must be true or false/],
+  ['route steps not a list', (d) => { route(d, 'chore').steps = 'epic'; }, /"steps" must be a list/],
+  ['route entry optional not a boolean', (d) => { route(d, 'classic').steps[2] = { id: 'ui-design', optional: 'no' }; }, /each step is a step id/],
+  ['route entry a number', (d) => { route(d, 'chore').steps.push(7); }, /each step is a step id/],
+  ['route bindings not an object', (d) => { route(d, 'chore').bindings = []; }, /"bindings" must be an object/],
+  ['route retired not a boolean', (d) => { route(d, 'chore').retired = 1; }, /"retired" must be true or false/],
 ];
 for (const [name, breakIt, want] of CASES) {
   test(`validator: ${name}`, () => {
@@ -195,6 +226,28 @@ test('a value this release does not know makes the step unusable, and the rest o
   const warns = all.filter((p) => p.level === 'warn').map((p) => `${p.where}: ${p.message}`);
   assert.ok(warns.includes('file: unknown key "futureKey" is kept and not read'));
   assert.ok(warns.includes('step epic: unknown key "futureField" is kept and not read'));
+});
+
+test('a name every JavaScript object inherits is not a known behaviour or origin', () => {
+  const d = fresh();
+  step(d, 'analysis').behaviours = ['constructor', '__proto__', 'toString'];
+  const all = lifecycleProblems(d);
+  assert.deepEqual(all.filter((p) => p.level === 'error'), []);
+  assert.equal(all.filter((p) => p.level === 'unusable').length, 3);
+  const e = fresh();
+  e.steps.push({ id: 'constructor', name: 'C', phase: 'discover', kind: 'author', artifact: null, gate: null, provider: { id: 'yadflow', origin: 'constructor' } });
+  assert.ok(messages(e).some((p) => /"constructor" is not one/.test(p.message)));
+  assert.ok(!messages(e).some((p) => /native code/.test(p.message)));
+});
+
+test('a Run phase that loops is not the Build lane, and its route is neither a lane nor a feature route', () => {
+  const d = fresh();
+  d.steps.push({ id: 'release-notes', name: 'Release notes', phase: 'release', kind: 'author', artifact: { type: 'file', path: 'release-notes.md' }, gate: { riskTags: [] } });
+  d.routes.unshift({ id: 'release', name: 'the release loop', steps: ['release-notes'] });
+  assert.deepEqual(messages(d), []);
+  const n = normalizeLifecycle(d);
+  assert.equal(routeKind(n, n.routes[0]), 'run');
+  assert.deepEqual(laneOrder(n), FROZEN.BUILD_STEP_ORDER, 'the Build order still comes from the Build lane');
 });
 
 test('the registry fixes the names the CI checks read, keyed by the original id', () => {
@@ -259,6 +312,12 @@ test('skills/sdlc/config.yaml carries exactly what the default generates', () =>
   const refused = applyConfigRegions(broken);
   assert.equal(refused.refused.length, 1);
   assert.equal(refused.text, broken);
+  // A CRLF checkout (Windows) is compared by content and written back with CRLF.
+  const crlf = text.replace(/\n/g, '\r\n');
+  const c = applyConfigRegions(crlf);
+  assert.deepEqual(c.stale, []);
+  assert.equal(c.text, crlf);
+  assert.equal(applyConfigRegions(edited.replace(/\n/g, '\r\n')).text, crlf);
   // The script's --check agrees.
   const run = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'lifecycle-config.mjs'), '--check'], { encoding: 'utf8' });
   assert.equal(run.status, 0, run.stdout + run.stderr);
