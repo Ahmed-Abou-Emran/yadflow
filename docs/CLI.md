@@ -882,9 +882,11 @@ cannot guide, so it is usually a typo or a file from a newer release.
 
 ## The step catalogue
 
-Every step the engine knows is defined in **one place in the code**: its phase, whether it writes an
+Every step the engine knows is defined in **one place**: its phase, whether it writes an
 artifact or reviews one, which file it produces, which skill runs it, and which step a review gate
-gates. Before this there was no single answer — the phase came from one table, the skill from another,
+gates. That place is the lifecycle default — a JSON file that ships inside yadflow,
+`cli/lifecycle/defaults/1.json` — and `cli/lifecycle/lifecycle.schema.json` describes its fields for an
+editor. A default never changes once released; a new default is a new file with the next number. Before this there was no single answer — the phase came from one table, the skill from another,
 and the artifact only from the chain a skill hand-wrote into your project.
 
 You do not edit the catalogue. The one part of it you can change is **which skill runs a step** — that
@@ -939,8 +941,8 @@ A step id the catalogue does not carry is left to `phase:unknown`, which is the 
 ## Lifecycle profiles: the route an epic takes
 
 The step catalogue says what each step is. A **profile** says which steps an epic walks and in what
-order. Six exist, and they are written down once — in code, which is what `yad epic new` and
-`yad foundation new` seed from:
+order. Six exist, and they are written down once — as the routes of the same lifecycle default, which
+is what `yad epic new` and `yad foundation new` seed from:
 
 | Profile | What it is | Used by |
 |---|---|---|

@@ -95,13 +95,15 @@ Each `steps[]` entry:
 
 ### The step catalogue
 
-Every one of those ids is defined in **one place in the code** — `STEPS` in `cli/epic-state.mjs` (E4).
-A row says which phase the step is in, whether it authors an artifact or gates one, which file it
+Every one of those ids is defined in **one place** — the lifecycle default that ships with yadflow,
+`cli/lifecycle/defaults/1.json` (E134). The engine reads it as `STEPS` in `cli/epic-state.mjs` (E4):
+there, each author step with a gate becomes two rows, the step and its `<id>-review` gate. A row says which phase the step is in, whether it authors an artifact or gates one, which file it
 writes, which skill runs it, and — for a gate — which step it reviews. The phase table, the skill
 tables and the Build order are all views of it, held to it by tests, so a step cannot exist in one and
 be missing from another.
 
-The catalogue is code. Nothing about it is written into `state.json`, so no file shape changed.
+The catalogue ships inside the package. Nothing about it is written into `state.json`, so no file
+shape changed. A shipped default never changes: a new default is a new file (`2.json`).
 
 **The one column a project overrides is the skill.** Which skill runs a step is not a fact about the
 lifecycle — it depends on what a team installed — so it lives in `.sdlc/skills.json`, a Product-level
@@ -161,7 +163,9 @@ marked N/A that this epic's route does not mark optional. An id the catalogue do
 ### Lifecycle profiles
 
 A **profile** is a named, ordered chain of catalogue steps — the route an epic takes. Six are
-defined, in `LIFECYCLE_PROFILES` (`cli/epic-state.mjs`, E5). `classic`, `analysis-first` and `discovery`
+defined, as the `routes` of the same lifecycle default, and the engine reads them as `LIFECYCLE_PROFILES`
+(`cli/epic-state.mjs`, E5). The default holds one more route, `lane` — the Build order one story walks
+in one repo — which is not a profile. `classic`, `analysis-first` and `discovery`
 are routes the skills already seeded by hand; the two short lanes (E40) and `foundation` (E75) came later:
 
 | Profile | Steps | Seeded by |
