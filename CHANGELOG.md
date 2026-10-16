@@ -1,3 +1,10 @@
+## [4.5.2](https://github.com/abdelrahmannasr/yadflow/compare/v4.5.1...v4.5.2) (2026-10-16)
+
+
+### Bug Fixes
+
+* **docs:** raise the docs shell version to 0.0.3 for the source-map-js bump ([e235b6f](https://github.com/abdelrahmannasr/yadflow/commit/e235b6fdaf1eb21bfc640b2394289806b5b26138))
+
 ## [4.5.1](https://github.com/abdelrahmannasr/yadflow/compare/v4.5.0...v4.5.1) (2026-10-06)
 
 
