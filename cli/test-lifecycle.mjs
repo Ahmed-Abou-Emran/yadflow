@@ -282,6 +282,10 @@ const CASES = [
   ['a file artifact ending in a slash', (d) => { step(d, 'analysis').artifact.path = 'analysis.md/'; }, /is a file, so it does not end in "\/"/],
   ['an empty skill name', (d) => { step(d, 'epic').skills = ['']; }, /"skills" must be a list of names, none of them empty/],
   ['an empty behaviour name', (d) => { step(d, 'epic').behaviours = ['work-item-source', '']; }, /"behaviours" must be a list of names, none of them empty/],
+  // Review round 7: the ledger exception is the exact shipped path, not any path sharing its key.
+  ['a ledger path sharing a shipped key', (d) => { step(d, 'architecture').extraPaths.push('.sdlc/approvals/architecture.md'); }, /is in \.sdlc\/, which holds the ledger/],
+  ['the ledger in capitals sharing a shipped key', (d) => { step(d, 'architecture').extraPaths.push('.SDLC/contract.md'); }, /is in \.sdlc\/, which holds the ledger/],
+  ['a folder in extraPaths', (d) => { step(d, 'analysis').extraPaths = ['notes/']; }, /"notes\/" in "extraPaths" is a folder/],
   ['retired step on a live route', (d) => { route(d, 'foundation').steps.push('discovery'); route(d, 'foundation').steps = ['discovery']; }, /step "discovery" is retired, so only a retired route may list it/],
   ['origin used twice', (d) => { step(d, 'tasks').provider.origin = 'spec'; }, /already has the origin "spec"/],
   ['a yadflow step loses its behaviour and its file name', (d) => { step(d, 'test-cases').behaviours = []; step(d, 'test-cases').artifact.path = 'qa.md'; }, /its artifact must stay "test-cases.md"/],

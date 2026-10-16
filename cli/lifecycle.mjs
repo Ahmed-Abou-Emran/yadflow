@@ -46,7 +46,8 @@ export function loadDefault(n = DEFAULT_VERSION) {
 // data; a test ties these files to what the engine itself commits for each step (`stepPaths`, cli/fold.mjs).
 //
 //   byOrigin  origin -> { type, path, version, extras } (`version`: the newest `provider.version`
-//             shipped). A step that says it comes from yadflow must name one of these, or the upgrade merge (E141), which matches yadflow's steps by origin, would have
+//             shipped). A step that names a yadflow origin must name one of these (a step with no origin
+//             is matched by its id), or the upgrade merge (E141), which matches yadflow's steps by origin, would have
 //             nothing to match it to.
 //   byKey     the key a review branch finds a file by (`artifactKey`) -> the origin that owns it. Once
 //             yadflow ships a name it stays reserved for that step, even in a file that deleted the step:
@@ -388,6 +389,7 @@ export function lifecycleProblems(raw) {
       || (isObj(n.artifact) && !ARTIFACT_TYPES.includes(n.artifact.type));
     const level = newer ? 'unusable' : 'error';
     const extras = isStrings(s.extraPaths) ? s.extraPaths : [];
+    for (const x of extras) if (x.endsWith('/')) add('error', where, `"${x}" in "extraPaths" is a folder; list the files, or make the folder the step's artifact`);
     const isSet = n.artifact?.type === 'set';
     const members = isSet && isStrings(n.artifact.files) ? n.artifact.files : [];
     if (isSet && isStrings(n.artifact.files) && members.length === 0) add('error', where, 'a "set" artifact lists at least one file');
@@ -409,7 +411,12 @@ export function lifecycleProblems(raw) {
       const bare = claimed.replace(/\/$/, '').toLowerCase();
       if (reservedFor !== undefined && reservedFor !== origin) {
         add(level, where, `"${claimed}" is a file of yadflow's "${reservedFor}" step (found as "${key}"); only that step may claim it`);
-      } else if (reservedFor === undefined && (bare === '.sdlc' || bare.startsWith('.sdlc/'))) {
+      }
+      // The ledger folder: only the exact `.sdlc/` paths yadflow ships for this step's origin are allowed,
+      // never another path that merely shares their review key (`.sdlc/x/contract.md`).
+      const shippedPaths = origin !== null && byOrigin.has(origin)
+        ? [byOrigin.get(origin).path, ...byOrigin.get(origin).extras].filter(Boolean).map((x) => x.toLowerCase()) : [];
+      if ((bare === '.sdlc' || bare.startsWith('.sdlc/')) && !shippedPaths.includes(claimed.toLowerCase())) {
         add(level, where, `"${claimed}" is in .sdlc/, which holds the ledger; a step's files live beside it`);
       }
       claimsList.push({ step: s.id, where, path: claimed, key, level: stepLevel, member, productSet });

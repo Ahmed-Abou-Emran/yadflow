@@ -21,7 +21,7 @@
       "required": ["id", "name", "level"],
       "properties": {
         "id": { "$ref": "#/$defs/id" },
-        "name": { "type": "string" },
+        "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string" },
         "part": { "enum": ["Shape", "Build", "Run"], "description": "Feature phases only; a product phase belongs to no part." },
         "level": { "enum": ["feature", "product"] },
@@ -72,20 +72,20 @@
       "required": ["id", "name", "phase", "kind"],
       "properties": {
         "id": { "$ref": "#/$defs/id" },
-        "name": { "type": "string" },
+        "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string" },
         "phase": { "type": "string" },
         "kind": { "enum": ["author", "review"] },
         "artifact": { "$ref": "#/$defs/artifact" },
         "optional": { "type": "boolean", "default": false },
         "gate": { "$ref": "#/$defs/gate" },
-        "skills": { "type": "array", "items": { "type": "string" } },
+        "skills": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "behaviours": {
           "type": "array",
           "items": { "enum": ["work-item-source", "locks-contract", "ends-shape", "parallel-with-build", "product-level", "spec-source", "code-change", "ci-gates", "merge-gate"] }
         },
-        "extraPaths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "inputs": { "type": "array", "items": { "type": "string" } },
+        "extraPaths": { "type": "array", "items": { "type": "string", "minLength": 1, "pattern": "[^/]$" } },
+        "inputs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "retired": { "type": "boolean", "default": false },
         "replaces": { "type": "string" },
         "provider": { "$ref": "#/$defs/provider" }
@@ -96,7 +96,7 @@
       "required": ["id", "name", "steps"],
       "properties": {
         "id": { "$ref": "#/$defs/id" },
-        "name": { "type": "string" },
+        "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string" },
         "steps": {
           "type": "array",
