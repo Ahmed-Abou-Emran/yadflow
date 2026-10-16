@@ -133,7 +133,7 @@ export const BEHAVIOURS = {
 // The keys this release knows at each level. Anything else is kept as it is and reported as a warning,
 // so a file from a newer yadflow still loads.
 export const KNOWN_KEYS = {
-  file: ['schemaVersion', 'extends', 'phases', 'steps', 'routes', 'plugins'],
+  file: ['$schema', 'schemaVersion', 'extends', 'phases', 'steps', 'routes', 'plugins'],
   phase: ['id', 'name', 'description', 'part', 'level', 'runs', 'over', 'built'],
   step: ['id', 'name', 'description', 'phase', 'kind', 'artifact', 'optional', 'gate', 'skills', 'behaviours',
     'extraPaths', 'inputs', 'retired', 'replaces', 'provider'],
@@ -154,9 +154,10 @@ const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const own = (o, k) => typeof k === 'string' && Object.hasOwn(o, k);
 const isStrings = (x) => Array.isArray(x) && x.every((v) => typeof v === 'string');
 
+const ID_RE = /^[a-z][a-z0-9-]*$/;
+
 // A path inside the epic folder, as the engine joins it: no `..`, no leading `/` or drive letter, no
 // backslash, no empty or `.` part. A folder may end in `/`.
-const ID_RE = /^[a-z][a-z0-9-]*$/;
 export function cleanPath(p) {
   if (typeof p !== 'string' || !p || p.includes('\\') || p.startsWith('/') || /^[a-z]:/i.test(p)) return false;
   return p.replace(/\/$/, '').split('/').every((part) => part && part !== '.' && part !== '..');
@@ -305,7 +306,7 @@ export function lifecycleProblems(raw) {
 
   // Steps.
   const stepById = new Map();
-  const artifactOwner = new Map();
+  const claimsList = [];
   const origins = new Map();
   const folders = [];
   const allPaths = [];
@@ -365,34 +366,39 @@ export function lifecycleProblems(raw) {
         if (a.type === 'set' && a.optional !== undefined && !(isStrings(a.optional) && a.optional.every((f) => arr(a.files).includes(f)))) {
           add('error', where, 'a "set" artifact\'s "optional" lists some of its "files"');
         }
-        if (/^stories-s\d+$/.test(artifactKey(a.path)) || /-s\d+$/.test(artifactKey(a.path))) {
+        if (/-s\d+$/.test(artifactKey(a.path))) {
           add('error', where, `its artifact "${a.path}" is named like a story (-S01), which the engine reads as the stories gate`);
         }
       }
     }
-    // THE FILES A STEP CLAIMS: its artifact and its `extraPaths`. Each must be a clean path inside the epic
-    // folder; a `.sdlc/` path is ledger unless yadflow ships it; a name yadflow ships belongs to that
-    // yadflow step only; and no two steps may claim files a review branch finds by one key
-    // (`artifactKey`), or they would share one gate.
+    // THE FILES A STEP CLAIMS: its artifact, its `extraPaths`, and — for a `set` — each file the set lists
+    // (the engine commits those as the step's files, directly in the epic folder). Each must be a clean
+    // path inside the epic folder; a `.sdlc` path is ledger unless yadflow ships it; a name yadflow ships
+    // belongs to that yadflow step only; and no two steps may claim files a review branch finds by one key
+    // (`artifactKey`), or they would share one gate (checked after every step is read, below).
     const isYadflow = isObj(s.provider) && s.provider.id === 'yadflow';
     const origin = isYadflow && typeof s.provider.origin === 'string' ? s.provider.origin : null;
     const { byOrigin, byKey } = yadflowClaims();
     const artPath = isObj(n.artifact) && typeof n.artifact.path === 'string' && n.artifact.path ? n.artifact.path : null;
     const extras = isStrings(s.extraPaths) ? s.extraPaths : [];
-    for (const claimed of [artPath, ...extras]) {
+    const isSet = n.artifact?.type === 'set';
+    const members = isSet && isStrings(n.artifact.files) ? n.artifact.files : [];
+    if (isSet && isStrings(n.artifact.files) && members.length === 0) add('error', where, 'a "set" artifact lists at least one file');
+    for (const f of members) if (f.includes('/')) add('error', where, `"${f}" in a set's "files" is a file name: the set's files sit directly in its epic folder`);
+    const stepLevel = def.phases.find((x) => x.id === s.phase)?.level ?? null;
+    const productSet = isSet && stepLevel === 'product';
+    for (const [claimed, member] of [[artPath, false], ...extras.map((x) => [x, false]), ...members.map((x) => [x, true])]) {
       if (!claimed) continue;
       if (!cleanPath(claimed)) { add('error', where, `"${claimed}" must be a path inside the epic folder: no "..", no leading "/", no "\\"`); continue; }
       const key = artifactKey(claimed);
       const reservedFor = byKey.get(key);
+      const bare = claimed.replace(/\/$/, '').toLowerCase();
       if (reservedFor !== undefined && reservedFor !== origin) {
         add('error', where, `"${claimed}" is a file of yadflow's "${reservedFor}" step (found as "${key}"); only that step may claim it`);
-      } else if (reservedFor === undefined && /^\.sdlc\//i.test(claimed)) {
+      } else if (reservedFor === undefined && (bare === '.sdlc' || bare.startsWith('.sdlc/'))) {
         add('error', where, `"${claimed}" is in .sdlc/, which holds the ledger; a step's files live beside it`);
       }
-      const owner = artifactOwner.get(key);
-      if (owner && owner.step !== s.id) {
-        add('error', where, `"${claimed}" is found by the same name as step ${owner.step}'s "${owner.path}" ("${key}", letter case ignored); two steps cannot share one, or they would share one review`);
-      } else if (!owner) artifactOwner.set(key, { step: s.id, path: claimed });
+      claimsList.push({ step: s.id, where, path: claimed, key, level: stepLevel, member, productSet });
     }
     if (n.artifact?.type === 'folder' && artPath) folders.push({ step: s.id, prefix: artPath.replace(/\/?$/, '/').toLowerCase() });
     allPaths.push(...[artPath, ...extras].filter(Boolean).map((x) => ({ step: s.id, path: x })));
@@ -442,6 +448,18 @@ export function lifecycleProblems(raw) {
     if (stepWhere(def, n) === 'lane') {
       if (n.gate) add('error', where, 'a Build-loop step has no "gate": the lane\'s review is its merge-gate step');
       if (n.optional) add('error', where, 'a Build-loop step is never optional: the lane walks every step in order');
+    }
+  }
+  // No two steps claim files a review branch finds by one key. A set's member files live in that set's own
+  // epic folder, so they are compared only with steps at the same level — and two product-level sets
+  // (the Foundation and the retired Discovery, each its own folder) never with each other. Reported on the
+  // later of the two steps in the file.
+  for (const [j, c] of claimsList.entries()) {
+    const first = claimsList.slice(0, j).find((o) => o.step !== c.step && o.key === c.key
+      && !(o.productSet && c.productSet && o.member && c.member)
+      && (!(o.member || c.member) || o.level === c.level));
+    if (first) {
+      add('error', c.where, `"${c.path}" is found by the same name as step ${first.step}'s "${first.path}" ("${c.key}", letter case ignored); two steps cannot share one, or they would share one review`);
     }
   }
   // A file inside another step's folder belongs to that folder's review (the stories gate hashes every

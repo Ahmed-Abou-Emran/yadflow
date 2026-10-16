@@ -56,8 +56,8 @@ document_output_language: English
 # which step a gate reviews. The lines between the `generated` markers below are written from it by
 # `scripts/lifecycle-config.mjs`, and a test fails when they differ; everything else about a step is
 # read from the default, not from here. `yad doctor` reports a project chain that disagrees with the
-# catalogue and rewrites nothing — for this whole major the FILE wins (rule 3), because the five authoring skills still
-# hand-write their `state.json` seed. E5 makes a profile seed the chain from the catalogue instead.
+# catalogue and rewrites nothing — for this whole major the FILE wins (rule 3): a project may hold a step
+# from a newer yadflow, or a chain written by hand. `yad epic new` seeds a chain from its route (E5, E17).
 lifecycle:
   # Lifecycle PROFILES (E5) — the route an epic takes through the steps, defined as the `routes` of the
   # lifecycle default and read by the engine as `LIFECYCLE_PROFILES` (`cli/epic-state.mjs`). The

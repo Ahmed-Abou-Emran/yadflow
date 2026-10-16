@@ -957,9 +957,10 @@ test('a thread node carries the phase the EPIC is in, the same answer yad next p
 });
 
 test('the phase table in skills/sdlc/config.yaml agrees with the code, row for row', () => {
-  // config.yaml is documentation-as-config: the skills read it, people read it, and nothing else
-  // checks it against the engine. A table copied by hand into a second file is a table that drifts —
-  // the same reason `ledger-guard.sh` and `lineage-check.sh` have agreement tests. There is no YAML
+  // config.yaml is documentation-as-config: the skills read it and people read it. Since E134 its table is
+  // generated from the lifecycle default (scripts/lifecycle-config.mjs, checked in cli/test-lifecycle.mjs);
+  // this test still reads it back and compares it with the engine's own lists, so a broken generator or a
+  // hand edit between the markers fails here too. There is no YAML
   // parser in this repo (Node built-ins only), so the six inline maps are read with a regex; a change
   // to their layout fails loudly here rather than silently skipping the comparison.
   const src = fs.readFileSync(new URL('../skills/sdlc/config.yaml', import.meta.url), 'utf8');

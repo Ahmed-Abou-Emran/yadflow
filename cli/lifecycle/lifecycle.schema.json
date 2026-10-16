@@ -6,6 +6,7 @@
   "type": "object",
   "required": ["schemaVersion", "phases", "steps", "routes"],
   "properties": {
+    "$schema": { "type": "string", "description": "Optional: binds this schema in an editor." },
     "schemaVersion": { "type": "integer", "description": "The project's file shape when the file was written." },
     "extends": { "type": "string", "pattern": "^yadflow-default@[1-9][0-9]*$", "description": "The shipped default this file was copied from." },
     "phases": { "type": "array", "items": { "$ref": "#/$defs/phase" } },
@@ -37,7 +38,7 @@
           "required": ["type", "path"],
           "properties": {
             "type": { "enum": ["file", "folder", "set"] },
-            "path": { "type": "string", "minLength": 1, "description": "Relative to the epic folder. For a \"set\", the path is the set's name (the key its review branch uses), not a folder: the set's files sit directly in the epic folder." },
+            "path": { "type": "string", "minLength": 1, "description": "Relative to the epic folder. For a \"set\", the path is the set's name, written like a folder (\"foundation/\"); it is the key its review branch uses, not a folder on disk: the set's files sit directly in the set's epic folder." },
             "unit": { "type": "string", "description": "A folder: the word for one item in it, such as story." },
             "files": { "type": "array", "items": { "type": "string" }, "description": "A set: every file in it." },
             "optional": { "type": "array", "items": { "type": "string" }, "description": "A set: the files it may leave out." },

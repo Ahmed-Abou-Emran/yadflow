@@ -247,6 +247,25 @@ const CASES = [
   ['a review step with an artifact', (d) => {
     d.steps.push({ id: 'signoff', name: 'Signoff', phase: 'plan', kind: 'review', artifact: { type: 'file', path: 'signoff.md' }, gate: null });
   }, /a review step .* writes no artifact of its own/],
+  // Review round 4: a set's member files are claimed too, and ".sdlc" with no slash is still the ledger.
+  ['a team set takes yadflow files', (d) => {
+    d.steps.push({ id: 'bundle', name: 'Bundle', phase: 'discover', kind: 'author', artifact: { type: 'set', path: 'bundle/', files: ['epic.md', 'contract.md'] }, gate: { riskTags: [] } });
+    route(d, 'classic').steps.push('bundle');
+  }, /"contract.md" is a file of yadflow's "architecture" step/],
+  ['a team set escapes the folder', (d) => {
+    d.steps.push({ id: 'bundle', name: 'Bundle', phase: 'discover', kind: 'author', artifact: { type: 'set', path: 'bundle/', files: ['../x.md'] }, gate: { riskTags: [] } });
+  }, /"\.\.\/x.md" in a set's "files" is a file name/],
+  ['a team set lists a ledger file', (d) => {
+    d.steps.push({ id: 'bundle', name: 'Bundle', phase: 'discover', kind: 'author', artifact: { type: 'set', path: 'bundle/', files: ['.sdlc'] }, gate: { riskTags: [] } });
+  }, /"\.sdlc" is in \.sdlc\/, which holds the ledger/],
+  ['an empty set', (d) => {
+    d.steps.push({ id: 'bundle', name: 'Bundle', phase: 'discover', kind: 'author', artifact: { type: 'set', path: 'bundle/', files: [] }, gate: { riskTags: [] } });
+  }, /lists at least one file/],
+  ['a product step takes a Foundation section', (d) => {
+    d.steps.push({ id: 'charter', name: 'Charter', phase: 'foundation', kind: 'author', artifact: { type: 'file', path: 'purpose.md' }, gate: { riskTags: [] } });
+    route(d, 'foundation').steps.push('charter');
+  }, /step charter: "purpose.md" is found by the same name as step foundation's "purpose.md"/],
+  ['the ledger folder with no slash', (d) => { step(d, 'analysis').extraPaths = ['.sdlc']; }, /"\.sdlc" is in \.sdlc\/, which holds the ledger/],
   ['retired step on a live route', (d) => { route(d, 'foundation').steps.push('discovery'); route(d, 'foundation').steps = ['discovery']; }, /step "discovery" is retired, so only a retired route may list it/],
   ['origin used twice', (d) => { step(d, 'tasks').provider.origin = 'spec'; }, /already has the origin "spec"/],
   ['a yadflow step loses its behaviour and its file name', (d) => { step(d, 'test-cases').behaviours = []; step(d, 'test-cases').artifact.path = 'qa.md'; }, /its artifact must stay "test-cases.md"/],
@@ -336,6 +355,20 @@ test('the edits the roadmap allows stay allowed: rename, re-skill, make optional
   step(d, 'architecture').phase = 'plan';
   step(d, 'test-cases').gate = null;
   assert.deepEqual(messages(d), []);
+});
+
+test('round 4: set member files are compared within their level, and the two product sets never with each other', () => {
+  // Both product sets list roadmap.md, each in its own folder: not a clash.
+  assert.deepEqual(messages(fresh()), []);
+  // A feature step's roadmap.md is a different file from the Foundation's.
+  const d = fresh();
+  d.steps.push({ id: 'roadmap', name: 'Roadmap', phase: 'plan', kind: 'author', artifact: { type: 'file', path: 'roadmap.md' }, gate: { riskTags: [] } });
+  route(d, 'classic').steps.push('roadmap');
+  assert.deepEqual(messages(d), []);
+  // "$schema" binds the editor schema and is a known key.
+  const e = fresh();
+  e.$schema = './lifecycle.schema.json';
+  assert.deepEqual(lifecycleProblems(e), []);
 });
 
 test('artifactKey finds a file the way a review branch does', () => {
