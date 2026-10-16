@@ -40,7 +40,7 @@
             "type": { "enum": ["file", "folder", "set"] },
             "path": { "type": "string", "minLength": 1, "description": "Relative to the epic folder. For a \"set\", the path is the set's name, written like a folder (\"foundation/\"); it is the key its review branch uses, not a folder on disk: the set's files sit directly in the set's epic folder." },
             "unit": { "type": "string", "description": "A folder: the word for one item in it, such as story." },
-            "files": { "type": "array", "items": { "type": "string" }, "description": "A set: every file in it." },
+            "files": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$" }, "description": "A set: every file in it, by name; the files sit directly in the set's epic folder." },
             "optional": { "type": "array", "items": { "type": "string" }, "description": "A set: the files it may leave out." },
             "in": { "enum": ["product", "repo"], "description": "Reserved." }
           }

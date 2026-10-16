@@ -366,9 +366,6 @@ export function lifecycleProblems(raw) {
         if (a.type === 'set' && a.optional !== undefined && !(isStrings(a.optional) && a.optional.every((f) => arr(a.files).includes(f)))) {
           add('error', where, 'a "set" artifact\'s "optional" lists some of its "files"');
         }
-        if (/-s\d+$/.test(artifactKey(a.path))) {
-          add('error', where, `its artifact "${a.path}" is named like a story (-S01), which the engine reads as the stories gate`);
-        }
       }
     }
     // THE FILES A STEP CLAIMS: its artifact, its `extraPaths`, and — for a `set` — each file the set lists
@@ -387,10 +384,16 @@ export function lifecycleProblems(raw) {
     for (const f of members) if (f.includes('/')) add('error', where, `"${f}" in a set's "files" is a file name: the set's files sit directly in its epic folder`);
     const stepLevel = def.phases.find((x) => x.id === s.phase)?.level ?? null;
     const productSet = isSet && stepLevel === 'product';
+    const ownFiles = new Set();
     for (const [claimed, member] of [[artPath, false], ...extras.map((x) => [x, false]), ...members.map((x) => [x, true])]) {
-      if (!claimed) continue;
-      if (!cleanPath(claimed)) { add('error', where, `"${claimed}" must be a path inside the epic folder: no "..", no leading "/", no "\\"`); continue; }
+      if (claimed === null) continue;
+      if (!cleanPath(claimed)) { add('error', where, `"${claimed}" must be a path inside the epic folder: not empty, no "..", no leading "/", no "\\"`); continue; }
+      // One step naming one file twice (`a.md` and `A.md` are one file on macOS and Windows) would count it twice.
+      const bareOwn = claimed.replace(/\/$/, '').toLowerCase();
+      if (ownFiles.has(bareOwn)) add('error', where, `"${claimed}" is listed twice among this step's files (letter case ignored)`);
+      ownFiles.add(bareOwn);
       const key = artifactKey(claimed);
+      if (/-s\d+$/.test(key)) add('error', where, `"${claimed}" is named like a story (-S01), which the engine reads as the stories gate`);
       const reservedFor = byKey.get(key);
       const bare = claimed.replace(/\/$/, '').toLowerCase();
       if (reservedFor !== undefined && reservedFor !== origin) {
@@ -400,8 +403,8 @@ export function lifecycleProblems(raw) {
       }
       claimsList.push({ step: s.id, where, path: claimed, key, level: stepLevel, member, productSet });
     }
-    if (n.artifact?.type === 'folder' && artPath) folders.push({ step: s.id, prefix: artPath.replace(/\/?$/, '/').toLowerCase() });
-    allPaths.push(...[artPath, ...extras].filter(Boolean).map((x) => ({ step: s.id, path: x })));
+    if (n.artifact?.type === 'folder' && artPath) folders.push({ step: s.id, level: stepLevel, prefix: artPath.replace(/\/?$/, '/').toLowerCase() });
+    allPaths.push(...[artPath, ...extras].filter((x) => typeof x === 'string').map((x) => ({ step: s.id, level: stepLevel, path: x })));
 
     // A step from a newer yadflow (a `provider.version` this release never shipped for its origin) or with
     // an artifact type this release does not know may have moved its files on purpose. Its file rules below
@@ -459,14 +462,17 @@ export function lifecycleProblems(raw) {
       && !(o.productSet && c.productSet && o.member && c.member)
       && (!(o.member || c.member) || o.level === c.level));
     if (first) {
-      add('error', c.where, `"${c.path}" is found by the same name as step ${first.step}'s "${first.path}" ("${c.key}", letter case ignored); two steps cannot share one, or they would share one review`);
+      add('error', c.where, (c.member || first.member)
+        ? `"${c.path}" is the same file as step ${first.step}'s "${first.path}" (letter case ignored); two steps cannot write one file`
+        : `"${c.path}" is found by the same name as step ${first.step}'s "${first.path}" ("${c.key}", letter case ignored); two steps cannot share one, or they would share one review`);
     }
   }
   // A file inside another step's folder belongs to that folder's review (the stories gate hashes every
-  // file under `stories/`), so no other step may claim one there — checked both ways, whatever the order.
+  // file under `stories/`), so no other step at the same level may claim one there — checked both ways,
+  // whatever the order. A product step and a feature step live in different epic folders on disk.
   for (const f of folders) {
     for (const x of allPaths) {
-      if (x.step !== f.step && x.path.toLowerCase().startsWith(f.prefix)) {
+      if (x.step !== f.step && x.level === f.level && x.path.toLowerCase().startsWith(f.prefix)) {
         add('error', `step ${x.step}`, `"${x.path}" is inside step ${f.step}'s folder "${f.prefix}", whose review covers every file in it`);
       }
     }

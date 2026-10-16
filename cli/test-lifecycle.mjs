@@ -264,8 +264,20 @@ const CASES = [
   ['a product step takes a Foundation section', (d) => {
     d.steps.push({ id: 'charter', name: 'Charter', phase: 'foundation', kind: 'author', artifact: { type: 'file', path: 'purpose.md' }, gate: { riskTags: [] } });
     route(d, 'foundation').steps.push('charter');
-  }, /step charter: "purpose.md" is found by the same name as step foundation's "purpose.md"/],
+  }, /step charter: "purpose.md" is the same file as step foundation's "purpose.md"/],
   ['the ledger folder with no slash', (d) => { step(d, 'analysis').extraPaths = ['.sdlc']; }, /"\.sdlc" is in \.sdlc\/, which holds the ledger/],
+  // Review round 5: an empty name is not skipped, and one step does not name one file twice.
+  ['an empty extra path', (d) => { step(d, 'analysis').extraPaths = ['']; }, /"" must be a path inside the epic folder: not empty/],
+  ['an empty set member', (d) => { step(d, 'foundation').artifact.files.push(''); }, /"" must be a path inside the epic folder: not empty/],
+  ['a set lists one file twice', (d) => {
+    d.steps.push({ id: 'bundle', name: 'Bundle', phase: 'discover', kind: 'author', artifact: { type: 'set', path: 'bundle/', files: ['a.md', 'A.md'] }, gate: { riskTags: [] } });
+  }, /"A.md" is listed twice among this step's files/],
+  ['an extra path repeats the artifact', (d) => { step(d, 'analysis').extraPaths = ['Analysis.md']; }, /"Analysis.md" is listed twice among this step's files/],
+  ['an extra path named like a story', (d) => { step(d, 'analysis').extraPaths = ['notes-S01.md']; }, /"notes-S01.md" is named like a story/],
+  ['two sets write one file', (d) => {
+    d.steps.push({ id: 'b1', name: 'B1', phase: 'discover', kind: 'author', artifact: { type: 'set', path: 'b1/', files: ['x.md'] }, gate: { riskTags: [] } });
+    d.steps.push({ id: 'b2', name: 'B2', phase: 'discover', kind: 'author', artifact: { type: 'set', path: 'b2/', files: ['X.md'] }, gate: { riskTags: [] } });
+  }, /step b2: "X.md" is the same file as step b1's "x.md".*two steps cannot write one file/],
   ['retired step on a live route', (d) => { route(d, 'foundation').steps.push('discovery'); route(d, 'foundation').steps = ['discovery']; }, /step "discovery" is retired, so only a retired route may list it/],
   ['origin used twice', (d) => { step(d, 'tasks').provider.origin = 'spec'; }, /already has the origin "spec"/],
   ['a yadflow step loses its behaviour and its file name', (d) => { step(d, 'test-cases').behaviours = []; step(d, 'test-cases').artifact.path = 'qa.md'; }, /its artifact must stay "test-cases.md"/],
@@ -365,6 +377,11 @@ test('round 4: set member files are compared within their level, and the two pro
   d.steps.push({ id: 'roadmap', name: 'Roadmap', phase: 'plan', kind: 'author', artifact: { type: 'file', path: 'roadmap.md' }, gate: { riskTags: [] } });
   route(d, 'classic').steps.push('roadmap');
   assert.deepEqual(messages(d), []);
+  // A product folder and a feature file live in different epic folders on disk.
+  const g = fresh();
+  g.steps.push({ id: 'guides', name: 'Guides', phase: 'foundation', kind: 'author', artifact: { type: 'folder', path: 'guides/' }, gate: { riskTags: [] } });
+  g.steps.push({ id: 'howto', name: 'How-to', phase: 'plan', kind: 'author', artifact: { type: 'file', path: 'guides/x.md' }, gate: { riskTags: [] } });
+  assert.ok(!messages(g).some((p) => /inside step guides's folder/.test(p.message)));
   // "$schema" binds the editor schema and is a known key.
   const e = fresh();
   e.$schema = './lifecycle.schema.json';
