@@ -58,7 +58,8 @@ jobs:
 
       # Tests, coverage, the golden compatibility test, `yad migrate --preview` on a real frozen v3
       # project, a fresh install of the packed tarball, `yad doctor` on the project that install
-      # creates, and the migration guide when the file shape moved.
+      # creates, the migration guide when the file shape moved, the gate-sync fragments' major, the
+      # toolbox vetting age, and the lifecycle defaults earlier releases shipped (unchanged).
       - name: Release check
         run: bash scripts/release-check.sh
 
