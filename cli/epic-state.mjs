@@ -10,6 +10,9 @@ import {
   ADVANCE_FROM_AUTOMATION, AUTOMATION_FROM_ADVANCE, DRIVER_FROM_ASSISTANCE, epicFiles, mirrorDrift, preferring,
   productDrift, PROJECT_FILES, SCHEMA_VERSION, stepAdvance,
 } from './manifest.mjs';
+import {
+  DEFAULT_LIFECYCLE, expandRoutes, expandSteps, featurePhases, laneOrder, productPhases, SENTINELS,
+} from './lifecycle.mjs';
 
 const RISK_ESCALATORS = ['contract', 'auth', 'payments'];
 
@@ -2284,6 +2287,12 @@ export function markInReview(state, step, close = null) {
 // skill files — so "which phase is `stories` in", "which skill authors it", "what does it produce"
 // and "what reviews it" were four separate lookups that nothing held together.
 //
+// THE DATA IS IN JSON NOW (E134). The rows are no longer written here: they are built from the shipped
+// lifecycle default, `cli/lifecycle/defaults/1.json`, by `expandSteps` (cli/lifecycle.mjs). In that file
+// an author step names its gate once (`gate: { riskTags }`) and the gate row below is derived from it.
+// The rows, their fields and their order are exactly what this table held before; a test compares them
+// with a frozen copy (`cli/fixtures/lifecycle-v4-catalogue.json`).
+//
 // Everything below this constant is DERIVED from it. `STEP_SKILL`, `BUILD_STEP_SKILL`,
 // `BUILD_STEP_ORDER`, `SHAPE_STEP_PHASE` and `BUILD_STEP_PHASE` are still exported under the names
 // they had, because ~20 call sites and the golden test use them — but they are now VIEWS of this
@@ -2303,8 +2312,8 @@ export function markInReview(state, step, close = null) {
 // `yad foundation new` (E75), and `yad-change` runs `yad epic new --parent` for a threaded change-epic
 // (E42).
 //
-// IT IS CODE, NOT A FILE. Nothing here is written to disk, so no file shape changes and there is
-// nothing to migrate. When a project's `state.json` disagrees with the catalogue, THE FILE WINS for
+// NOTHING IS WRITTEN TO A PROJECT. The default ships inside the package and no project file holds
+// these rows, so no file shape changes and there is nothing to migrate. When a project's `state.json` disagrees with the catalogue, THE FILE WINS for
 // this whole major (rule 3): a project may hold a step from a newer yadflow, and a hand-written chain
 // is allowed to be ahead of the tool reading it. `yad doctor` reports the disagreement and changes
 // nothing — the same discipline as `workItemType`.
@@ -2324,7 +2333,7 @@ export function markInReview(state, step, close = null) {
 //             placed in the Foundation phase, which belongs to no Part (E75)). This field was called
 //             `chain` when E4 landed and was renamed before any release carried it — `chain` is the
 //             word for an ordered LIST of steps, which is what a lifecycle profile holds (E5).
-//   risk_tags the DEFAULT tags a seed gives this step, copied into the epic's `state.json` where a team
+//   risk_tags the DEFAULT tags a seed gives this step (from its author step's `gate.riskTags`), copied into the epic's `state.json` where a team
 //             may add to them by hand. `architecture-review` carries `contract`, which does two separate
 //             things: it marks the step escalated (`isEscalated`, so its review PR names the touched
 //             repos), and it sets the step's E7 RISK STEP — `contract` +2,
@@ -2335,40 +2344,7 @@ export function markInReview(state, step, close = null) {
 // `spec` and `tasks` are two legs of the same yad-spec ceremony (run-loop.md) and share a skill; the
 // chain renderer collapses the consecutive duplicate. `ready-for-build` and the other SENTINELS are
 // not steps and are not here.
-export const STEPS = [
-  // Foundation — the Product level (E75). `yad-discovery` stays the skill name: renaming a skill folder
-  // is its own change, with an install migration of its own (LEGACY_SKILLS), and it is not this one.
-  { id: 'foundation', phase: 'foundation', kind: 'author', artifact: 'foundation/', skill: 'yad-discovery', level: 'product', risk_tags: [] },
-  { id: 'foundation-review', phase: 'foundation', kind: 'review', artifact: 'foundation/', reviews: 'foundation', level: 'product', risk_tags: [] },
-  // The OLD spelling of the same level, kept for this whole major (rule 3): a project that has not
-  // converted still carries these ids, and dropping the rows would report every step of it as
-  // `phase:unknown`. They move into the Foundation phase with the level they always were.
-  { id: 'discovery', phase: 'foundation', kind: 'author', artifact: 'discovery/', skill: 'yad-discovery', level: 'product', risk_tags: [] },
-  { id: 'discovery-review', phase: 'foundation', kind: 'review', artifact: 'discovery/', reviews: 'discovery', level: 'product', risk_tags: [] },
-  // Discover
-  { id: 'analysis', phase: 'discover', kind: 'author', artifact: 'analysis.md', skill: 'yad-analysis', level: 'feature', risk_tags: [] },
-  { id: 'analysis-review', phase: 'discover', kind: 'review', artifact: 'analysis.md', reviews: 'analysis', level: 'feature', risk_tags: [] },
-  { id: 'epic', phase: 'discover', kind: 'author', artifact: 'epic.md', skill: 'yad-epic', level: 'feature', risk_tags: [] },
-  { id: 'epic-review', phase: 'discover', kind: 'review', artifact: 'epic.md', reviews: 'epic', level: 'feature', risk_tags: [] },
-  // Design
-  { id: 'architecture', phase: 'design', kind: 'author', artifact: 'architecture.md', skill: 'yad-architecture', level: 'feature', risk_tags: [] },
-  { id: 'architecture-review', phase: 'design', kind: 'review', artifact: 'architecture.md', reviews: 'architecture', level: 'feature', risk_tags: ['contract'] },
-  { id: 'ui-design', phase: 'design', kind: 'author', artifact: 'ui-design.md', skill: 'yad-ui', level: 'feature', risk_tags: [] },
-  { id: 'ui-design-review', phase: 'design', kind: 'review', artifact: 'ui-design.md', reviews: 'ui-design', level: 'feature', risk_tags: [] },
-  // Plan
-  { id: 'stories', phase: 'plan', kind: 'author', artifact: 'stories/', skill: 'yad-stories', level: 'feature', risk_tags: [] },
-  { id: 'stories-review', phase: 'plan', kind: 'review', artifact: 'stories/', reviews: 'stories', level: 'feature', risk_tags: [] },
-  { id: 'test-cases', phase: 'plan', kind: 'author', artifact: 'test-cases.md', skill: 'yad-test-cases', level: 'feature', risk_tags: [] },
-  { id: 'test-cases-review', phase: 'plan', kind: 'review', artifact: 'test-cases.md', reviews: 'test-cases', level: 'feature', risk_tags: [] },
-  // Build — these run per story per code repo, recorded in build-state/, not in the epic's steps[]
-  { id: 'spec', phase: 'build', kind: 'author', artifact: null, skill: 'yad-spec', level: 'feature', risk_tags: [] },
-  { id: 'tasks', phase: 'build', kind: 'author', artifact: null, skill: 'yad-spec', level: 'feature', risk_tags: [] },
-  { id: 'implement', phase: 'build', kind: 'author', artifact: null, skill: 'yad-implement', level: 'feature', risk_tags: [] },
-  { id: 'checks', phase: 'build', kind: 'author', artifact: null, skill: 'yad-checks', level: 'feature', risk_tags: [] },
-  // Not the review of a step called `engineer` — a step in its own right, and the one Build step that
-  // is a gate. It carries no `reviews`, which is what keeps `checks-review` from resolving.
-  { id: 'engineer-review', phase: 'build', kind: 'review', artifact: null, skill: 'yad-engineer-review', level: 'feature', risk_tags: [] },
-];
+export const STEPS = expandSteps(DEFAULT_LIFECYCLE);
 
 // ---- lifecycle profiles (E5) ---------------------------------------------------------------------
 //
@@ -2382,6 +2358,13 @@ export const STEPS = [
 // repo_layout, team_size }` that `yad setup` records — so nothing here is called plain `profile` in
 // code, and `next.mjs` reads the other one through `setupProfileOf`. Two different things under one
 // word is a trap for whoever reads this next; two clearly different names is not.
+//
+// THE DATA IS IN JSON NOW (E134). The profiles are built from the `routes` of the shipped lifecycle
+// default, `cli/lifecycle/defaults/1.json`, by `expandRoutes` (cli/lifecycle.mjs). There, a route lists
+// only its author steps and the engine adds each step's gate; a route's `name` is the `title` here. The
+// default also holds one more route, `lane` — the Build order one story walks in one repo — which is not
+// a profile, because an epic never walks it; it is `BUILD_STEP_ORDER` below. A test compares the
+// profiles with a frozen copy of the list as it stood before.
 //
 // THE FIRST THREE WERE NOT NEW ROUTES. They predate this table — they were seeded by hand, in five
 // skill files, until `yad epic new` took over the two feature ones. `yad-analysis`'s own description already calls them "the 12-step chain" and "the 10-step
@@ -2442,68 +2425,11 @@ export const STEPS = [
 // WHAT IS AND IS NOT HERE. Seeding a chain from a profile is `seedState` below, driven by
 // `yad epic new` (E17, cli/epic.mjs); shape 6 is where an epic first RECORDS which profile it is on,
 // and an epic seeded before that field existed still has its route derived by matching its chain
-// (`matchLifecycleProfile`). Which steps are optional per route already lives here and is read per
+// (`matchLifecycleProfile`). Which steps are optional per route lives in the routes too and is read per
 // EPIC (E35, `optionalStepsFor`); the short chore and spike lanes are E40. Which skill runs a step
 // is bound per project (E6, below) and, more specifically, per route (E51) — both in
 // `.sdlc/skills.json`, never here, so two routes can run different skills for the same step.
-export const LIFECYCLE_PROFILES = [
-  {
-    id: 'classic',
-    title: 'the 10-step chain',
-    level: 'feature',
-    steps: [
-      'epic', 'epic-review',
-      'architecture', 'architecture-review',
-      { id: 'ui-design', optional: true }, { id: 'ui-design-review', optional: true },
-      'stories', 'stories-review',
-      'test-cases', 'test-cases-review',
-    ],
-  },
-  {
-    id: 'analysis-first',
-    title: 'the 12-step chain',
-    level: 'feature',
-    steps: [
-      'analysis', 'analysis-review',
-      'epic', 'epic-review',
-      'architecture', 'architecture-review',
-      { id: 'ui-design', optional: true }, { id: 'ui-design-review', optional: true },
-      'stories', 'stories-review',
-      'test-cases', 'test-cases-review',
-    ],
-  },
-  {
-    id: 'chore',
-    title: 'the upkeep lane',
-    level: 'feature',
-    steps: [
-      'epic', 'epic-review',
-      'stories', 'stories-review',
-    ],
-  },
-  {
-    id: 'spike',
-    title: 'the investigation lane',
-    level: 'feature',
-    steps: [
-      'analysis', 'analysis-review',
-      'epic', 'epic-review',
-      'stories', 'stories-review',
-    ],
-  },
-  {
-    id: 'discovery',
-    title: 'the product front-zero',
-    level: 'product',
-    steps: ['discovery', 'discovery-review'],
-  },
-  {
-    id: 'foundation',
-    title: 'the Product Foundation',
-    level: 'product',
-    steps: ['foundation', 'foundation-review'],
-  },
-];
+export const LIFECYCLE_PROFILES = expandRoutes(DEFAULT_LIFECYCLE);
 
 // One profile's steps as plain rows: `{ id, optional }`, in chain order.
 //
@@ -2857,8 +2783,9 @@ export const STEP_SKILL = catalogueSkills(false);
 export const BUILD_STEP_SKILL = catalogueSkills(true);
 
 // The fixed Build order. Used to derive the "remaining chain" from the active step onward even if a
-// repo's `steps` array is partial or out of order. The catalogue's own order IS this order.
-const BUILD_STEP_ORDER = STEPS.filter((s) => s.phase === 'build').map((s) => s.id);
+// repo's `steps` array is partial or out of order. It is the `lane` route of the lifecycle default
+// (E134), which lists the same five steps in the catalogue's own order.
+const BUILD_STEP_ORDER = laneOrder(DEFAULT_LIFECYCLE);
 
 // ---- skill binding (E6) --------------------------------------------------------------------------
 //
@@ -3092,7 +3019,8 @@ export const skillFields = (ids) => ({
 //
 // Release and Operate are NAMED and not built. No step, skill or gate exists for either, and none is
 // invented: `built: false` is the whole of what is known about them. (`skills/sdlc/config.yaml`
-// carries the same table for the skills to read, and a test holds the two together row for row.) They are listed
+// carries the same table for the skills to read, generated from the lifecycle default by
+// `scripts/lifecycle-config.mjs`, and a test fails when the two differ.) They are listed
 // rather than left out because a person has to be able to see that the lifecycle does not stop at
 // merge — and a renderer that shows them as planned tells the truth, while one that hides them
 // implies the work ends at Build.
@@ -3108,23 +3036,18 @@ export const skillFields = (ids) => ({
 //   * `docs/phase-N-build-plan.md` are the development phases of yadflow itself.
 // So the phase NUMBER is deliberately never printed: "Phase 4" already means something else to anyone
 // who has read those. The name is what is shown.
-export const PHASES = [
-  { id: 'discover', name: 'Discover', part: 'Shape', built: true },
-  { id: 'design', name: 'Design', part: 'Shape', built: true },
-  { id: 'plan', name: 'Plan', part: 'Shape', built: true },
-  { id: 'build', name: 'Build', part: 'Build', built: true },
-  { id: 'release', name: 'Release', part: 'Run', built: false },
-  { id: 'operate', name: 'Operate', part: 'Run', built: false },
-];
+//
+// Built from the `phases` of the lifecycle default (`cli/lifecycle/defaults/1.json`, E134) by
+// `featurePhases`. There each phase also says whether it runs once or in a loop (`runs`, `over`); those
+// fields are not part of this view, which keeps exactly the fields it always had.
+export const PHASES = featurePhases(DEFAULT_LIFECYCLE);
 
 // The PRODUCT level's phase (E75). Kept out of `PHASES` on purpose, because the roadmap's two levels
 // are two different ladders: a feature epic walks the six phases above, once per epic, and the
 // Foundation runs once per product, before any of them. It belongs to no Part — Shape, Build and Run
 // are the rhythms of FEATURE work — so it has no `part`, and a renderer printing the six-phase strip
-// for a Foundation would claim a journey it never takes.
-export const PRODUCT_PHASES = [
-  { id: 'foundation', name: 'Foundation', level: 'product', built: true },
-];
+// for a Foundation would claim a journey it never takes. Built from the default by `productPhases`.
+export const PRODUCT_PHASES = productPhases(DEFAULT_LIFECYCLE);
 
 // Which phase each step belongs to. Split in two on purpose, because the `-review` rule differs.
 //
@@ -3140,7 +3063,8 @@ export const PRODUCT_PHASES = [
 //
 // The roadmap also names a `feasibility` step in Discover. Nothing implements it — no skill, no step
 // id, no gate — so it is deliberately absent from the catalogue rather than declared and dead. A new
-// step is added by adding a row to `STEPS`; RENAMING one means adding the new row beside the old and
+// step is added by adding it to the lifecycle default (a new default file, since a shipped one never
+// changes); RENAMING one means adding the new row beside the old and
 // keeping both for a major (rule 3), because a project still carrying the old id would otherwise trip
 // `phase:unknown` on every `yad doctor` run until it is migrated.
 //
@@ -3156,8 +3080,9 @@ const STEP_PHASE = { ...SHAPE_STEP_PHASE, ...BUILD_STEP_PHASE };
 
 // `currentStep` markers that are NOT steps: they never appear in `steps[]`, and no phase claims them.
 // `ready-for-build` is the one with a phase anyway — see `currentPhase` below, which is where an epic's
-// position is decided rather than a step's.
-export const SENTINELS = ['ready-for-build', 'backfill-pending', 'backfill-done', 'discovery-done', 'foundation-done'];
+// position is decided rather than a step's. Defined in cli/lifecycle.mjs, whose validator refuses a
+// step that takes one of these names, and re-exported here under the name every reader imports.
+export { SENTINELS };
 
 // The phase a STEP id belongs to, or null for anything this engine does not recognise — a sentinel, a
 // step from a future profile, a typo. Null, never a guess: a renderer showing the wrong phase is worse

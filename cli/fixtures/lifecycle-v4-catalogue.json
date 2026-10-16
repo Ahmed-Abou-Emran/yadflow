@@ -1,0 +1,347 @@
+{
+  "STEPS": [
+    {
+      "id": "foundation",
+      "phase": "foundation",
+      "kind": "author",
+      "artifact": "foundation/",
+      "skill": "yad-discovery",
+      "level": "product",
+      "risk_tags": []
+    },
+    {
+      "id": "foundation-review",
+      "phase": "foundation",
+      "kind": "review",
+      "artifact": "foundation/",
+      "reviews": "foundation",
+      "level": "product",
+      "risk_tags": []
+    },
+    {
+      "id": "discovery",
+      "phase": "foundation",
+      "kind": "author",
+      "artifact": "discovery/",
+      "skill": "yad-discovery",
+      "level": "product",
+      "risk_tags": []
+    },
+    {
+      "id": "discovery-review",
+      "phase": "foundation",
+      "kind": "review",
+      "artifact": "discovery/",
+      "reviews": "discovery",
+      "level": "product",
+      "risk_tags": []
+    },
+    {
+      "id": "analysis",
+      "phase": "discover",
+      "kind": "author",
+      "artifact": "analysis.md",
+      "skill": "yad-analysis",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "analysis-review",
+      "phase": "discover",
+      "kind": "review",
+      "artifact": "analysis.md",
+      "reviews": "analysis",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "epic",
+      "phase": "discover",
+      "kind": "author",
+      "artifact": "epic.md",
+      "skill": "yad-epic",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "epic-review",
+      "phase": "discover",
+      "kind": "review",
+      "artifact": "epic.md",
+      "reviews": "epic",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "architecture",
+      "phase": "design",
+      "kind": "author",
+      "artifact": "architecture.md",
+      "skill": "yad-architecture",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "architecture-review",
+      "phase": "design",
+      "kind": "review",
+      "artifact": "architecture.md",
+      "reviews": "architecture",
+      "level": "feature",
+      "risk_tags": [
+        "contract"
+      ]
+    },
+    {
+      "id": "ui-design",
+      "phase": "design",
+      "kind": "author",
+      "artifact": "ui-design.md",
+      "skill": "yad-ui",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "ui-design-review",
+      "phase": "design",
+      "kind": "review",
+      "artifact": "ui-design.md",
+      "reviews": "ui-design",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "stories",
+      "phase": "plan",
+      "kind": "author",
+      "artifact": "stories/",
+      "skill": "yad-stories",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "stories-review",
+      "phase": "plan",
+      "kind": "review",
+      "artifact": "stories/",
+      "reviews": "stories",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "test-cases",
+      "phase": "plan",
+      "kind": "author",
+      "artifact": "test-cases.md",
+      "skill": "yad-test-cases",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "test-cases-review",
+      "phase": "plan",
+      "kind": "review",
+      "artifact": "test-cases.md",
+      "reviews": "test-cases",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "spec",
+      "phase": "build",
+      "kind": "author",
+      "artifact": null,
+      "skill": "yad-spec",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "tasks",
+      "phase": "build",
+      "kind": "author",
+      "artifact": null,
+      "skill": "yad-spec",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "implement",
+      "phase": "build",
+      "kind": "author",
+      "artifact": null,
+      "skill": "yad-implement",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "checks",
+      "phase": "build",
+      "kind": "author",
+      "artifact": null,
+      "skill": "yad-checks",
+      "level": "feature",
+      "risk_tags": []
+    },
+    {
+      "id": "engineer-review",
+      "phase": "build",
+      "kind": "review",
+      "artifact": null,
+      "skill": "yad-engineer-review",
+      "level": "feature",
+      "risk_tags": []
+    }
+  ],
+  "LIFECYCLE_PROFILES": [
+    {
+      "id": "classic",
+      "title": "the 10-step chain",
+      "level": "feature",
+      "steps": [
+        "epic",
+        "epic-review",
+        "architecture",
+        "architecture-review",
+        {
+          "id": "ui-design",
+          "optional": true
+        },
+        {
+          "id": "ui-design-review",
+          "optional": true
+        },
+        "stories",
+        "stories-review",
+        "test-cases",
+        "test-cases-review"
+      ]
+    },
+    {
+      "id": "analysis-first",
+      "title": "the 12-step chain",
+      "level": "feature",
+      "steps": [
+        "analysis",
+        "analysis-review",
+        "epic",
+        "epic-review",
+        "architecture",
+        "architecture-review",
+        {
+          "id": "ui-design",
+          "optional": true
+        },
+        {
+          "id": "ui-design-review",
+          "optional": true
+        },
+        "stories",
+        "stories-review",
+        "test-cases",
+        "test-cases-review"
+      ]
+    },
+    {
+      "id": "chore",
+      "title": "the upkeep lane",
+      "level": "feature",
+      "steps": [
+        "epic",
+        "epic-review",
+        "stories",
+        "stories-review"
+      ]
+    },
+    {
+      "id": "spike",
+      "title": "the investigation lane",
+      "level": "feature",
+      "steps": [
+        "analysis",
+        "analysis-review",
+        "epic",
+        "epic-review",
+        "stories",
+        "stories-review"
+      ]
+    },
+    {
+      "id": "discovery",
+      "title": "the product front-zero",
+      "level": "product",
+      "steps": [
+        "discovery",
+        "discovery-review"
+      ]
+    },
+    {
+      "id": "foundation",
+      "title": "the Product Foundation",
+      "level": "product",
+      "steps": [
+        "foundation",
+        "foundation-review"
+      ]
+    }
+  ],
+  "PHASES": [
+    {
+      "id": "discover",
+      "name": "Discover",
+      "part": "Shape",
+      "built": true
+    },
+    {
+      "id": "design",
+      "name": "Design",
+      "part": "Shape",
+      "built": true
+    },
+    {
+      "id": "plan",
+      "name": "Plan",
+      "part": "Shape",
+      "built": true
+    },
+    {
+      "id": "build",
+      "name": "Build",
+      "part": "Build",
+      "built": true
+    },
+    {
+      "id": "release",
+      "name": "Release",
+      "part": "Run",
+      "built": false
+    },
+    {
+      "id": "operate",
+      "name": "Operate",
+      "part": "Run",
+      "built": false
+    }
+  ],
+  "PRODUCT_PHASES": [
+    {
+      "id": "foundation",
+      "name": "Foundation",
+      "level": "product",
+      "built": true
+    }
+  ],
+  "BUILD_STEP_ORDER": [
+    "spec",
+    "tasks",
+    "implement",
+    "checks",
+    "engineer-review"
+  ],
+  "SENTINELS": [
+    "ready-for-build",
+    "backfill-pending",
+    "backfill-done",
+    "discovery-done",
+    "foundation-done"
+  ]
+}
