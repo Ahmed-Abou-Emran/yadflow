@@ -42,8 +42,8 @@ document_output_language: English
 #
 # A phase is DERIVED from a step's id and is never written into `state.json` — there is nothing to
 # author here, nothing to keep in step, and no way for it to disagree with the step it describes.
-# `stepPhase` in cli/epic-state.mjs is the one definition; this block is the same table in the file
-# people read. A review gate takes the phase of the artifact it reviews, so `epic-review` is Discover.
+# The phase of each step is set in the lifecycle default (`cli/lifecycle/defaults/1.json`), which
+# `stepPhase` in cli/epic-state.mjs reads; this block is generated from it for people to read. A review gate takes the phase of the artifact it reviews, so `epic-review` is Discover.
 #
 # Release and Operate are NAMED and not built. No step, skill or gate exists for either yet.
 #

@@ -25,7 +25,7 @@ if (process.env.NODE_TEST_CONTEXT) {
 const {
   ARTIFACT_TYPES, BEHAVIOURS, DEFAULT_LIFECYCLE, DEFAULT_VERSION, FIXED_ARTIFACTS, KNOWN_KEYS, PARTS, PHASE_LEVELS,
   PHASE_RUNS, SENTINELS, STEP_KINDS, applyConfigRegions, configRegions, expandRoutes, expandSteps, featurePhases,
-  laneAuthorSteps, laneOrder, lifecycleProblems, loadDefault, normalizeLifecycle, productPhases, routeKind,
+  artifactKey, laneAuthorSteps, laneOrder, lifecycleProblems, loadDefault, normalizeLifecycle, productPhases, routeKind,
   shippedDefaults,
 } = await import('./lifecycle.mjs');
 const ES = await import('./epic-state.mjs');
@@ -154,7 +154,6 @@ const CASES = [
   ['merge gate made an author step', (d) => { step(d, 'engineer-review').kind = 'author'; step(d, 'engineer-review').id = 'merge'; route(d, 'lane').steps[4] = 'merge'; }, /must stay a "review" step/],
   ['fixed artifact renamed', (d) => { step(d, 'epic').artifact.path = 'brief.md'; }, /its artifact must stay "epic.md"/],
   ['derived gate id taken', (d) => { d.steps.push({ ...step(d, 'engineer-review'), id: 'analysis-review', behaviours: [], provider: undefined }); }, /would be called "analysis-review", which is already a step/],
-  ['replaces nothing', (d) => { step(d, 'foundation').replaces = 'ghost'; }, /it replaces "ghost", which is not a step/],
   ['route without id', (d) => { d.routes.push({ name: 'x', steps: ['epic'] }); }, /a route needs an "id"/],
   ['route without name', (d) => { delete route(d, 'chore').name; }, /a route needs a "name"/],
   ['route id twice', (d) => { d.routes.push({ ...route(d, 'chore') }); }, /two routes share this id/],
@@ -182,7 +181,36 @@ const CASES = [
       gate: { riskTags: [] }, behaviours: ['ends-shape'] });
     for (const r of d.routes) if (r.steps.includes('stories')) r.steps.push('backlog');
   }, /behaviour "ends-shape" needs the artifact "stories\/"/],
-  ['origin changed to escape the fixed name', (d) => { step(d, 'architecture').provider.origin = 'arch2'; step(d, 'architecture').artifact.path = 'arch.md'; }, /"provider.origin" must be the id of a step yadflow ships/],
+  ['origin changed to escape the fixed name', (d) => { step(d, 'architecture').provider.origin = 'arch2'; step(d, 'architecture').artifact.path = 'arch.md'; }, /"architecture" is a step yadflow ships/],
+  // Review round 2: deleting or rewriting the provider record does not free a yadflow step's file name.
+  ['provider deleted to escape the fixed name', (d) => {
+    const a = step(d, 'architecture'); delete a.provider; a.artifact.path = 'arch.md'; a.behaviours = [];
+  }, /"architecture" is a step yadflow ships/],
+  ['provider rewritten to escape the fixed name', (d) => {
+    const a = step(d, 'architecture'); a.provider = { id: 'acme', origin: 'architecture' }; a.artifact.path = 'arch.md'; a.behaviours = [];
+  }, /"architecture" is a step yadflow ships/],
+  ['epic swaps its file with a new step', (d) => {
+    const e = step(d, 'epic'); delete e.provider; e.artifact.path = 'brief.md'; e.behaviours = [];
+    d.steps.push({ id: 'intake', name: 'Intake', phase: 'discover', kind: 'author', artifact: { type: 'file', path: 'epic.md' }, gate: { riskTags: [] }, behaviours: ['work-item-source'] });
+    for (const r of d.routes) if (r.steps.includes('epic')) r.steps.unshift('intake');
+  }, /"epic" is a step yadflow ships/],
+  // Review round 2: two files a review branch would find by one name.
+  ['artifact under a folder shares a base', (d) => { step(d, 'analysis').artifact.path = 'notes/epic.md'; }, /"epic.md" is found by the same name as step analysis's "notes\/epic.md"/],
+  ['artifact differs only by letter case', (d) => { step(d, 'analysis').artifact.path = 'Epic.md'; }, /letter case ignored/],
+  ['artifact shaped like a story', (d) => { step(d, 'analysis').artifact.path = 'stories-S01.md'; }, /named like a story/],
+  ['artifact takes the contract', (d) => { step(d, 'analysis').artifact.path = 'contract.md'; }, /step architecture: .*"contract.md" is found by the same name as step analysis's/],
+  ['artifact takes an extra path', (d) => { step(d, 'analysis').artifact.path = 'DESIGN.md'; }, /step ui-design: .*"DESIGN.md" is found by the same name as step analysis's/],
+  // Review round 2: more wrong types.
+  ['set files not names', (d) => { step(d, 'foundation').artifact.files = [1, 2]; }, /lists its "files" by name/],
+  ['set optional not among its files', (d) => { step(d, 'foundation').artifact.optional = ['ghost.md']; }, /"optional" lists some of its "files"/],
+  ['provider version not a number', (d) => { step(d, 'tasks').provider.version = 'x'; }, /"provider" must be/],
+  ['route provider not an object', (d) => { route(d, 'chore').provider = 'yadflow'; }, /"provider" must be/],
+  ['description not text', (d) => { step(d, 'epic').description = 5; }, /"description" must be text/],
+  ['kind not a word', (d) => { step(d, 'analysis').kind = 5; }, /a step needs a "kind"/],
+  ['runs not a word', (d) => { d.phases[1].runs = 5; }, /"runs" must be a word/],
+  ['artifact type not a word', (d) => { step(d, 'analysis').artifact.type = 5; }, /"artifact" must be null or/],
+  ['Build phase that runs once', (d) => { d.phases[4].runs = 'once'; }, /a Build phase runs in a loop/],
+  ['retired step on a live route', (d) => { route(d, 'foundation').steps.push('discovery'); route(d, 'foundation').steps = ['discovery']; }, /step "discovery" is retired, so only a retired route may list it/],
   ['origin used twice', (d) => { step(d, 'tasks').provider.origin = 'spec'; }, /already has the origin "spec"/],
   ['a yadflow step loses its behaviour and its file name', (d) => { step(d, 'test-cases').behaviours = []; step(d, 'test-cases').artifact.path = 'qa.md'; }, /its artifact must stay "test-cases.md"/],
   // Review round 1: a wrong type is reported, never read as empty.
@@ -205,8 +233,8 @@ for (const [name, breakIt, want] of CASES) {
   test(`validator: ${name}`, () => {
     const d = fresh();
     const r = breakIt(d);
-    const found = messages(r === undefined ? d : r);
-    assert.ok(found.some((p) => want.test(p.message)), `wanted ${want}, got ${JSON.stringify(found.map((p) => `${p.where}: ${p.message}`))}`);
+    const found = messages(r === undefined ? d : r).map((p) => `${p.where}: ${p.message}`);
+    assert.ok(found.some((line) => want.test(line)), `wanted ${want}, got ${JSON.stringify(found)}`);
   });
 }
 
@@ -228,6 +256,54 @@ test('a value this release does not know makes the step unusable, and the rest o
   assert.ok(warns.includes('step epic: unknown key "futureField" is kept and not read'));
 });
 
+test('round 2: a newer yadflow step, an unknown Build "runs", a deleted retired step: unusable or warned, never a broken file', () => {
+  const d = fresh();
+  d.steps.push({ id: 'deploy', name: 'Deploy', phase: 'release', kind: 'author', artifact: null, gate: null, provider: { id: 'yadflow', version: 2, origin: 'deploy' } });
+  d.routes.push({ id: 'ship', name: 'ship', steps: ['deploy'] });
+  assert.deepEqual(messages(d), []);
+  assert.ok(lifecycleProblems(d).some((p) => p.level === 'unusable' && p.where === 'step deploy'));
+
+  const b = fresh();
+  b.phases.find((p) => p.id === 'build').runs = 'pipeline';
+  assert.deepEqual(messages(b), [], 'the lane is still the lane');
+  assert.equal(lifecycleProblems(b).filter((p) => p.level === 'unusable').length, 6, 'the phase and its five steps');
+
+  const r = fresh();
+  r.steps = r.steps.filter((s) => s.id !== 'discovery');
+  r.routes = r.routes.filter((x) => x.id !== 'discovery');
+  assert.deepEqual(messages(r), [], 'a team may delete a retired step');
+  assert.ok(lifecycleProblems(r).some((p) => p.level === 'warn' && /replaces "discovery"/.test(p.message)));
+
+  const i = fresh();
+  i.steps = i.steps.filter((s) => s.id !== 'analysis');
+  i.routes = i.routes.filter((x) => !x.steps.includes('analysis'));
+  assert.deepEqual(messages(i), []);
+  assert.ok(lifecycleProblems(i).some((p) => p.level === 'warn' && /input "analysis"/.test(p.message)));
+
+  const m = fresh();
+  step(m, 'analysis').phase = 'nowhere';
+  const errs = messages(m).map((p) => p.message);
+  assert.ok(!errs.some((x) => /mix/.test(x)), 'a missing phase is not called a mix');
+});
+
+test('the edits the roadmap allows stay allowed: rename, re-skill, make optional, move', () => {
+  const d = fresh();
+  Object.assign(step(d, 'epic'), { id: 'brief', name: 'Brief', skills: ['my-brief'] });
+  for (const r of d.routes) r.steps = r.steps.map((x) => (x === 'epic' ? 'brief' : x));
+  step(d, 'architecture').optional = true;
+  step(d, 'architecture').phase = 'plan';
+  step(d, 'test-cases').gate = null;
+  assert.deepEqual(messages(d), []);
+});
+
+test('artifactKey finds a file the way a review branch does', () => {
+  assert.equal(artifactKey('epic.md'), 'epic');
+  assert.equal(artifactKey('stories/'), 'stories');
+  assert.equal(artifactKey('notes/Epic.MD'), 'epic');
+  assert.equal(artifactKey('stories/EP-x-S01.md'), 'stories-s01');
+  assert.equal(artifactKey('.sdlc/contract-lock.json'), 'contract-lock.json');
+});
+
 test('a name every JavaScript object inherits is not a known behaviour or origin', () => {
   const d = fresh();
   step(d, 'analysis').behaviours = ['constructor', '__proto__', 'toString'];
@@ -236,7 +312,7 @@ test('a name every JavaScript object inherits is not a known behaviour or origin
   assert.equal(all.filter((p) => p.level === 'unusable').length, 3);
   const e = fresh();
   e.steps.push({ id: 'constructor', name: 'C', phase: 'discover', kind: 'author', artifact: null, gate: null, provider: { id: 'yadflow', origin: 'constructor' } });
-  assert.ok(messages(e).some((p) => /"constructor" is not one/.test(p.message)));
+  assert.ok(lifecycleProblems(e).some((p) => p.level === 'unusable' && /"constructor"/.test(p.message)));
   assert.ok(!messages(e).some((p) => /native code/.test(p.message)));
 });
 

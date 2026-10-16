@@ -11,7 +11,8 @@
 // WHAT IS NOT READ YET. Nothing reads a team's own file in this row: `.sdlc/lifecycle.json` is E135. The
 // validator below (`lifecycleProblems`) and the behaviour registry are built and tested now so the file
 // format is settled before anyone can write one. Several fields of a step (`behaviours`, `inputs`,
-// `extraPaths`, `provider`, `replaces`) are recorded in the default and read by later rows (E136, E141).
+// `extraPaths`, `provider`, `replaces`) are checked by the validator now; the engine starts to act on
+// them in later rows (E136, E141).
 //
 // A PAST DEFAULT NEVER CHANGES. A team's file will say which default it was copied from (`extends:
 // "yadflow-default@<n>"`), and `yad lifecycle upgrade` (E141) compares the old default, the team's file
@@ -41,9 +42,15 @@ export function loadDefault(n = DEFAULT_VERSION) {
 
 // Every step id yadflow has ever shipped (the `provider.origin` of each step in each shipped default). A
 // step that says it comes from yadflow must name one of these, or the upgrade merge (E141), which matches
-// yadflow's steps by origin, would have nothing to match it to.
-export const YADFLOW_ORIGINS = new Set(shippedDefaults().flatMap((n) => loadDefault(n).steps
-  .filter((s) => s.provider?.id === 'yadflow').map((s) => s.provider.origin)));
+// yadflow's steps by origin, would have nothing to match it to. Read when the validator first needs it,
+// not when this module loads, because every `yad` command imports this module and only the validator
+// needs the older defaults.
+let yadflowOrigins = null;
+export function yadflowOriginSet() {
+  yadflowOrigins ??= new Set(shippedDefaults().flatMap((n) => loadDefault(n).steps
+    .map((s) => s?.provider?.id === 'yadflow' ? s.provider.origin : null).filter((o) => typeof o === 'string')));
+  return yadflowOrigins;
+}
 
 // `currentStep` markers that are NOT steps: they never appear in `steps[]`, and no phase claims them.
 // They stay in code on purpose (the roadmap's "What stays in code"): they describe an epic's state, not a
@@ -92,10 +99,12 @@ export const BEHAVIOURS = {
   'merge-gate': { where: 'lane', keepGate: false, review: true, route: [1, 1] },
 };
 
-// The second half of the same rule, for yadflow's own steps: a step yadflow ships (`provider.id:
-// "yadflow"`) keeps its artifact name even when a team takes its behaviour away, because until E136 the
-// engine reads these files by the step's original id (`provider.origin`), not by behaviour. A rename of
-// the step is fine; a rename of its file is not.
+// The second half of the same rule, for yadflow's own steps: a step yadflow ships keeps its artifact name
+// even when a team takes its behaviour away. Until E136 the engine finds these files through step id
+// literals (`'epic'`, `base === 'architecture'` in cli/epic-state.mjs), not through behaviours or
+// `provider`. `provider.origin` is how the validator still recognises a yadflow step a team renamed, and a
+// step whose id is one yadflow ships must say so (`provider: { id: "yadflow", origin: <its id> }`), so
+// deleting the record cannot free its file name.
 export const FIXED_ARTIFACTS = {
   epic: 'epic.md',
   architecture: 'architecture.md',
@@ -124,6 +133,17 @@ const arr = (x) => (Array.isArray(x) ? x : []);
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const own = (o, k) => typeof k === 'string' && Object.hasOwn(o, k);
 const isStrings = (x) => Array.isArray(x) && x.every((v) => typeof v === 'string');
+
+// The key a review branch is found by: `review/EP-<slug>/<base>`. The same rule as `artifactBase` in
+// cli/epic-state.mjs (which this module cannot import: that file imports this one), compared without
+// letter case, because macOS and Windows file systems treat `Epic.md` and `epic.md` as one file.
+// `stories/<anything>-S01.md` maps to `stories-s01`, which the engine reads back as the stories gate.
+export function artifactKey(p) {
+  const a = String(p).replace(/\/$/, '');
+  const m = a.match(/stories\/.*?(S\d+)\.md$/i);
+  if (m) return `stories-${m[1]}`.toLowerCase();
+  return a.split('/').pop().replace(/\.md$/i, '').toLowerCase();
+}
 
 // The definition with every optional field filled in, so readers never have to ask "is it there". Unknown
 // keys are kept as they are. The input is never changed; the result is a new object.
@@ -161,10 +181,13 @@ export function normalizeLifecycle(raw) {
 // Where a phase sits: `product` (the Foundation level), `lane` (the Build loop — the Build part's loop
 // phase), `shape` (a Shape phase), or `run` (Release, Operate). The lane is told apart by its part, not by
 // `runs: loop` alone, because Release loops too (over releases) and is not the Build lane.
+//
+// A Build phase whose `runs` is a value this release does not know still counts as the lane: its steps
+// are reported unusable, and the rest of the file keeps its one lane (the unknown-value rule).
 function phaseWhere(p) {
   if (!p) return null;
   if (p.level === 'product') return 'product';
-  if (p.part === 'Build' && p.runs === 'loop') return 'lane';
+  if (p.part === 'Build') return p.runs === 'once' ? null : 'lane';
   if (p.part === 'Shape') return 'shape';
   return p.part === 'Run' ? 'run' : null;
 }
@@ -186,6 +209,12 @@ export function routeKind(def, route) {
 // Where a step sits, in the registry's words. Null when its phase is unknown.
 const stepWhere = (def, s) => phaseWhere(def.phases.find((x) => x.id === s.phase));
 
+// A `provider` record: who ships the step or route, which version of their lifecycle, and the step's
+// original id. Every field is optional, but each has one type.
+const PROVIDER_SHAPE = '"provider" must be { "id": text, "version": a whole number, "origin": text }';
+const providerOk = (p) => isObj(p) && (p.id === undefined || typeof p.id === 'string')
+  && (p.version === undefined || Number.isInteger(p.version)) && (p.origin === undefined || typeof p.origin === 'string');
+
 // THE VALIDATOR. Every problem with a lifecycle definition, as a list. An empty list means the file can
 // be used as it is. Hand-written on purpose: the package has no runtime dependencies, and each rule says
 // why it exists in a sentence a person can act on.
@@ -194,7 +223,7 @@ const stepWhere = (def, s) => phaseWhere(def.phases.find((x) => x.id === s.phase
 //   error     the file cannot be used.
 //   unusable  one step (or route) uses a value this release does not know; it cannot be used for new
 //             epics, and the rest of the file still loads.
-//   warn      an unknown key, kept as it is.
+//   warn      an unknown key, kept as it is, or a reference that names nothing where nothing breaks.
 // `where` names the place: `file`, `phase <id>`, `step <id>` or `route <id>`.
 export function lifecycleProblems(raw) {
   const out = [];
@@ -228,7 +257,10 @@ export function lifecycleProblems(raw) {
     if (!PHASE_LEVELS.includes(p.level)) add('error', where, `"level" must be one of: ${PHASE_LEVELS.join(', ')}`);
     if (p.level === 'feature' && !PARTS.includes(p.part)) add('error', where, `a feature phase needs a "part": ${PARTS.join(', ')}`);
     if (p.level === 'product' && p.part !== undefined) add('error', where, 'a product phase belongs to no part, so it has no "part"');
-    if (p.runs !== undefined && !PHASE_RUNS.includes(p.runs)) add('unusable', where, `"runs" is "${p.runs}", which this yadflow does not know; its steps cannot be used for new epics`);
+    if (p.description !== undefined && typeof p.description !== 'string') add('error', where, '"description" must be text');
+    if (p.runs !== undefined && typeof p.runs !== 'string') add('error', where, '"runs" must be a word: once or loop');
+    else if (p.runs !== undefined && !PHASE_RUNS.includes(p.runs)) add('unusable', where, `"runs" is "${p.runs}", which this yadflow does not know; its steps cannot be used for new epics`);
+    if (p.part === 'Build' && p.runs === 'once') add('error', where, 'a Build phase runs in a loop (over each story and repo), so its "runs" is "loop"');
     if (p.over !== undefined && !isStrings(p.over)) add('error', where, '"over" must be a list of words');
     if (p.runs === 'loop' && arr(p.over).length === 0) add('error', where, 'a loop phase needs "over" (what it loops over, such as "story" and "repo")');
     if (p.built !== undefined && typeof p.built !== 'boolean') add('error', where, '"built" must be true or false');
@@ -259,11 +291,12 @@ export function lifecycleProblems(raw) {
       if (s[key] !== undefined && typeof s[key] !== 'boolean') add('error', where, `"${key}" must be true or false`);
     }
     if (s.replaces !== undefined && typeof s.replaces !== 'string') add('error', where, '"replaces" must be a step id');
-    if (s.provider !== undefined && !isObj(s.provider)) add('error', where, '"provider" must be { "id", "version", "origin" }');
+    if (s.description !== undefined && typeof s.description !== 'string') add('error', where, '"description" must be text');
+    if (s.provider !== undefined && !providerOk(s.provider)) add('error', where, PROVIDER_SHAPE);
     if (!phaseIds.has(s.phase)) add('error', where, `its phase "${s.phase}" does not exist`);
     else if (unknownRuns.has(s.phase)) add('unusable', where, `its phase "${s.phase}" uses a "runs" value this yadflow does not know`);
 
-    if (s.kind === undefined) add('error', where, `a step needs a "kind": ${STEP_KINDS.join(' or ')}`);
+    if (typeof s.kind !== 'string') add('error', where, `a step needs a "kind": ${STEP_KINDS.join(' or ')}`);
     else if (!STEP_KINDS.includes(s.kind)) {
       add('unusable', where, `"kind" is "${s.kind}", which this yadflow does not know; the step cannot be used for new epics`);
     } else if (s.kind === 'author' && s.id.endsWith(GATE_SUFFIX)) {
@@ -276,14 +309,29 @@ export function lifecycleProblems(raw) {
 
     if (n.artifact !== null) {
       const a = n.artifact;
-      if (!isObj(a) || typeof a.path !== 'string' || !a.path) add('error', where, '"artifact" must be null or { "type", "path", … }');
-      else {
+      if (!isObj(a) || typeof a.path !== 'string' || !a.path || typeof a.type !== 'string') {
+        add('error', where, '"artifact" must be null or { "type", "path", … }');
+      } else {
         if (!ARTIFACT_TYPES.includes(a.type)) add('unusable', where, `artifact type "${a.type}" is one this yadflow does not know; the step cannot be used for new epics`);
-        if (a.type === 'set' && !Array.isArray(a.files)) add('error', where, 'a "set" artifact lists its "files"');
-        // A review branch is found by its artifact's name, so two steps with one name would share a gate.
-        if (artifactOwner.has(a.path)) add('error', where, `its artifact "${a.path}" is also step ${artifactOwner.get(a.path)}'s; two steps cannot share one, or they would share one review`);
-        else artifactOwner.set(a.path, s.id);
+        if (a.type === 'set' && !isStrings(a.files)) add('error', where, 'a "set" artifact lists its "files" by name');
+        if (a.type === 'set' && a.optional !== undefined && !(isStrings(a.optional) && a.optional.every((f) => arr(a.files).includes(f)))) {
+          add('error', where, 'a "set" artifact\'s "optional" lists some of its "files"');
+        }
+        if (/^stories-s\d+$/.test(artifactKey(a.path)) || /-s\d+$/.test(artifactKey(a.path))) {
+          add('error', where, `its artifact "${a.path}" is named like a story (-S01), which the engine reads as the stories gate`);
+        }
       }
+    }
+    // A review branch is found by its artifact's key (`artifactKey`), so two steps whose files share a
+    // key would share one gate. The files a step commits beside its artifact (`extraPaths`, such as the
+    // contract beside the architecture) are claimed the same way.
+    for (const claimed of [isObj(n.artifact) && typeof n.artifact.path === 'string' ? n.artifact.path : null, ...(isStrings(s.extraPaths) ? s.extraPaths : [])]) {
+      if (!claimed) continue;
+      const key = artifactKey(claimed);
+      const owner = artifactOwner.get(key);
+      if (owner && owner.step !== s.id) {
+        add('error', where, `"${claimed}" is found by the same name as step ${owner.step}'s "${owner.path}" ("${key}", letter case ignored); two steps cannot share one, or they would share one review`);
+      } else if (!owner) artifactOwner.set(key, { step: s.id, path: claimed });
     }
 
     // Behaviours.
@@ -299,10 +347,17 @@ export function lifecycleProblems(raw) {
       }
     }
 
-    // yadflow's own steps: a known origin, used once, and the file name it shipped with.
-    if (n.provider?.id === 'yadflow') {
-      const origin = n.provider.origin;
-      if (!YADFLOW_ORIGINS.has(origin)) add('error', where, `"provider.origin" must be the id of a step yadflow ships; "${origin}" is not one`);
+    // yadflow's own steps: a step whose id is one yadflow ships says so, a known origin is used once and
+    // keeps the file name it shipped with. An origin this release does not know is from a newer yadflow:
+    // that step is unusable here, and the rest of the file still loads.
+    const known = yadflowOriginSet();
+    const isYadflow = isObj(s.provider) && s.provider.id === 'yadflow';
+    if (known.has(s.id) && !(isYadflow && s.provider.origin === s.id)) {
+      add('error', where, `"${s.id}" is a step yadflow ships, so it keeps "provider": { "id": "yadflow", "origin": "${s.id}" } — to make a step of your own, give it another id`);
+    }
+    if (isYadflow && typeof s.provider.origin === 'string') {
+      const origin = s.provider.origin;
+      if (!known.has(origin)) add('unusable', where, `"provider.origin" is "${origin}", a yadflow step this release does not know; the step cannot be used for new epics`);
       else if (origins.has(origin)) add('error', where, `step ${origins.get(origin)} already has the origin "${origin}"; each yadflow step appears once`);
       else origins.set(origin, s.id);
       if (own(FIXED_ARTIFACTS, origin) && n.artifact?.path !== FIXED_ARTIFACTS[origin]) {
@@ -315,7 +370,11 @@ export function lifecycleProblems(raw) {
     if (s.kind === 'author' && s.gate && stepById.has(gateIdOf(s.id))) {
       add('error', `step ${s.id}`, `its gate would be called "${gateIdOf(s.id)}", which is already a step`);
     }
-    if (s.replaces !== undefined && !stepById.has(s.replaces)) add('error', `step ${s.id}`, `it replaces "${s.replaces}", which is not a step`);
+    // A team may delete a retired step; the record of what replaced it then names nothing, which harms nothing.
+    if (typeof s.replaces === 'string' && !stepById.has(s.replaces)) add('warn', `step ${s.id}`, `it replaces "${s.replaces}", which is not a step in this file`);
+    for (const input of isStrings(s.inputs) ? s.inputs : []) {
+      if (!stepById.has(input)) add('warn', `step ${s.id}`, `its input "${input}" is not a step in this file`);
+    }
   }
 
   // Routes.
@@ -331,6 +390,8 @@ export function lifecycleProblems(raw) {
     routeIds.add(r.id);
     if (r.bindings !== undefined && !isObj(r.bindings)) add('error', where, '"bindings" must be an object');
     if (r.retired !== undefined && typeof r.retired !== 'boolean') add('error', where, '"retired" must be true or false');
+    if (r.description !== undefined && typeof r.description !== 'string') add('error', where, '"description" must be text');
+    if (r.provider !== undefined && !providerOk(r.provider)) add('error', where, PROVIDER_SHAPE);
     if (!Array.isArray(r.steps)) { add('error', where, '"steps" must be a list'); continue; }
     const bad = r.steps.filter((x) => !(typeof x === 'string' || (isObj(x) && typeof x.id === 'string'
       && (x.optional === undefined || typeof x.optional === 'boolean'))));
@@ -344,6 +405,10 @@ export function lifecycleProblems(raw) {
       seen.add(x.id);
     }
     if (missing) continue;
+    // A route new epics take cannot hold a step that is never seeded for new epics.
+    if (!n.retired) for (const x of n.steps) if (stepById.get(x.id).retired) add('error', where, `step "${x.id}" is retired, so only a retired route may list it`);
+    // A step whose phase does not exist is already reported on the step; the route says nothing more.
+    if (n.steps.some((x) => !stepWhere(def, stepById.get(x.id)))) continue;
     const kind = routeKind(def, n);
     if (!kind) { add('error', where, 'its steps mix the product level, the Shape phases, the Build loop and the Run phases; a route stays in one'); continue; }
     if (kind === 'lane') lanes += 1;

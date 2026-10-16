@@ -38,7 +38,7 @@
     { "id": "architecture", "name": "Architecture", "phase": "design", "kind": "author",
       "artifact": { "type": "file", "path": "architecture.md" },
       "optional": false, "gate": { "riskTags": ["contract"] }, "skills": ["yad-architecture"], "behaviours": ["locks-contract"],
-      "extraPaths": [], "inputs": ["epic"],
+      "extraPaths": ["contract.md", ".sdlc/contract-lock.json"], "inputs": ["epic"],
       "provider": { "id": "yadflow", "version": 1, "origin": "architecture" } },
     { "id": "ui-design", "name": "UI design", "phase": "design", "kind": "author",
       "artifact": { "type": "file", "path": "ui-design.md" },
