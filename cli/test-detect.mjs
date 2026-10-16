@@ -614,6 +614,9 @@ test('E88: scripts/vet-check.mjs passes on a vetted list and names each stale to
   const rc = fs.readFileSync(path.join(ROOT, 'scripts/release-check.sh'), 'utf8');
   assert.match(rc, /say "8\/9 {2}every toolbox tool and recommended skill was vetted recently"/);
   assert.match(rc, /^node "\$ROOT\/scripts\/vet-check\.mjs" \|\| die/m);
+  // And step 9 (E134): the lifecycle defaults earlier releases shipped are unchanged.
+  assert.match(rc, /say "9\/9 {2}the lifecycle defaults earlier releases shipped are unchanged"/);
+  assert.match(rc, /^bash "\$ROOT\/scripts\/lifecycle-defaults-check\.sh"$/m);
   assert.equal((rc.match(/say "\d\/[78] /g) || []).length, 0, 'a step still counts to 7 or 8');
 });
 

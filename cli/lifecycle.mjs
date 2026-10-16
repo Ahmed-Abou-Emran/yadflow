@@ -45,8 +45,8 @@ export function loadDefault(n = DEFAULT_VERSION) {
 // the contract beside the architecture). Read from the shipped defaults, so the rule cannot drift from the
 // data; a test ties these files to what the engine itself commits for each step (`stepPaths`, cli/fold.mjs).
 //
-//   byOrigin  origin -> { type, path, version, extras } (`version`: the newest `provider.version` shipped). A step that says it comes from yadflow must name one of
-//             these, or the upgrade merge (E141), which matches yadflow's steps by origin, would have
+//   byOrigin  origin -> { type, path, version, extras } (`version`: the newest `provider.version`
+//             shipped). A step that says it comes from yadflow must name one of these, or the upgrade merge (E141), which matches yadflow's steps by origin, would have
 //             nothing to match it to.
 //   byKey     the key a review branch finds a file by (`artifactKey`) -> the origin that owns it. Once
 //             yadflow ships a name it stays reserved for that step, even in a file that deleted the step:
@@ -327,7 +327,7 @@ export function lifecycleProblems(raw) {
     // A wrong type is reported, never quietly read as empty: `skills: "yad-epic"` would otherwise lose
     // the step its skill without a word.
     for (const key of ['skills', 'behaviours', 'extraPaths', 'inputs']) {
-      if (s[key] !== undefined && !isStrings(s[key])) add('error', where, `"${key}" must be a list of names`);
+      if (s[key] !== undefined && !(isStrings(s[key]) && s[key].every(Boolean))) add('error', where, `"${key}" must be a list of names, none of them empty`);
     }
     for (const key of ['optional', 'retired']) {
       if (s[key] !== undefined && typeof s[key] !== 'boolean') add('error', where, `"${key}" must be true or false`);
@@ -377,6 +377,16 @@ export function lifecycleProblems(raw) {
     const origin = isYadflow && typeof s.provider.origin === 'string' ? s.provider.origin : null;
     const { byOrigin, byKey } = yadflowClaims();
     const artPath = isObj(n.artifact) && typeof n.artifact.path === 'string' && n.artifact.path ? n.artifact.path : null;
+    // A step from a newer yadflow — a `provider.version` this release never shipped for its origin, or an
+    // origin this release does not know at all — or with an artifact type this release does not know may
+    // have moved its files on purpose. Every file rule of this step (reserved names, the ledger, the
+    // behaviour's names, the files it shipped with) then reports it unusable here, never a broken file
+    // (the unknown-value rule).
+    const shippedVersion = origin !== null ? byOrigin.get(origin)?.version : undefined;
+    const newer = (origin !== null && shippedVersion === undefined)
+      || (shippedVersion !== undefined && Number.isInteger(s.provider.version) && s.provider.version > shippedVersion)
+      || (isObj(n.artifact) && !ARTIFACT_TYPES.includes(n.artifact.type));
+    const level = newer ? 'unusable' : 'error';
     const extras = isStrings(s.extraPaths) ? s.extraPaths : [];
     const isSet = n.artifact?.type === 'set';
     const members = isSet && isStrings(n.artifact.files) ? n.artifact.files : [];
@@ -392,27 +402,20 @@ export function lifecycleProblems(raw) {
       const bareOwn = claimed.replace(/\/$/, '').toLowerCase();
       if (ownFiles.has(bareOwn)) add('error', where, `"${claimed}" is listed twice among this step's files (letter case ignored)`);
       ownFiles.add(bareOwn);
+      if (claimed === artPath && n.artifact.type === 'file' && claimed.endsWith('/')) add('error', where, `"${claimed}" is a file, so it does not end in "/"`);
       const key = artifactKey(claimed);
       if (/-s\d+$/.test(key)) add('error', where, `"${claimed}" is named like a story (-S01), which the engine reads as the stories gate`);
       const reservedFor = byKey.get(key);
       const bare = claimed.replace(/\/$/, '').toLowerCase();
       if (reservedFor !== undefined && reservedFor !== origin) {
-        add('error', where, `"${claimed}" is a file of yadflow's "${reservedFor}" step (found as "${key}"); only that step may claim it`);
+        add(level, where, `"${claimed}" is a file of yadflow's "${reservedFor}" step (found as "${key}"); only that step may claim it`);
       } else if (reservedFor === undefined && (bare === '.sdlc' || bare.startsWith('.sdlc/'))) {
-        add('error', where, `"${claimed}" is in .sdlc/, which holds the ledger; a step's files live beside it`);
+        add(level, where, `"${claimed}" is in .sdlc/, which holds the ledger; a step's files live beside it`);
       }
       claimsList.push({ step: s.id, where, path: claimed, key, level: stepLevel, member, productSet });
     }
     if (n.artifact?.type === 'folder' && artPath) folders.push({ step: s.id, level: stepLevel, prefix: artPath.replace(/\/?$/, '/').toLowerCase() });
     allPaths.push(...[artPath, ...extras].filter((x) => typeof x === 'string').map((x) => ({ step: s.id, level: stepLevel, path: x })));
-
-    // A step from a newer yadflow (a `provider.version` this release never shipped for its origin) or with
-    // an artifact type this release does not know may have moved its files on purpose. Its file rules below
-    // then report it unusable here, never a broken file (the unknown-value rule).
-    const shippedVersion = origin !== null ? byOrigin.get(origin)?.version : undefined;
-    const newer = (shippedVersion !== undefined && Number.isInteger(s.provider.version) && s.provider.version > shippedVersion)
-      || (isObj(n.artifact) && !ARTIFACT_TYPES.includes(n.artifact.type));
-    const level = newer ? 'unusable' : 'error';
 
     // Behaviours.
     const at = stepWhere(def, n);

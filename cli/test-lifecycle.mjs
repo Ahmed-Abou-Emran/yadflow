@@ -278,6 +278,10 @@ const CASES = [
     d.steps.push({ id: 'b1', name: 'B1', phase: 'discover', kind: 'author', artifact: { type: 'set', path: 'b1/', files: ['x.md'] }, gate: { riskTags: [] } });
     d.steps.push({ id: 'b2', name: 'B2', phase: 'discover', kind: 'author', artifact: { type: 'set', path: 'b2/', files: ['X.md'] }, gate: { riskTags: [] } });
   }, /step b2: "X.md" is the same file as step b1's "x.md".*two steps cannot write one file/],
+  // Review round 6.
+  ['a file artifact ending in a slash', (d) => { step(d, 'analysis').artifact.path = 'analysis.md/'; }, /is a file, so it does not end in "\/"/],
+  ['an empty skill name', (d) => { step(d, 'epic').skills = ['']; }, /"skills" must be a list of names, none of them empty/],
+  ['an empty behaviour name', (d) => { step(d, 'epic').behaviours = ['work-item-source', '']; }, /"behaviours" must be a list of names, none of them empty/],
   ['retired step on a live route', (d) => { route(d, 'foundation').steps.push('discovery'); route(d, 'foundation').steps = ['discovery']; }, /step "discovery" is retired, so only a retired route may list it/],
   ['origin used twice', (d) => { step(d, 'tasks').provider.origin = 'spec'; }, /already has the origin "spec"/],
   ['a yadflow step loses its behaviour and its file name', (d) => { step(d, 'test-cases').behaviours = []; step(d, 'test-cases').artifact.path = 'qa.md'; }, /its artifact must stay "test-cases.md"/],
@@ -340,6 +344,23 @@ test('round 2: a newer yadflow step, an unknown Build "runs", a deleted retired 
   Object.assign(step(v, 'test-cases'), { artifact: { type: 'file', path: 'qa/test-cases.md' }, provider: { id: 'yadflow', version: 2, origin: 'test-cases' } });
   assert.deepEqual(messages(v), [], 'a newer yadflow moved its own file: unusable here, not an error');
   assert.ok(lifecycleProblems(v).some((p) => p.level === 'unusable' && p.where === 'step test-cases'));
+
+  // A newer default moved DESIGN.md from ui-design to architecture: both steps are unusable here, not errors.
+  const mv = fresh();
+  for (const id of ['ui-design', 'architecture']) step(mv, id).provider.version = 2;
+  step(mv, 'ui-design').extraPaths = ['.sdlc/design-links.json'];
+  step(mv, 'architecture').extraPaths.push('DESIGN.md');
+  assert.deepEqual(messages(mv), [], 'a file moved between two newer yadflow steps');
+  // A newer default split out a step this release does not know, holding the contract: unusable, not an error.
+  const sp = fresh();
+  step(sp, 'architecture').provider.version = 2;
+  step(sp, 'architecture').extraPaths = [];
+  step(sp, 'architecture').behaviours = [];
+  sp.steps.push({ id: 'contract', name: 'Contract', phase: 'design', kind: 'author', artifact: { type: 'file', path: 'contract.md' }, extraPaths: ['.sdlc/contract-lock.json'],
+    gate: { riskTags: ['contract'] }, behaviours: ['locks-contract'], provider: { id: 'yadflow', version: 2, origin: 'contract' } });
+  route(sp, 'classic').steps.splice(2, 0, 'contract');
+  assert.deepEqual(messages(sp), [], 'an unknown-origin yadflow step taking reserved files');
+  assert.ok(lifecycleProblems(sp).some((p) => p.level === 'unusable' && p.where === 'step contract'));
 
   const r = fresh();
   r.steps = r.steps.filter((s) => s.id !== 'discovery');
