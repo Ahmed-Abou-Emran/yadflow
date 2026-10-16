@@ -50,3 +50,14 @@ automatic clean-up (`maintenance.auto`, `receive.autogc`, `gc.auto`) for every g
 a push, and a test deleting its temporary repository at that moment fails with "directory not empty"
 (PR #297's macOS job). It lives here because `cli/fixtures/` is already kept out of the published package.
 `test/e2e/run.sh` sets the same variable.
+
+## `lifecycle-v4-catalogue.json` — the lifecycle lists before E134
+
+The five lists the engine read before E134 moved them into `cli/lifecycle/defaults/1.json`: `STEPS`,
+`LIFECYCLE_PROFILES`, `PHASES`, `PRODUCT_PHASES` and the Build order, plus `SENTINELS`. They were copied
+from the code on `main` before anything was edited.
+
+**Do not edit it.** `cli/test-lifecycle.mjs` compares the engine's lists, and what `1.json` expands to,
+with this file, key for key and in order. A view compared only with itself would prove nothing; this is
+the "before" side that makes the move provably change nothing. If a later default (`2.json`) changes a
+list on purpose, the engine's lists may move on, but `1.json` must still expand to exactly this.

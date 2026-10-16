@@ -42,26 +42,27 @@ document_output_language: English
 #
 # A phase is DERIVED from a step's id and is never written into `state.json` — there is nothing to
 # author here, nothing to keep in step, and no way for it to disagree with the step it describes.
-# `stepPhase` in cli/epic-state.mjs is the one definition; this block is the same table in the file
-# people read. A review gate takes the phase of the artifact it reviews, so `epic-review` is Discover.
+# The phase of each step is set in the lifecycle default (`cli/lifecycle/defaults/1.json`), which
+# `stepPhase` in cli/epic-state.mjs reads; this block is generated from it for people to read. A review gate takes the phase of the artifact it reviews, so `epic-review` is Discover.
 #
 # Release and Operate are NAMED and not built. No step, skill or gate exists for either yet.
 #
 # NOTE the word: "phase" here means one of these six. It does NOT mean the numbered development
 # phases of yadflow itself (docs/phase-N-build-plan.md), which is what "Phase 4a/4b" means elsewhere
 # in these files, nor a gate's internal merge phase.
-# The step CATALOGUE lives in code — `STEPS` in `cli/epic-state.mjs` (E4). It is the one place that
-# says what a step is: its phase, whether it authors or gates, what artifact it writes, which skill
-# runs it, and which step a gate reviews. The phase rows below mirror the `steps:` half of it and a
-# test holds the two together row for row; everything else about a step is read from the code, not
-# from here. `yad doctor` reports a project chain that disagrees with the catalogue and rewrites
-# nothing — for this whole major the FILE wins (rule 3), because the five authoring skills still
-# hand-write their `state.json` seed. E5 makes a profile seed the chain from the catalogue instead.
+# The step CATALOGUE is the lifecycle default that ships with yadflow, `cli/lifecycle/defaults/1.json`
+# (E134; the engine reads it as `STEPS` in `cli/epic-state.mjs`). It is the one place that says what a
+# step is: its phase, whether it authors or gates, what artifact it writes, which skill runs it, and
+# which step a gate reviews. The lines between the `generated` markers below are written from it by
+# `scripts/lifecycle-config.mjs`, and a test fails when they differ; everything else about a step is
+# read from the default, not from here. `yad doctor` reports a project chain that disagrees with the
+# catalogue and rewrites nothing — for this whole major the FILE wins (rule 3): a project may hold a step
+# from a newer yadflow, or a chain written by hand. `yad epic new` seeds a chain from its route (E5, E17).
 lifecycle:
-  parts: [Shape, Build, Run]
-  # Lifecycle PROFILES (E5) — the route an epic takes through the steps, defined in code as
-  # `LIFECYCLE_PROFILES` (`cli/epic-state.mjs`). Three were routes the skills already seeded by hand:
-  # `classic` (the 10-step chain, `epic` first — yad-epic / yad-stub / yad-change), `analysis-first`
+  # Lifecycle PROFILES (E5) — the route an epic takes through the steps, defined as the `routes` of the
+  # lifecycle default and read by the engine as `LIFECYCLE_PROFILES` (`cli/epic-state.mjs`). The
+  # default's `lane` route (the Build order) is not a profile, so it is not in `profiles`. Three were
+  # routes the skills already seeded by hand: `classic` (the 10-step chain, `epic` first — yad-epic / yad-stub / yad-change), `analysis-first`
   # (the 12-step chain, `analysis` before `epic` — yad-analysis) and `discovery` (the product
   # front-zero — yad-discovery, now the OLD spelling of the Product level). `foundation` is that level
   # as E75 writes it — `yad foundation new`. Two are the short lanes E40 added, which nobody seeded before:
@@ -72,9 +73,13 @@ lifecycle:
   # field `yad migrate` fills it in by matching the chain. The chain stays the truth — `yad doctor`
   # compares the two. NOT the `product.json` `profile`, which is the unrelated setup record
   # { codebase, repo_layout, team_size }.
+  # The PRODUCT level's phase (E75), `product_phases` — a ladder of its own, run once per product before
+  # any epic, and part of no Part. `discovery` is listed because it is the old spelling of the same level.
+  # Release and Operate are planned: E32 builds Release, E33 builds Operate.
+  # `sentinels` are `currentStep` markers that are NOT steps: they never appear in `steps[]` and have no phase.
+  # >>> generated: lifecycle — from cli/lifecycle/defaults/1.json by scripts/lifecycle-config.mjs; do not edit by hand
+  parts: [Shape, Build, Run]
   profiles: [classic, analysis-first, chore, spike, discovery, foundation]
-  # The PRODUCT level's phase (E75) — a ladder of its own, run once per product before any epic, and
-  # part of no Part. `discovery` is listed because it is the old spelling of the same level.
   product_phases:
     - { id: foundation, name: Foundation, level: product, built: true, steps: [foundation, discovery] }
   phases:
@@ -82,10 +87,10 @@ lifecycle:
     - { id: design,   name: Design,   part: Shape, built: true,  steps: [architecture, ui-design] }
     - { id: plan,     name: Plan,     part: Shape, built: true,  steps: [stories, test-cases] }
     - { id: build,    name: Build,    part: Build, built: true,  steps: [spec, tasks, implement, checks, engineer-review] }
-    - { id: release,  name: Release,  part: Run,   built: false, steps: [] }   # E32 builds it
-    - { id: operate,  name: Operate,  part: Run,   built: false, steps: [] }   # E33 builds it
-  # `currentStep` markers that are NOT steps: they never appear in `steps[]` and have no phase.
+    - { id: release,  name: Release,  part: Run,   built: false, steps: [] }
+    - { id: operate,  name: Operate,  part: Run,   built: false, steps: [] }
   sentinels: [ready-for-build, backfill-pending, backfill-done, discovery-done, foundation-done]
+  # <<< generated: lifecycle
 
 defaults:
   # The two dials: who does the work, and who moves it forward. Renamed in shape 4; BOTH names are
@@ -350,7 +355,10 @@ product:
 # stops the file being updated — and nothing reads `kill_switch` now. `yad doctor` fails on one left `true`.
 automation:
   # The only steps that MAY be automated, safest-end first (phase-4-build-plan.md build order).
+  # The Build lane's author steps — every lane step but the merge gate, `engineer-review`.
+  # >>> generated: back_steps — from cli/lifecycle/defaults/1.json by scripts/lifecycle-config.mjs; do not edit by hand
   back_steps: [spec, tasks, implement, checks]
+  # <<< generated: back_steps
   default: human_approve            # = `advance: human`. Every lane step starts manual; `yad dial` turns one to auto
 
 # Phase 6 (post-lock change management) — FEATURE THREADS. After the contract locks and code ships, a

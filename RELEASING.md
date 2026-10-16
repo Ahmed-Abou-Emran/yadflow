@@ -29,7 +29,7 @@ to `main` starts it.
 
 The workflow has two jobs, and the second cannot start without the first:
 
-**1. `release check`** — `scripts/release-check.sh`. Seven steps, each one a way an upgrade could hurt
+**1. `release check`** — `scripts/release-check.sh`. Nine steps, each one a way an upgrade could hurt
 somebody:
 
 | # | Step | What it protects against |
@@ -41,6 +41,8 @@ somebody:
 | 5 | `yad doctor` on the project that install just created | a release whose own health check fails on its own output |
 | 6 | the migration guide, if the file shape moved | shipping a shape change with no page explaining it (rule 7) |
 | 7 | the gate-sync fragments ship the major this release publishes (`scripts/pin-major-check.sh`) | a CI fragment that `yad update` wires into every verified Product, still trusting the old major — it would reject every version stamp the new release writes and run the old engine against the new file shape, in CI, without a word |
+| 8 | every toolbox tool and recommended skill was vetted recently (`scripts/vet-check.mjs`) | shipping a tool whose licence and official source nobody has read in the last 180 days (E88) |
+| 9 | the lifecycle defaults earlier releases shipped are unchanged (`scripts/lifecycle-defaults-check.sh`) | a team's lifecycle file copied from a default that has since changed under it — the three-way upgrade (E141) would then merge against the wrong starting point (E134) |
 
 It checks out with `persist-credentials: false`: this job only reads, and the token that can bypass
 branch protection has no business being in scope while the test suite runs. Run it yourself any time

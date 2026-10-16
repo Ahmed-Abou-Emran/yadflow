@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/abdelrahmannasr/yadflow/cli/lifecycle/lifecycle.schema.json",
+  "title": "yadflow lifecycle definition, version 1",
+  "description": "The phases, steps and routes of a yadflow lifecycle. For editors only: yadflow checks a file with its own validator (lifecycleProblems in cli/lifecycle.mjs), which also applies rules a schema cannot express — the behaviour rules; a Build phase runs in a loop and a loop names what it loops \"over\"; a \"set\" artifact lists its \"files\"; a step whose id yadflow ships keeps \"provider\": { \"id\": \"yadflow\", \"origin\": <its id> } and the files it shipped with; no two steps claim files a review branch finds by one name; a Build-loop step has no gate and is never optional. Unknown keys are allowed so a file from a newer yadflow still loads.",
+  "type": "object",
+  "required": ["schemaVersion", "phases", "steps", "routes"],
+  "properties": {
+    "$schema": { "type": "string", "description": "Optional: binds this schema in an editor." },
+    "schemaVersion": { "type": "integer", "description": "The project's file shape when the file was written." },
+    "extends": { "type": "string", "pattern": "^yadflow-default@[1-9][0-9]*$", "description": "The shipped default this file was copied from." },
+    "phases": { "type": "array", "items": { "$ref": "#/$defs/phase" } },
+    "steps": { "type": "array", "items": { "$ref": "#/$defs/step" } },
+    "routes": { "type": "array", "items": { "$ref": "#/$defs/route" } },
+    "plugins": { "type": "array", "description": "Reserved for plugins (E142)." }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "phase": {
+      "type": "object",
+      "required": ["id", "name", "level"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "part": { "enum": ["Shape", "Build", "Run"], "description": "Feature phases only; a product phase belongs to no part." },
+        "level": { "enum": ["feature", "product"] },
+        "runs": { "enum": ["once", "loop"], "default": "once" },
+        "over": { "type": "array", "items": { "type": "string" }, "description": "For a loop: what it loops over, such as story and repo." },
+        "built": { "type": "boolean", "default": true }
+      }
+    },
+    "artifact": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["type", "path"],
+          "properties": {
+            "type": { "enum": ["file", "folder", "set"] },
+            "path": { "type": "string", "minLength": 1, "description": "Relative to the epic folder. For a \"set\", the path is the set's name, written like a folder (\"foundation/\"); it is the key its review branch uses, not a folder on disk: the set's files sit directly in the set's epic folder." },
+            "unit": { "type": "string", "description": "A folder: the word for one item in it, such as story." },
+            "files": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1, "pattern": "^(?!\\.\\.?$)[^/\\\\]+$" }, "description": "A set: every file in it, by name; the files sit directly in the set's epic folder." },
+            "optional": { "type": "array", "items": { "type": "string" }, "description": "A set: the files it may leave out." },
+            "in": { "enum": ["product", "repo"], "description": "Reserved." }
+          }
+        }
+      ]
+    },
+    "gate": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "properties": {
+            "riskTags": { "type": "array", "items": { "type": "string" } },
+            "skills": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      ]
+    },
+    "provider": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "integer" },
+        "origin": { "type": "string", "description": "The step's original id, so a rename is not a removal." }
+      }
+    },
+    "step": {
+      "type": "object",
+      "required": ["id", "name", "phase", "kind"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "phase": { "type": "string" },
+        "kind": { "enum": ["author", "review"] },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "optional": { "type": "boolean", "default": false },
+        "gate": { "$ref": "#/$defs/gate" },
+        "skills": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "behaviours": {
+          "type": "array",
+          "items": { "enum": ["work-item-source", "locks-contract", "ends-shape", "parallel-with-build", "product-level", "spec-source", "code-change", "ci-gates", "merge-gate"] }
+        },
+        "extraPaths": { "type": "array", "items": { "type": "string", "minLength": 1, "pattern": "[^/]$" } },
+        "inputs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "retired": { "type": "boolean", "default": false },
+        "replaces": { "type": "string" },
+        "provider": { "$ref": "#/$defs/provider" }
+      }
+    },
+    "route": {
+      "type": "object",
+      "required": ["id", "name", "steps"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "required": ["id"],
+                "properties": { "id": { "type": "string" }, "optional": { "type": "boolean" } }
+              }
+            ]
+          }
+        },
+        "bindings": { "type": "object" },
+        "retired": { "type": "boolean", "default": false },
+        "provider": { "$ref": "#/$defs/provider" }
+      }
+    }
+  }
+}

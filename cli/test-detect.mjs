@@ -610,11 +610,14 @@ test('E88: scripts/vet-check.mjs passes on a vetted list and names each stale to
   assert.equal(early.status, 1);
   assert.match(early.stderr, /which is after today/);
   assert.doesNotMatch(early.stderr, /re-vet each one/, 'a future date is a typo to fix, not a licence to re-read');
-  // The release check runs it, as step 8 of 8.
+  // The release check runs it, as step 8 of 9.
   const rc = fs.readFileSync(path.join(ROOT, 'scripts/release-check.sh'), 'utf8');
-  assert.match(rc, /say "8\/8 {2}every toolbox tool and recommended skill was vetted recently"/);
+  assert.match(rc, /say "8\/9 {2}every toolbox tool and recommended skill was vetted recently"/);
   assert.match(rc, /^node "\$ROOT\/scripts\/vet-check\.mjs" \|\| die/m);
-  assert.equal((rc.match(/say "\d\/7/g) || []).length, 0, 'a step still counts to 7');
+  // And step 9 (E134): the lifecycle defaults earlier releases shipped are unchanged.
+  assert.match(rc, /say "9\/9 {2}the lifecycle defaults earlier releases shipped are unchanged"/);
+  assert.match(rc, /^bash "\$ROOT\/scripts\/lifecycle-defaults-check\.sh"$/m);
+  assert.equal((rc.match(/say "\d\/[78] /g) || []).length, 0, 'a step still counts to 7 or 8');
 });
 
 test('E88: Repomix runs at its vetted version everywhere yad names it — never @latest', () => {

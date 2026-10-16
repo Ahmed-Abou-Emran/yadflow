@@ -42,7 +42,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history + tags: the shape-guide check compares this tree's SCHEMA_VERSION against the
-          # one in the last release tag, and cannot see tags in a shallow clone.
+          # one in the last release tag, and the lifecycle-defaults check (step 9) compares each shipped
+          # lifecycle default with every release tag. Neither can see tags in a shallow clone.
           fetch-depth: 0
           # No release PAT here. This job only reads, and the token that can bypass branch protection
           # has no business being in scope while arbitrary test code runs.
@@ -58,7 +59,8 @@ jobs:
 
       # Tests, coverage, the golden compatibility test, `yad migrate --preview` on a real frozen v3
       # project, a fresh install of the packed tarball, `yad doctor` on the project that install
-      # creates, and the migration guide when the file shape moved.
+      # creates, the migration guide when the file shape moved, the gate-sync fragments' major, the
+      # toolbox vetting age, and the lifecycle defaults earlier releases shipped (unchanged).
       - name: Release check
         run: bash scripts/release-check.sh
 
