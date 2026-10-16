@@ -23,11 +23,12 @@ if (process.env.NODE_TEST_CONTEXT) {
 }
 
 const {
-  ARTIFACT_TYPES, BEHAVIOURS, DEFAULT_LIFECYCLE, DEFAULT_VERSION, FIXED_ARTIFACTS, KNOWN_KEYS, PARTS, PHASE_LEVELS,
+  ARTIFACT_TYPES, BEHAVIOURS, DEFAULT_LIFECYCLE, DEFAULT_VERSION, KNOWN_KEYS, PARTS, PHASE_LEVELS,
   PHASE_RUNS, SENTINELS, STEP_KINDS, applyConfigRegions, configRegions, expandRoutes, expandSteps, featurePhases,
   artifactKey, laneAuthorSteps, laneOrder, lifecycleProblems, loadDefault, normalizeLifecycle, productPhases, routeKind,
-  shippedDefaults,
+  shippedDefaults, yadflowClaims,
 } = await import('./lifecycle.mjs');
+const { stepPaths } = await import('./fold.mjs');
 const ES = await import('./epic-state.mjs');
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -210,6 +211,42 @@ const CASES = [
   ['runs not a word', (d) => { d.phases[1].runs = 5; }, /"runs" must be a word/],
   ['artifact type not a word', (d) => { step(d, 'analysis').artifact.type = 5; }, /"artifact" must be null or/],
   ['Build phase that runs once', (d) => { d.phases[4].runs = 'once'; }, /a Build phase runs in a loop/],
+  // Review round 3: a yadflow name stays reserved even when its step is deleted, and the engine's extra files go with it.
+  ['architecture deleted, its file taken', (d) => {
+    d.steps = d.steps.filter((x) => x.id !== 'architecture');
+    for (const r of d.routes) r.steps = r.steps.filter((x) => x !== 'architecture');
+    d.steps.push({ id: 'arch2', name: 'Arch', phase: 'design', kind: 'author', artifact: { type: 'file', path: 'architecture.md' }, gate: { riskTags: [] } });
+  }, /"architecture.md" is a file of yadflow's "architecture" step/],
+  ['discovery deleted, its key taken', (d) => {
+    d.steps = d.steps.filter((x) => x.id !== 'discovery');
+    d.routes = d.routes.filter((x) => x.id !== 'discovery');
+    d.steps.push({ id: 'notes', name: 'Notes', phase: 'discover', kind: 'author', artifact: { type: 'file', path: 'notes/discovery.md' }, gate: { riskTags: [] } });
+    route(d, 'classic').steps.push('notes');
+  }, /a file of yadflow's "discovery" step/],
+  ['architecture drops its contract files', (d) => { step(d, 'architecture').extraPaths = []; }, /must keep "contract.md"/],
+  ['epic made a folder', (d) => { step(d, 'epic').artifact.type = 'folder'; }, /must stay "epic.md" \(a file\)/],
+  ['a file inside the stories folder', (d) => {
+    d.steps.push({ id: 'extra', name: 'Extra', phase: 'plan', kind: 'author', artifact: { type: 'file', path: 'stories/extra.md' }, gate: { riskTags: [] } });
+  }, /"stories\/extra.md" is inside step stories's folder/],
+  ['a team folder holding another step\'s file', (d) => {
+    step(d, 'analysis').artifact.path = 'research/analysis.md';
+    d.steps.push({ id: 'research', name: 'Research', phase: 'discover', kind: 'author', artifact: { type: 'folder', path: 'research/' }, gate: { riskTags: [] } });
+  }, /"research\/analysis.md" is inside step research's folder/],
+  ['a gate on a Build-loop step', (d) => { step(d, 'spec').gate = { riskTags: [] }; }, /a Build-loop step has no "gate"/],
+  ['an optional Build-loop step', (d) => { step(d, 'checks').optional = true; }, /a Build-loop step is never optional/],
+  ['an optional merge gate on the lane', (d) => { route(d, 'lane').steps[4] = { id: 'engineer-review', optional: true }; }, /its steps carry no "optional"/],
+  ['Build phase without runs', (d) => { delete d.phases[4].runs; delete d.phases[4].over; }, /phase build: a Build phase runs in a loop/],
+  ['a path that leaves the epic folder', (d) => { step(d, 'analysis').artifact.path = '../EP-other/x.md'; }, /must be a path inside the epic folder/],
+  ['an absolute extra path', (d) => { step(d, 'analysis').extraPaths = ['/etc/passwd']; }, /must be a path inside the epic folder/],
+  ['a ledger file as an extra path', (d) => { step(d, 'analysis').extraPaths = ['.sdlc/state.json']; }, /is in .sdlc\/, which holds the ledger/],
+  ['phase id shape', (d) => { d.phases[1].id = 'My Phase'; }, /a phase id is lower-case letters/],
+  ['route id shape', (d) => { route(d, 'chore').id = 'Chore Route'; }, /a route id is lower-case letters/],
+  ['gate skills not a list', (d) => { step(d, 'epic').gate.skills = 'x'; }, /"gate" must be null or/],
+  ['artifact in unknown', (d) => { step(d, 'analysis').artifact.in = 'cloud'; }, /"in" is "product" or "repo"/],
+  ['artifact unit not a word', (d) => { step(d, 'stories').artifact.unit = 3; }, /"unit" is one word/],
+  ['a review step with an artifact', (d) => {
+    d.steps.push({ id: 'signoff', name: 'Signoff', phase: 'plan', kind: 'review', artifact: { type: 'file', path: 'signoff.md' }, gate: null });
+  }, /a review step .* writes no artifact of its own/],
   ['retired step on a live route', (d) => { route(d, 'foundation').steps.push('discovery'); route(d, 'foundation').steps = ['discovery']; }, /step "discovery" is retired, so only a retired route may list it/],
   ['origin used twice', (d) => { step(d, 'tasks').provider.origin = 'spec'; }, /already has the origin "spec"/],
   ['a yadflow step loses its behaviour and its file name', (d) => { step(d, 'test-cases').behaviours = []; step(d, 'test-cases').artifact.path = 'qa.md'; }, /its artifact must stay "test-cases.md"/],
@@ -267,6 +304,11 @@ test('round 2: a newer yadflow step, an unknown Build "runs", a deleted retired 
   b.phases.find((p) => p.id === 'build').runs = 'pipeline';
   assert.deepEqual(messages(b), [], 'the lane is still the lane');
   assert.equal(lifecycleProblems(b).filter((p) => p.level === 'unusable').length, 6, 'the phase and its five steps');
+
+  const v = fresh();
+  Object.assign(step(v, 'test-cases'), { artifact: { type: 'file', path: 'qa/test-cases.md' }, provider: { id: 'yadflow', version: 2, origin: 'test-cases' } });
+  assert.deepEqual(messages(v), [], 'a newer yadflow moved its own file: unusable here, not an error');
+  assert.ok(lifecycleProblems(v).some((p) => p.level === 'unusable' && p.where === 'step test-cases'));
 
   const r = fresh();
   r.steps = r.steps.filter((s) => s.id !== 'discovery');
@@ -326,10 +368,33 @@ test('a Run phase that loops is not the Build lane, and its route is neither a l
   assert.deepEqual(laneOrder(n), FROZEN.BUILD_STEP_ORDER, 'the Build order still comes from the Build lane');
 });
 
-test('the registry fixes the names the CI checks read, keyed by the original id', () => {
-  for (const [origin, name] of Object.entries(FIXED_ARTIFACTS)) {
-    assert.equal(DEFAULT_LIFECYCLE.steps.find((s) => s.provider?.origin === origin).artifact.path, name, origin);
+test('yadflow\'s claimed files are exactly what the engine commits for each step (stepPaths)', () => {
+  // The claims rule reads the shipped defaults; this ties those defaults to the engine, per artifact type,
+  // so a later default cannot list files the engine does not commit, or leave out one it does.
+  const rel = (p) => p.replace(/^epics\/EP-x\//, '');
+  let checked = 0;
+  for (const st of DEFAULT_LIFECYCLE.steps.filter((x) => x.artifact)) {
+    const engine = stepPaths('EP-x', st.id).map(rel);
+    const a = st.artifact;
+    if (a.type === 'file') assert.deepEqual([...engine].sort(), [a.path, ...st.extraPaths].sort(), st.id);
+    else if (a.type === 'folder') {
+      assert.equal(artifactKey(engine[0]), artifactKey(a.path), st.id);
+      assert.deepEqual(engine.slice(1), st.extraPaths, st.id);
+    } else assert.deepEqual(engine, [...a.files, ...st.extraPaths], st.id);
+    // The key a review branch uses is the engine's own `artifactBase`, without letter case.
+    for (const f of [a.path, ...st.extraPaths]) {
+      if (!f.startsWith('.sdlc/')) assert.equal(artifactKey(f), ES.artifactBase(f).toLowerCase(), f);
+    }
+    checked += 1;
   }
+  assert.equal(checked, 8, 'every Shape and Foundation step was compared, sets and folders included');
+  // Every yadflow step with a file reserves it.
+  const { byOrigin, byKey } = yadflowClaims();
+  for (const st of DEFAULT_LIFECYCLE.steps) assert.deepEqual(byOrigin.get(st.provider.origin).extras, st.extraPaths);
+  assert.equal(byKey.get('contract'), 'architecture');
+});
+
+test('the registry keeps yadflow\'s file names, by the original id, after a rename', () => {
   // A renamed step keeps its origin, so the rule still finds it.
   const d = fresh();
   Object.assign(step(d, 'epic'), { id: 'brief', name: 'Brief' });
@@ -337,6 +402,21 @@ test('the registry fixes the names the CI checks read, keyed by the original id'
   assert.deepEqual(messages(d), [], 'a rename alone is allowed');
   step(d, 'brief').artifact.path = 'brief.md';
   assert.ok(messages(d).some((p) => /must stay "epic.md"/.test(p.message)));
+});
+
+test('round 3: the edits the roadmap allows still pass under the claims and lane rules', () => {
+  const d = fresh();
+  step(d, 'architecture').skills = ['pool-architect', 'yad-architecture'];
+  step(d, 'epic').optional = true;
+  step(d, 'test-cases').phase = 'design';
+  step(d, 'test-cases').gate = null;
+  d.steps.push({ id: 'lint', name: 'Lint', phase: 'build', kind: 'author', artifact: null, gate: null });
+  route(d, 'lane').steps.splice(3, 0, 'lint');
+  d.steps.push({ id: 'threat-model', name: 'Threat model', phase: 'design', kind: 'author', artifact: { type: 'file', path: 'threat-model.md' }, gate: { riskTags: ['auth'] }, provider: { id: 'acme', version: 1, origin: 'threat-model' } });
+  d.steps.push({ id: 'research', name: 'Research', phase: 'discover', kind: 'author', artifact: { type: 'folder', path: 'research/' }, gate: { riskTags: [] } });
+  route(d, 'classic').steps.push('threat-model', 'research');
+  assert.deepEqual(messages(d), []);
+  assert.deepEqual(lifecycleProblems(d).filter((p) => p.level === 'warn'), []);
 });
 
 // ---- the editor schema ---------------------------------------------------------------------------------
@@ -355,6 +435,10 @@ test('the editor schema agrees with the code on every list of allowed values and
   assert.deepEqual(Object.keys($.phase.properties), KNOWN_KEYS.phase);
   assert.deepEqual(Object.keys($.step.properties), KNOWN_KEYS.step);
   assert.deepEqual(Object.keys($.route.properties), KNOWN_KEYS.route);
+  assert.deepEqual(Object.keys($.gate.oneOf.find((x) => x.type === 'object').properties), KNOWN_KEYS.gate);
+  assert.deepEqual(Object.keys(artifactObj.properties), KNOWN_KEYS.artifact);
+  assert.deepEqual(Object.keys($.provider.properties), KNOWN_KEYS.provider);
+  assert.deepEqual(Object.keys($.route.properties.steps.items.oneOf.find((x) => x.type === 'object').properties), KNOWN_KEYS.routeStep);
   // Every key the schema requires is one whose absence the validator reports as an error.
   for (const [where, required] of [['file', schema.required], ['phase', $.phase.required], ['step', $.step.required], ['route', $.route.required]]) {
     for (const key of required) {

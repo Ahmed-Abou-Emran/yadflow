@@ -40,16 +40,40 @@ export function loadDefault(n = DEFAULT_VERSION) {
   return JSON.parse(fs.readFileSync(new URL(`${n}.json`, DEFAULTS_DIR), 'utf8'));
 }
 
-// Every step id yadflow has ever shipped (the `provider.origin` of each step in each shipped default). A
-// step that says it comes from yadflow must name one of these, or the upgrade merge (E141), which matches
-// yadflow's steps by origin, would have nothing to match it to. Read when the validator first needs it,
-// not when this module loads, because every `yad` command imports this module and only the validator
-// needs the older defaults.
-let yadflowOrigins = null;
-export function yadflowOriginSet() {
-  yadflowOrigins ??= new Set(shippedDefaults().flatMap((n) => loadDefault(n).steps
-    .map((s) => s?.provider?.id === 'yadflow' ? s.provider.origin : null).filter((o) => typeof o === 'string')));
-  return yadflowOrigins;
+// YADFLOW'S CLAIMS: every step yadflow has ever shipped, by its original id (`provider.origin`), with the
+// files it claims — its artifact (path and type) and the files it commits beside it (`extraPaths`, such as
+// the contract beside the architecture). Read from the shipped defaults, so the rule cannot drift from the
+// data; a test ties these files to what the engine itself commits for each step (`stepPaths`, cli/fold.mjs).
+//
+//   byOrigin  origin -> { type, path, version, extras } (`version`: the newest `provider.version` shipped). A step that says it comes from yadflow must name one of
+//             these, or the upgrade merge (E141), which matches yadflow's steps by origin, would have
+//             nothing to match it to.
+//   byKey     the key a review branch finds a file by (`artifactKey`) -> the origin that owns it. Once
+//             yadflow ships a name it stays reserved for that step, even in a file that deleted the step:
+//             the engine treats several of these names specially by name (`architecture` is hashed with
+//             the contract lock, `discovery` is read back as the discovery set), so another step taking
+//             one would be read the wrong way.
+//
+// Read when the validator first needs it, not when this module loads: every `yad` command imports this
+// module, and only the validator needs the older defaults.
+let claims = null;
+export function yadflowClaims() {
+  if (claims) return claims;
+  const byOrigin = new Map();
+  const byKey = new Map();
+  for (const n of shippedDefaults()) {
+    for (const st of arr(loadDefault(n).steps)) {
+      if (!isObj(st) || st.provider?.id !== 'yadflow' || typeof st.provider.origin !== 'string') continue;
+      const o = st.provider.origin;
+      const art = isObj(st.artifact) && typeof st.artifact.path === 'string' ? st.artifact : null;
+      const extras = arr(st.extraPaths).filter((x) => typeof x === 'string');
+      const version = Math.max(byOrigin.get(o)?.version ?? 0, Number.isInteger(st.provider.version) ? st.provider.version : 0);
+      byOrigin.set(o, { type: art?.type ?? null, path: art?.path ?? null, version, extras: [...new Set([...(byOrigin.get(o)?.extras ?? []), ...extras])] });
+      for (const f of [art?.path, ...extras]) if (f) byKey.set(artifactKey(f), o);
+    }
+  }
+  claims = { byOrigin, byKey };
+  return claims;
 }
 
 // `currentStep` markers that are NOT steps: they never appear in `steps[]`, and no phase claims them.
@@ -99,20 +123,12 @@ export const BEHAVIOURS = {
   'merge-gate': { where: 'lane', keepGate: false, review: true, route: [1, 1] },
 };
 
-// The second half of the same rule, for yadflow's own steps: a step yadflow ships keeps its artifact name
-// even when a team takes its behaviour away. Until E136 the engine finds these files through step id
-// literals (`'epic'`, `base === 'architecture'` in cli/epic-state.mjs), not through behaviours or
-// `provider`. `provider.origin` is how the validator still recognises a yadflow step a team renamed, and a
-// step whose id is one yadflow ships must say so (`provider: { id: "yadflow", origin: <its id> }`), so
-// deleting the record cannot free its file name.
-export const FIXED_ARTIFACTS = {
-  epic: 'epic.md',
-  architecture: 'architecture.md',
-  stories: 'stories/',
-  'test-cases': 'test-cases.md',
-  foundation: 'foundation/',
-  discovery: 'discovery/',
-};
+// The second half of the same rule is yadflow's claims (`yadflowClaims`, above): a step yadflow ships keeps
+// the files it shipped with even when a team takes its behaviour away. Until E136 the engine finds these
+// files through step id literals (`'epic'`, `base === 'architecture'` in cli/epic-state.mjs), not through
+// behaviours or `provider`. `provider.origin` is how the validator still recognises a yadflow step a team
+// renamed, and a step whose id is one yadflow ships must say so (`provider: { id: "yadflow", origin: <its
+// id> }`), so deleting the record cannot free its files.
 
 // The keys this release knows at each level. Anything else is kept as it is and reported as a warning,
 // so a file from a newer yadflow still loads.
@@ -122,6 +138,10 @@ export const KNOWN_KEYS = {
   step: ['id', 'name', 'description', 'phase', 'kind', 'artifact', 'optional', 'gate', 'skills', 'behaviours',
     'extraPaths', 'inputs', 'retired', 'replaces', 'provider'],
   route: ['id', 'name', 'description', 'steps', 'bindings', 'retired', 'provider'],
+  gate: ['riskTags', 'skills'],
+  artifact: ['type', 'path', 'unit', 'files', 'optional', 'in'],
+  provider: ['id', 'version', 'origin'],
+  routeStep: ['id', 'optional'],
 };
 
 // The suffix the engine gives a gate it derives from an author step. It stays in code (rule 1 of the
@@ -133,6 +153,14 @@ const arr = (x) => (Array.isArray(x) ? x : []);
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const own = (o, k) => typeof k === 'string' && Object.hasOwn(o, k);
 const isStrings = (x) => Array.isArray(x) && x.every((v) => typeof v === 'string');
+
+// A path inside the epic folder, as the engine joins it: no `..`, no leading `/` or drive letter, no
+// backslash, no empty or `.` part. A folder may end in `/`.
+const ID_RE = /^[a-z][a-z0-9-]*$/;
+export function cleanPath(p) {
+  if (typeof p !== 'string' || !p || p.includes('\\') || p.startsWith('/') || /^[a-z]:/i.test(p)) return false;
+  return p.replace(/\/$/, '').split('/').every((part) => part && part !== '.' && part !== '..');
+}
 
 // The key a review branch is found by: `review/EP-<slug>/<base>`. The same rule as `artifactBase` in
 // cli/epic-state.mjs (which this module cannot import: that file imports this one), compared without
@@ -233,9 +261,16 @@ export function lifecycleProblems(raw) {
     return out;
   }
   const def = normalizeLifecycle(raw);
+  // An unknown key is kept and warned about, at every level — a nested object (`gate`, `artifact`,
+  // `provider`, a route's step entry) included, so a field a newer yadflow adds is never silently ignored.
+  const NESTED = { gate: ' in "gate"', artifact: ' in "artifact"', provider: ' in "provider"', routeStep: ' in a route step' };
+  const unknownKeys = (obj, level, where) => {
+    if (!isObj(obj)) return;
+    for (const k of Object.keys(obj)) if (!KNOWN_KEYS[level].includes(k)) add('warn', where, `unknown key "${k}"${NESTED[level] ?? ''} is kept and not read`);
+  };
 
   // The file.
-  for (const k of Object.keys(raw)) if (!KNOWN_KEYS.file.includes(k)) add('warn', 'file', `unknown key "${k}" is kept and not read`);
+  unknownKeys(raw, 'file', 'file');
   if (!Number.isInteger(raw.schemaVersion)) add('error', 'file', '"schemaVersion" must be a whole number (the project\'s file shape)');
   if (raw.extends !== undefined && !(typeof raw.extends === 'string' && /^yadflow-default@[1-9]\d*$/.test(raw.extends))) {
     add('error', 'file', '"extends" must look like "yadflow-default@<n>", naming the shipped default the file was copied from');
@@ -250,7 +285,8 @@ export function lifecycleProblems(raw) {
   for (const [i, p] of arr(raw.phases).entries()) {
     const where = `phase ${p?.id ?? `#${i + 1}`}`;
     if (!isObj(p) || typeof p.id !== 'string' || !p.id) { add('error', where, 'a phase needs an "id"'); continue; }
-    for (const k of Object.keys(p)) if (!KNOWN_KEYS.phase.includes(k)) add('warn', where, `unknown key "${k}" is kept and not read`);
+    unknownKeys(p, 'phase', where);
+    if (!ID_RE.test(p.id)) add('error', where, 'a phase id is lower-case letters, digits and dashes, starting with a letter');
     if (typeof p.name !== 'string' || !p.name) add('error', where, 'a phase needs a "name"');
     if (phaseIds.has(p.id)) add('error', where, 'two phases share this id');
     phaseIds.add(p.id);
@@ -260,7 +296,7 @@ export function lifecycleProblems(raw) {
     if (p.description !== undefined && typeof p.description !== 'string') add('error', where, '"description" must be text');
     if (p.runs !== undefined && typeof p.runs !== 'string') add('error', where, '"runs" must be a word: once or loop');
     else if (p.runs !== undefined && !PHASE_RUNS.includes(p.runs)) add('unusable', where, `"runs" is "${p.runs}", which this yadflow does not know; its steps cannot be used for new epics`);
-    if (p.part === 'Build' && p.runs === 'once') add('error', where, 'a Build phase runs in a loop (over each story and repo), so its "runs" is "loop"');
+    if (p.part === 'Build' && def.phases[i].runs === 'once') add('error', where, 'a Build phase runs in a loop (over each story and repo), so its "runs" is "loop"');
     if (p.over !== undefined && !isStrings(p.over)) add('error', where, '"over" must be a list of words');
     if (p.runs === 'loop' && arr(p.over).length === 0) add('error', where, 'a loop phase needs "over" (what it loops over, such as "story" and "repo")');
     if (p.built !== undefined && typeof p.built !== 'boolean') add('error', where, '"built" must be true or false');
@@ -271,12 +307,17 @@ export function lifecycleProblems(raw) {
   const stepById = new Map();
   const artifactOwner = new Map();
   const origins = new Map();
+  const folders = [];
+  const allPaths = [];
   for (const [i, s] of arr(raw.steps).entries()) {
     const where = `step ${s?.id ?? `#${i + 1}`}`;
     if (!isObj(s) || typeof s.id !== 'string') { add('error', where, 'a step needs an "id"'); continue; }
     const n = def.steps[i];
-    for (const k of Object.keys(s)) if (!KNOWN_KEYS.step.includes(k)) add('warn', where, `unknown key "${k}" is kept and not read`);
-    if (!/^[a-z][a-z0-9-]*$/.test(s.id)) add('error', where, 'a step id is lower-case letters, digits and dashes, starting with a letter');
+    unknownKeys(s, 'step', where);
+    unknownKeys(s.gate, 'gate', where);
+    unknownKeys(s.artifact, 'artifact', where);
+    unknownKeys(s.provider, 'provider', where);
+    if (!ID_RE.test(s.id)) add('error', where, 'a step id is lower-case letters, digits and dashes, starting with a letter');
     if (/-s\d+$/.test(s.id)) add('error', where, 'a step id must not end like a story id (-s01)');
     if (SENTINELS.includes(s.id)) add('error', where, `"${s.id}" is a word the engine uses for an epic's state, not a step`);
     if (typeof s.name !== 'string' || !s.name) add('error', where, 'a step needs a "name"');
@@ -303,8 +344,10 @@ export function lifecycleProblems(raw) {
       add('error', where, `an author step id must not end in "${GATE_SUFFIX}": that ending belongs to the gate the engine adds`);
     }
     if (s.kind === 'review' && n.gate) add('error', where, 'a review step is a gate on its own, so its "gate" must be null');
-    if (s.gate !== undefined && s.gate !== null && (!isObj(s.gate) || (s.gate.riskTags !== undefined && !isStrings(s.gate.riskTags)))) {
-      add('error', where, '"gate" must be null or { "riskTags": [ … ] }');
+    if (s.kind === 'review' && n.artifact !== null) add('error', where, 'a review step reviews the work before it and writes no artifact of its own, so its "artifact" is null');
+    if (s.gate !== undefined && s.gate !== null && (!isObj(s.gate) || (s.gate.riskTags !== undefined && !isStrings(s.gate.riskTags))
+      || (s.gate.skills !== undefined && !isStrings(s.gate.skills)))) {
+      add('error', where, '"gate" must be null or { "riskTags": [ … ], "skills": [ … ] }');
     }
 
     if (n.artifact !== null) {
@@ -314,6 +357,11 @@ export function lifecycleProblems(raw) {
       } else {
         if (!ARTIFACT_TYPES.includes(a.type)) add('unusable', where, `artifact type "${a.type}" is one this yadflow does not know; the step cannot be used for new epics`);
         if (a.type === 'set' && !isStrings(a.files)) add('error', where, 'a "set" artifact lists its "files" by name');
+        if (a.unit !== undefined && typeof a.unit !== 'string') add('error', where, 'an artifact\'s "unit" is one word, such as "story"');
+        if (a.in !== undefined && a.in !== 'product') {
+          if (a.in === 'repo') add('unusable', where, 'an artifact kept in a code repo ("in": "repo") is reserved; this yadflow cannot use the step for new epics');
+          else add('error', where, 'an artifact\'s "in" is "product" or "repo"');
+        }
         if (a.type === 'set' && a.optional !== undefined && !(isStrings(a.optional) && a.optional.every((f) => arr(a.files).includes(f)))) {
           add('error', where, 'a "set" artifact\'s "optional" lists some of its "files"');
         }
@@ -322,17 +370,40 @@ export function lifecycleProblems(raw) {
         }
       }
     }
-    // A review branch is found by its artifact's key (`artifactKey`), so two steps whose files share a
-    // key would share one gate. The files a step commits beside its artifact (`extraPaths`, such as the
-    // contract beside the architecture) are claimed the same way.
-    for (const claimed of [isObj(n.artifact) && typeof n.artifact.path === 'string' ? n.artifact.path : null, ...(isStrings(s.extraPaths) ? s.extraPaths : [])]) {
+    // THE FILES A STEP CLAIMS: its artifact and its `extraPaths`. Each must be a clean path inside the epic
+    // folder; a `.sdlc/` path is ledger unless yadflow ships it; a name yadflow ships belongs to that
+    // yadflow step only; and no two steps may claim files a review branch finds by one key
+    // (`artifactKey`), or they would share one gate.
+    const isYadflow = isObj(s.provider) && s.provider.id === 'yadflow';
+    const origin = isYadflow && typeof s.provider.origin === 'string' ? s.provider.origin : null;
+    const { byOrigin, byKey } = yadflowClaims();
+    const artPath = isObj(n.artifact) && typeof n.artifact.path === 'string' && n.artifact.path ? n.artifact.path : null;
+    const extras = isStrings(s.extraPaths) ? s.extraPaths : [];
+    for (const claimed of [artPath, ...extras]) {
       if (!claimed) continue;
+      if (!cleanPath(claimed)) { add('error', where, `"${claimed}" must be a path inside the epic folder: no "..", no leading "/", no "\\"`); continue; }
       const key = artifactKey(claimed);
+      const reservedFor = byKey.get(key);
+      if (reservedFor !== undefined && reservedFor !== origin) {
+        add('error', where, `"${claimed}" is a file of yadflow's "${reservedFor}" step (found as "${key}"); only that step may claim it`);
+      } else if (reservedFor === undefined && /^\.sdlc\//i.test(claimed)) {
+        add('error', where, `"${claimed}" is in .sdlc/, which holds the ledger; a step's files live beside it`);
+      }
       const owner = artifactOwner.get(key);
       if (owner && owner.step !== s.id) {
         add('error', where, `"${claimed}" is found by the same name as step ${owner.step}'s "${owner.path}" ("${key}", letter case ignored); two steps cannot share one, or they would share one review`);
       } else if (!owner) artifactOwner.set(key, { step: s.id, path: claimed });
     }
+    if (n.artifact?.type === 'folder' && artPath) folders.push({ step: s.id, prefix: artPath.replace(/\/?$/, '/').toLowerCase() });
+    allPaths.push(...[artPath, ...extras].filter(Boolean).map((x) => ({ step: s.id, path: x })));
+
+    // A step from a newer yadflow (a `provider.version` this release never shipped for its origin) or with
+    // an artifact type this release does not know may have moved its files on purpose. Its file rules below
+    // then report it unusable here, never a broken file (the unknown-value rule).
+    const shippedVersion = origin !== null ? byOrigin.get(origin)?.version : undefined;
+    const newer = (shippedVersion !== undefined && Number.isInteger(s.provider.version) && s.provider.version > shippedVersion)
+      || (isObj(n.artifact) && !ARTIFACT_TYPES.includes(n.artifact.type));
+    const level = newer ? 'unusable' : 'error';
 
     // Behaviours.
     const at = stepWhere(def, n);
@@ -343,25 +414,42 @@ export function lifecycleProblems(raw) {
       if (rule.keepGate && !n.gate) add('error', where, `behaviour "${b}" needs the step to keep its review gate`);
       if (rule.review && s.kind !== 'review') add('error', where, `behaviour "${b}" must stay a "review" step: it is the merge gate`);
       if (rule.artifacts && !rule.artifacts.includes(n.artifact?.path)) {
-        add('error', where, `behaviour "${b}" needs the artifact ${rule.artifacts.map((x) => `"${x}"`).join(' or ')}: the engine and the CI checks read it by that name`);
+        add(level, where, `behaviour "${b}" needs the artifact ${rule.artifacts.map((x) => `"${x}"`).join(' or ')}: the engine and the CI checks read it by that name`);
       }
     }
 
-    // yadflow's own steps: a step whose id is one yadflow ships says so, a known origin is used once and
-    // keeps the file name it shipped with. An origin this release does not know is from a newer yadflow:
-    // that step is unusable here, and the rest of the file still loads.
-    const known = yadflowOriginSet();
-    const isYadflow = isObj(s.provider) && s.provider.id === 'yadflow';
-    if (known.has(s.id) && !(isYadflow && s.provider.origin === s.id)) {
+    // yadflow's own steps: a step whose id is one yadflow ships says so; a known origin is used once and
+    // keeps the artifact (path and type) and the extra files it shipped with. An origin this release does
+    // not know is from a newer yadflow: that step is unusable here, and the rest of the file still loads.
+    if (byOrigin.has(s.id) && origin !== s.id) {
       add('error', where, `"${s.id}" is a step yadflow ships, so it keeps "provider": { "id": "yadflow", "origin": "${s.id}" } — to make a step of your own, give it another id`);
     }
-    if (isYadflow && typeof s.provider.origin === 'string') {
-      const origin = s.provider.origin;
-      if (!known.has(origin)) add('unusable', where, `"provider.origin" is "${origin}", a yadflow step this release does not know; the step cannot be used for new epics`);
-      else if (origins.has(origin)) add('error', where, `step ${origins.get(origin)} already has the origin "${origin}"; each yadflow step appears once`);
-      else origins.set(origin, s.id);
-      if (own(FIXED_ARTIFACTS, origin) && n.artifact?.path !== FIXED_ARTIFACTS[origin]) {
-        add('error', where, `its artifact must stay "${FIXED_ARTIFACTS[origin]}": the engine and the CI checks read it by that name`);
+    if (origin !== null) {
+      const shipped = byOrigin.get(origin);
+      if (!shipped) add('unusable', where, `"provider.origin" is "${origin}", a yadflow step this release does not know; the step cannot be used for new epics`);
+      else {
+        if (origins.has(origin)) add('error', where, `step ${origins.get(origin)} already has the origin "${origin}"; each yadflow step appears once`);
+        else origins.set(origin, s.id);
+        if (artPath !== shipped.path || (n.artifact?.type ?? null) !== shipped.type) {
+          add(level, where, shipped.path ? `its artifact must stay "${shipped.path}" (a ${shipped.type}): the engine and the CI checks read it by that name` : 'its artifact must stay null: yadflow\'s step writes code in a repo, not a file here');
+        }
+        for (const x of shipped.extras) if (!extras.includes(x)) add(level, where, `its "extraPaths" must keep "${x}": the engine commits it with this step's review`);
+      }
+    }
+
+    // A Build-loop step has no gate of its own and is never optional: the lane walks its route in order,
+    // and the human merge gate is a step of its own (`engineer-review`), never skipped.
+    if (stepWhere(def, n) === 'lane') {
+      if (n.gate) add('error', where, 'a Build-loop step has no "gate": the lane\'s review is its merge-gate step');
+      if (n.optional) add('error', where, 'a Build-loop step is never optional: the lane walks every step in order');
+    }
+  }
+  // A file inside another step's folder belongs to that folder's review (the stories gate hashes every
+  // file under `stories/`), so no other step may claim one there — checked both ways, whatever the order.
+  for (const f of folders) {
+    for (const x of allPaths) {
+      if (x.step !== f.step && x.path.toLowerCase().startsWith(f.prefix)) {
+        add('error', `step ${x.step}`, `"${x.path}" is inside step ${f.step}'s folder "${f.prefix}", whose review covers every file in it`);
       }
     }
   }
@@ -384,7 +472,10 @@ export function lifecycleProblems(raw) {
     const where = `route ${r?.id ?? `#${i + 1}`}`;
     if (!isObj(r) || typeof r.id !== 'string' || !r.id) { add('error', where, 'a route needs an "id"'); continue; }
     const n = def.routes[i];
-    for (const k of Object.keys(r)) if (!KNOWN_KEYS.route.includes(k)) add('warn', where, `unknown key "${k}" is kept and not read`);
+    unknownKeys(r, 'route', where);
+    unknownKeys(r.provider, 'provider', where);
+    if (Array.isArray(r.steps)) for (const x of r.steps) unknownKeys(x, 'routeStep', where);
+    if (!ID_RE.test(r.id)) add('error', where, 'a route id is lower-case letters, digits and dashes, starting with a letter');
     if (typeof r.name !== 'string' || !r.name) add('error', where, 'a route needs a "name"');
     if (routeIds.has(r.id)) add('error', where, 'two routes share this id');
     routeIds.add(r.id);
@@ -411,7 +502,10 @@ export function lifecycleProblems(raw) {
     if (n.steps.some((x) => !stepWhere(def, stepById.get(x.id)))) continue;
     const kind = routeKind(def, n);
     if (!kind) { add('error', where, 'its steps mix the product level, the Shape phases, the Build loop and the Run phases; a route stays in one'); continue; }
-    if (kind === 'lane') lanes += 1;
+    if (kind === 'lane') {
+      lanes += 1;
+      if (n.steps.some((x) => x.optional !== undefined)) add('error', where, 'the Build lane walks every step in order, so its steps carry no "optional"');
+    }
     // Each behaviour's route rule, for the routes of its kind.
     const scope = { shape: 'feature', product: 'product', lane: 'lane' };
     for (const [b, rule] of Object.entries(BEHAVIOURS)) {

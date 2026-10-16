@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/abdelrahmannasr/yadflow/cli/lifecycle/lifecycle.schema.json",
   "title": "yadflow lifecycle definition, version 1",
-  "description": "The phases, steps and routes of a yadflow lifecycle. For editors only: yadflow checks a file with its own validator (lifecycleProblems in cli/lifecycle.mjs), which also applies rules a schema cannot express, such as the behaviour rules. Unknown keys are allowed so a file from a newer yadflow still loads.",
+  "description": "The phases, steps and routes of a yadflow lifecycle. For editors only: yadflow checks a file with its own validator (lifecycleProblems in cli/lifecycle.mjs), which also applies rules a schema cannot express — the behaviour rules; a Build phase runs in a loop and a loop names what it loops \"over\"; a \"set\" artifact lists its \"files\"; a step whose id yadflow ships keeps \"provider\": { \"id\": \"yadflow\", \"origin\": <its id> } and the files it shipped with; no two steps claim files a review branch finds by one name; a Build-loop step has no gate and is never optional. Unknown keys are allowed so a file from a newer yadflow still loads.",
   "type": "object",
   "required": ["schemaVersion", "phases", "steps", "routes"],
   "properties": {
@@ -37,7 +37,7 @@
           "required": ["type", "path"],
           "properties": {
             "type": { "enum": ["file", "folder", "set"] },
-            "path": { "type": "string", "minLength": 1 },
+            "path": { "type": "string", "minLength": 1, "description": "Relative to the epic folder. For a \"set\", the path is the set's name (the key its review branch uses), not a folder: the set's files sit directly in the epic folder." },
             "unit": { "type": "string", "description": "A folder: the word for one item in it, such as story." },
             "files": { "type": "array", "items": { "type": "string" }, "description": "A set: every file in it." },
             "optional": { "type": "array", "items": { "type": "string" }, "description": "A set: the files it may leave out." },
