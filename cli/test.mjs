@@ -10177,6 +10177,58 @@ test('gate ci --merged: two merged MRs for one artifact do not flip the pointer 
   fs.rmSync(T, { recursive: true, force: true });
 });
 
+// issue #362 review: numbers come from creation order, merges happen in any order. A newer MR (#9)
+// merged while still held must not block an OLDER one (#7) that merges later with the approvals the
+// gate needs — the trial read lets #7 advance the step, and the sweep is quiet afterwards.
+test('gate ci --merged: an older merged review that passes still advances past a held newer one (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+
+  const reader = (_p, n) => (n === 7 ? fullApproval : { ...fullApproval, reviews: [] });
+  await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 9, merged: true, today: '2026-06-09', reader });
+  await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 7, merged: true, today: '2026-06-09', reader });
+  git(author, 'fetch', '-q', 'origin');
+  const st = JSON.parse(show(author, 'origin/trunk:epics/EP-test/.sdlc/state.json'));
+  assert.equal(st.steps.find((s) => s.id === 'architecture-review').status, 'done', 'the approved older review advances the gate');
+
+  const count = () => git(ci, 'rev-list', '--count', 'HEAD').toString().trim();
+  const sweep = async (day) => { for (const pr of [7, 9]) await gateCi(ci, { branch: 'review/EP-test/architecture', pr, merged: true, today: day, reader }); };
+  // The first sweep moves the pointer forward to the newer #9 once — a newer review must be read, or a
+  // re-review of a done step would be lost (#156) — and from then on nothing moves.
+  const before = Number(count());
+  await sweep('2026-06-10');
+  assert.ok(Number(count()) - before <= 1, 'at most one commit: the pointer moves forward once');
+  const settled = count();
+  await sweep('2026-06-11');
+  await sweep('2026-06-12');
+  assert.equal(count(), settled, 'and the sweep settles once the step is done');
+  assert.equal(git(ci, 'status', '--porcelain').toString().trim(), '', 'with no working-tree churn');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// A mistyped `--pr` on the manual recovery must not become the pointer: numbers only grow, so a wrong
+// high number would stay there and outrank every real review after it.
+test('gate ci --merged: refuses a PR number that is not on the review branch (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+  const before = git(ci, 'rev-list', '--count', 'HEAD').toString().trim();
+  const branchOf = (_p, n) => ({ ok: true, branch: n === 97 ? 'review/EP-other/epic' : 'review/EP-test/architecture' });
+  const prev = process.exitCode;
+  await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 97, merged: true, today: '2026-06-09', reader: () => fullApproval, branchOf });
+  assert.equal(process.exitCode, 1, 'a wrong number fails the run');
+  process.exitCode = prev;
+  assert.equal(git(ci, 'rev-list', '--count', 'HEAD').toString().trim(), before, 'and writes nothing');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
 // `yad gate ci … --merged` on the default branch is the DOCUMENTED manual recovery for a stuck gate,
 // and a human's checkout is rarely pristine. Staging `git add -A -- epics/<e>` would sweep whatever
 // else sits in that directory into a `chore(gate) … [skip ci]` commit pushed straight to the default

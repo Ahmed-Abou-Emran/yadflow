@@ -633,7 +633,7 @@ function stageIndexIfClean(root, git, commits = null) {
   return !git('diff', '--cached', '--quiet', '--', INDEX_FILE).ok;
 }
 
-export async function gateSync(root, { epic, artifact, today, reader = readPr, finder = findPrForBranch, branchOf = prBranch, poster = postComment, number = null, local = false, dryRun = false, headCount = null } = {}) {
+export async function gateSync(root, { epic, artifact, today, reader = readPr, finder = findPrForBranch, branchOf = prBranch, poster = postComment, number = null, local = false, dryRun = false, headCount = null, probe = null } = {}) {
   const { productConfig } = loadProduct(root);
   if (!productConfig?.platform) { warn(`no Product platform configured (${settingsEditHint(root)}) — local gate, nothing to sync`); return { epic, synced: 0, advanced: 0, written: false, gates: [] }; }
   const platform = productConfig.platform;
@@ -688,7 +688,12 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
     const s = findReviewStep(state, p.artifact);
     return s ? state.steps.indexOf(s) : Number.MAX_SAFE_INTEGER;
   };
-  const targets = [...resolved.targets].sort((a, b) => stepIndex(a) - stepIndex(b));
+  // `probe` (gateCi only, dry runs only): read this PR/MR in place of the recorded pointer, to ask whether
+  // an OLDER merged review passes the gate before the pointer is moved back to it (issue #362). A copy, so
+  // nothing about the recorded pointer changes.
+  if (probe != null && !dryRun) throw new Error('gateSync: probe is for dry runs only');
+  const targets = [...resolved.targets].map((p) => (probe != null && p.artifact === artifact ? { ...p, number: probe } : p))
+    .sort((a, b) => stepIndex(a) - stepIndex(b));
   if (!targets.length) {
     // The stamp still lands (E64): an epic with no review PR on file is exactly one no later sync would
     // write, so `yad doctor`'s "run `yad gate sync <epic>`" would otherwise repeat for ever.
@@ -970,7 +975,7 @@ export function convertProductLevel(root, productConfig, { git = (...a) => run('
   }
 }
 
-export async function gateCi(root, { branch, pr, merged = false, today, push = true, reader = readPr } = {}) {
+export async function gateCi(root, { branch, pr, merged = false, today, push = true, reader = readPr, branchOf = prBranch } = {}) {
   const { productConfig } = loadProduct(root);
   if (!productConfig?.platform) { warn(`no Product platform configured (${settingsEditHint(root)}) — nothing to sync`); return { synced: 0, committed: false, pushed: false }; }
   const git = (...args) => run('git', args, { cwd: root });
@@ -1062,14 +1067,35 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     // The merge event may fire before any hub-prs record exists (Path B never wrote one pre-merge) —
     // build the entry from the event itself so the advance commit carries it onto the default branch.
     const existing = (ledger.productPrs || []).find((x) => x.artifact === job.artifact);
-    // Issue #362: a merge run never moves the pointer BACK to an older PR/MR. The scheduled sweep
-    // revisits EVERY review merged in its window, and several can share one artifact (a re-review on a
-    // fresh MR; `stories-S01`, `stories-S02` all map to `stories/`). Moving the one pointer to each in
-    // turn was a real diff on every visit — committed and pushed every 15 minutes for 7 days, whether
-    // the step was done or not. Numbers only grow within one repo, so the newest review wins and the
-    // sweep settles; a newer review still moves it forward, so a re-review of a done step is read (#156).
-    const older = merged && existing?.number != null && Number(job.pr) > 0 && Number(job.pr) < existing.number;
-    if (older) info(`${job.epic}: PR #${job.pr} is older than #${existing.number}, the review recorded for ${job.artifact} — syncing #${existing.number}`);
+    // Issue #362: a merge run moves the pointer BACK to an older PR/MR only when that review passes the
+    // gate. The scheduled sweep revisits EVERY review merged in its window, and several can share one
+    // artifact (a re-review on a fresh MR; `stories-S01`, `stories-S02` all map to `stories/`). Moving
+    // the one pointer to each in turn was a real diff on every visit — committed and pushed every 15
+    // minutes for 7 days, done step or not. Numbers only grow within one repo, so the newest review wins
+    // and the sweep settles; a newer review still moves it forward, so a re-review of a done step is read
+    // (#156). But an older merged review that PASSES while the newer one is held must still advance the
+    // gate — that is also the manual recovery — so an open step asks first, in a dry run: once it
+    // passes, the step is done and every later visit is quiet.
+    // A pointer from another platform (the Product moved, and numbering started again) is not newer.
+    let older = merged && existing?.number != null && Number(job.pr) > 0 && Number(job.pr) < existing.number
+      && (existing.platform == null || existing.platform === productConfig.platform);
+    if (older && !isPassed(step)) {
+      const trial = await gateSync(root, { epic: job.epic, artifact: job.artifact, today, reader, dryRun: true, probe: Number(job.pr), headCount: sweepCount });
+      if (trial.gates.some((g) => g.passed)) older = false;
+    }
+    if (older) info(`${job.epic}: PR #${job.pr} is older than #${existing.number}, the review recorded for ${job.artifact}, and does not pass the gate — syncing #${existing.number}`);
+    // Before the pointer moves to a number it has never held, ask the platform that the PR/MR is on
+    // this review branch: a mistyped `--pr` on the manual recovery would otherwise become the pointer,
+    // and with numbers that only grow it could stay there (issue #362 review). A platform that cannot
+    // answer is not evidence against it — the same rule `gate sync --pr` follows.
+    if (merged && !older && Number(job.pr) > 0 && existing?.number !== Number(job.pr)) {
+      const head = branchOf(productConfig.platform, Number(job.pr), { cwd: root });
+      if (head.ok && head.branch !== job.branch) {
+        fail(`${job.epic}: #${job.pr} is on '${head.branch}', not the review branch '${job.branch}' — check the --pr number`);
+        process.exitCode = 1;
+        continue;
+      }
+    }
     const number = older ? existing.number : Number(job.pr) || existing?.number || null;
     // Same migration as gateSync, at the one point CI knows the OLD pointer: stamp the approvals it
     // recorded before replacing it, or a re-review on the replacement PR can never be told from a
