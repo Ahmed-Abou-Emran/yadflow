@@ -115,8 +115,20 @@ repository access decides who may approve. A review with no login is not counted
   every hop commits and pushes, and the pass ends where it began — an unbounded commit loop with zero
   semantic change. That is issue #163: ~1,800 bot commits/day on the Product that reported it. Sorting is
   what makes the "nothing staged → nothing to commit" guard in `gate ci` actually hold.
-- Running `sync` twice on the same day with no platform change is a no-op on the ledger — byte-identical, including
-  `comments.json` and the dated `reviews/*.md` side files.
+- **Never move the PR pointer back to an older review.** The PR ledger holds ONE pointer per
+  artifact, but the sweep can find several merged reviews for one artifact: a re-review on a fresh
+  PR/MR, or per-story `review/<epic>/stories-S01`, `stories-S02` branches, which all map to `stories/`.
+  On a merge run, `gate ci` keeps the pointer when the PR/MR it was given has a lower number than the
+  recorded one (numbers only grow within one repo), and syncs the recorded one instead. A newer review
+  still moves it forward, so a re-review of a done step is still read (#156). Before this, each visit
+  moved the pointer to its own PR/MR — done step or not — a real diff every 15 minutes for 7 days,
+  committed as "advance … on merge" (issue #362: about 24,400 such commits on the Product that reported it). The commit subject now says
+  `advance … on merge` only when a step really advanced; any other merge-run change says `sync … after merge`.
+- Running `sync` again with no platform change is a no-op on the ledger — byte-identical, including
+  `comments.json` and the dated `reviews/*.md` side files — on the same day or a later one. A review's
+  `lastSyncedAt` and its dated side files move only when its approvals, comment rounds, step state or
+  nudges changed (issue #362: a merged review the gate still held used to commit a new date and a new
+  dated file every day of the 7-day sweep window).
 
 **Upgrading past #163.** The first sweep on a yadflow carrying the fix writes one canonicalizing
 reorder commit per epic (the records are the same; only their order changes), then converges

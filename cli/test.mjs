@@ -4927,11 +4927,18 @@ test('gate sync: a merged-but-held review does not open a new comment round per 
     await gateSync(T, { epic: 'EP-test', today: day, reader: () => stuck });
   }
   assert.equal(fs.readFileSync(commentsFile, 'utf8'), before, 'an unchanged thread state re-records the same round, byte for byte');
+  // Nor a new dated side file or sync date per day (issue #362): the same threads and approvals under
+  // a new day's name were a daily commit with nothing new in them.
+  const reviews = fs.readdirSync(path.join(ep, 'reviews')).sort();
+  assert.ok(!reviews.some((f) => /2026-06-2[012]/.test(f)), `no dated review files for unchanged re-reads: ${reviews.join(', ')}`);
+  const ptr = JSON.parse(fs.readFileSync(path.join(ep, '.sdlc/product-prs.json'), 'utf8')).find((p) => p.artifact === 'architecture.md');
+  assert.equal(ptr.lastSyncedAt, '2026-06-09', 'the sync date stays on the day something last changed');
 
   // A genuinely new comment IS a new round — the idempotency must not swallow real activity.
   const escalated = { ...stuck, threads: [...stuck.threads, { id: 't2', resolved: false, login: 'ca', body: 'a second reviewer weighs in' }] };
   await gateSync(T, { epic: 'EP-test', today: '2026-06-23', reader: () => escalated });
   assert.deepEqual([...new Set(rounds().map((cm) => cm.round))].sort(), [1, 2], 'a changed thread state opens round 2');
+  assert.ok(fs.existsSync(path.join(ep, 'reviews/architecture--2026-06-23--comments.md')), 'a real change still writes its dated side file');
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -10092,6 +10099,81 @@ test('gate ci --merged: a repeat sweep over two merged reviews commits nothing (
   assert.equal(git(ci, 'status', '--porcelain').toString().trim(), '', 'and must leave no working-tree churn');
   git(author, 'fetch', '-q', 'origin');
   assert.equal(show(author, 'origin/trunk:epics/EP-test/.sdlc/approvals.json'), ledger, 'approvals.json is byte-identical');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// issue #362: two merged review MRs for ONE artifact (a re-review on a fresh MR, or per-story
+// `stories-S01` / `stories-S02` branches, which all map to `stories/`). hub-prs.json holds one pointer
+// per artifact, so on the buggy code each sweep visit moved it to its own MR — a real diff every time,
+// committed as "advance … on merge" although the step was long done: 3 MRs × 96 sweeps = 288 commits/day.
+test('gate ci --merged: a sweep over two merged MRs for one artifact commits nothing once the step is done (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+
+  // The schedule lists every review MR merged in the window: the one that closed the step (#7) and
+  // an older or later one for the same artifact (#9).
+  const sweep = async (day) => {
+    for (const pr of [7, 9]) {
+      await gateCi(ci, { branch: 'review/EP-test/architecture', pr, merged: true, today: day, reader: () => fullApproval });
+    }
+  };
+  await sweep('2026-06-09'); // the advance itself — this one legitimately commits
+  git(author, 'fetch', '-q', 'origin');
+  const advanced = JSON.parse(show(author, 'origin/trunk:epics/EP-test/.sdlc/state.json'));
+  assert.equal(advanced.steps.find((s) => s.id === 'architecture-review').status, 'done');
+  const subjects = () => git(ci, 'log', '--format=%s', 'HEAD').toString().split('\n').filter((l) => l.includes('on merge'));
+  assert.equal(subjects().length, 1, 'one advance commit for one gate');
+
+  const count = () => git(ci, 'rev-list', '--count', 'HEAD').toString().trim();
+  const settled = count();
+  const pointer = show(author, 'origin/trunk:epics/EP-test/.sdlc/product-prs.json');
+  await sweep('2026-06-10');
+  await sweep('2026-06-11');
+  assert.equal(count(), settled, 'a repeat sweep must not commit a pointer flip');
+  assert.equal(git(ci, 'status', '--porcelain').toString().trim(), '', 'and must leave no working-tree churn');
+  git(author, 'fetch', '-q', 'origin');
+  assert.equal(show(author, 'origin/trunk:epics/EP-test/.sdlc/product-prs.json'), pointer, 'the pointer never moves back to the older MR');
+  assert.equal(JSON.parse(pointer).find((p) => p.artifact === 'architecture.md').number, 9, 'the newest review wins');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// issue #362, the twin: the same flip while the step is NOT done (merged, but the approvals are not
+// there yet). Each visit used to move the pointer to its own MR and commit a "sync" — the loop ran
+// for the whole 7-day window just the same.
+test('gate ci --merged: two merged MRs for one artifact do not flip the pointer while the step is open (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+
+  const noApprovals = { ...fullApproval, reviews: [] };
+  const sweep = async (day) => {
+    for (const pr of [7, 9]) {
+      await gateCi(ci, { branch: 'review/EP-test/architecture', pr, merged: true, today: day, reader: () => noApprovals });
+    }
+  };
+  await sweep('2026-06-09');
+  git(author, 'fetch', '-q', 'origin');
+  const st = JSON.parse(show(author, 'origin/trunk:epics/EP-test/.sdlc/state.json'));
+  assert.notEqual(st.steps.find((s) => s.id === 'architecture-review').status, 'done', 'no approvals: the step stays open');
+
+  // Later days too: an unchanged open step used to re-stamp `lastSyncedAt` and write a fresh dated
+  // approval record every day — one commit a day for the whole window.
+  const count = () => git(ci, 'rev-list', '--count', 'HEAD').toString().trim();
+  const settled = count();
+  await sweep('2026-06-10');
+  await sweep('2026-06-11');
+  assert.equal(count(), settled, 'a repeat sweep must not commit a pointer flip on an open step');
+  assert.equal(git(ci, 'status', '--porcelain').toString().trim(), '', 'and must leave no working-tree churn');
+  git(author, 'fetch', '-q', 'origin');
+  const ptr = JSON.parse(show(author, 'origin/trunk:epics/EP-test/.sdlc/product-prs.json'));
+  assert.equal(ptr.find((p) => p.artifact === 'architecture.md').number, 9, 'the newest review wins');
   fs.rmSync(T, { recursive: true, force: true });
 });
 

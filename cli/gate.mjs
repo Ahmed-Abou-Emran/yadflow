@@ -747,6 +747,9 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
     warnUnlockedContract(epicDir, pr.artifact);
     warnIncompleteDiscovery(epicDir, pr.artifact);
     const approvalsBefore = JSON.stringify(approvals);
+    const commentsBefore = JSON.stringify(comments);
+    const stateBefore = JSON.stringify(state);
+    const nudgedBefore = JSON.stringify(pr.nudged || []);
     const recs = mapApprovers(pull.reviews, { headOid: pull.headOid });
     approvals = upsertBridge(approvals, recs, { stepId: step.id, artifact: pr.artifact, curHash, today, prNumber: pr.number ?? null, closed: alreadyDone, aliases, clashed, accepted: acceptedHashes(epicDir, pr.artifact) });
 
@@ -769,8 +772,11 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
     // `chore(gate): advance … [skip ci]` commit on the default branch — every 15 minutes for a week.
     // That is the same churn the resource_group fix exists to stop, so it must not be reintroduced here.
     if (!alreadyDone) {
-      if (!readOnly) writeComments(epicDir, base(pr.artifact), today, blocking);
       comments = recordComments(comments, { artifact: pr.artifact, stepId: step.id, today, blocking, aliases, clashed });
+      // The dated side file only when the round really changed (issue #362): a merged review held by one
+      // unresolved thread is re-read every 15 minutes for a week, and the same threads re-written under
+      // each new day's name was a daily commit with nothing new in it.
+      if (!readOnly && JSON.stringify(comments) !== commentsBefore) writeComments(epicDir, base(pr.artifact), today, blocking);
     }
 
     // Social nudge: a bare APPROVE (no verified engagement) still counts (soft default), but the bot
@@ -857,12 +863,19 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
       state = markInReview(state, step, { by, date: today, pr: pr.number ?? null, hash: curHash });
       for (const m of pred.missing) hand(`still needed: ${m}`);
     }
-    // Stamp when this run actually learned something: an open step every time, and a closed one only
-    // when the approval record genuinely changed (a re-opened review that was re-approved). Otherwise
-    // an identical re-sync would rewrite the date daily and churn the ledger, while a real re-review
-    // would leave no trace of when it was reconciled.
-    if (!alreadyDone) { pr.lastSyncedAt = today; open.push(pr); }
-    else if (JSON.stringify(approvals) !== approvalsBefore) pr.lastSyncedAt = today;
+    // Stamp only when this run actually learned something. A closed step: when the approval record
+    // genuinely changed (a re-opened review that was re-approved). An open step: when its approvals,
+    // comment rounds, state or nudges changed, or it was never synced. Otherwise an identical re-sync
+    // rewrote the date — and a fresh dated approval record — every day: a merged review the gate still
+    // holds is re-read by the sweep for a week, one commit a day with nothing new (issue #362), while a
+    // real change would leave no trace of when it was reconciled.
+    const learned = JSON.stringify(approvals) !== approvalsBefore;
+    if (!alreadyDone) {
+      if (learned || pr.lastSyncedAt == null || JSON.stringify(comments) !== commentsBefore
+        || JSON.stringify(state) !== stateBefore || JSON.stringify(pr.nudged || []) !== nudgedBefore) {
+        pr.lastSyncedAt = today; open.push(pr);
+      }
+    } else if (learned) pr.lastSyncedAt = today;
     synced++;
   }
 
@@ -1049,7 +1062,15 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     // The merge event may fire before any hub-prs record exists (Path B never wrote one pre-merge) —
     // build the entry from the event itself so the advance commit carries it onto the default branch.
     const existing = (ledger.productPrs || []).find((x) => x.artifact === job.artifact);
-    const number = Number(job.pr) || existing?.number || null;
+    // Issue #362: a merge run never moves the pointer BACK to an older PR/MR. The scheduled sweep
+    // revisits EVERY review merged in its window, and several can share one artifact (a re-review on a
+    // fresh MR; `stories-S01`, `stories-S02` all map to `stories/`). Moving the one pointer to each in
+    // turn was a real diff on every visit — committed and pushed every 15 minutes for 7 days, whether
+    // the step was done or not. Numbers only grow within one repo, so the newest review wins and the
+    // sweep settles; a newer review still moves it forward, so a re-review of a done step is read (#156).
+    const older = merged && existing?.number != null && Number(job.pr) > 0 && Number(job.pr) < existing.number;
+    if (older) info(`${job.epic}: PR #${job.pr} is older than #${existing.number}, the review recorded for ${job.artifact} — syncing #${existing.number}`);
+    const number = older ? existing.number : Number(job.pr) || existing?.number || null;
     // Same migration as gateSync, at the one point CI knows the OLD pointer: stamp the approvals it
     // recorded before replacing it, or a re-review on the replacement PR can never be told from a
     // re-read of the old one and stays permanently stale.
@@ -1068,7 +1089,7 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
         info(`${job.epic}: recorded PR #${existing.number} on ${stamped} approval(s) that predate PR provenance`);
       }
     }
-    if (!existing || existing.number !== number || existing.branch !== job.branch) {
+    if (!older && (!existing || existing.number !== number || existing.branch !== job.branch)) {
       ledger.productPrs = upsertProductPr(ledger.productPrs, {
         step: step.id, artifact: job.artifact, platform: productConfig.platform, number,
         url: existing?.url ?? null, branch: job.branch, lastSyncedAt: existing?.lastSyncedAt ?? null,
@@ -1225,7 +1246,11 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     ? 'rebuild the Product index'
     : !branch
       ? 'scheduled gate sync' // sweep is a batch; one subject for the run
-      : `advance ${jobs[0].epic}/${jobs[0].base} on merge`;
+      // Say "advance" only when a step really advanced (issue #362): a re-read of a done step that
+      // still changed the ledger is a sync, and a log full of repeated "advance" lines hides the real one.
+      : advancedEpics.size
+        ? `advance ${jobs[0].epic}/${jobs[0].base} on merge`
+        : `sync ${jobs[0].epic}/${jobs[0].base} after merge`;
   // The move, when there is one, is the subject: it is the change a reader of the default branch most
   // needs to find, and a sync subject would name a folder the same commit deletes. The sync goes in the body.
   const subject = moved
