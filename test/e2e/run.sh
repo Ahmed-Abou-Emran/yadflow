@@ -240,7 +240,7 @@ printf '{ "hash": "sha256:%s" }\n' "$E2E_HASH" > "$EPIC/.sdlc/contract-lock.json
 ( cd "$BACKEND" && git checkout -q main && git checkout -qb feat/EP-e2e-S02-T01-quote )
 mkdir -p "$BACKEND/specs/EP-e2e-S02/contracts"
 printf -- '---\nstory: EP-e2e-S02\nproduct-repo: ../../../..\ncontract-lock: sha256:%s\n---\n' "$E2E_HASH" > "$BACKEND/specs/EP-e2e-S02/link.md"
-printf '# Slice\n\n<!-- CONTRACT-QUOTE:BEGIN -->\n- `POST /e2e` — create one.\n<!-- CONTRACT-QUOTE:END -->\n\nOnly the create endpoint is built here.\n' > "$BACKEND/specs/EP-e2e-S02/contracts/api.md"
+printf '# Slice\n\n<!-- CONTRACT-QUOTE:BEGIN -->\n- `POST /e2e` — create one.\n<!-- CONTRACT-QUOTE:END -->\n' > "$BACKEND/specs/EP-e2e-S02/contracts/api.md"
 ( cd "$BACKEND" && git add -A && git commit -qm "docs(spec): quote the S02 slice" )
 # The repo's .sdlc/product-link.json says CI checks the Product out at .yad/product; put it there for
 # the gate runs (a link, removed again before anything stages the tree).

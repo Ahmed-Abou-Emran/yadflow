@@ -61,7 +61,8 @@ follow the convention. Never finalise a boundary silently.
 A change is blocked **only until the features it touches** have approved specs — not the whole repo.
 "The features it touches" are read from the merge base, `git diff <base>...HEAD` (issue #363): a file
 that changed on the target after the branch split off is not this branch's change. A base that shares
-no history with HEAD (a shallow clone) **FAILS** closed and says so.
+no history with HEAD (a shallow clone) **FAILS** closed and says so, and so does one with more than one
+merge base (a criss-cross merge): rebase the branch onto the target, or merge the target into it.
 
 - For each `src/<feature>/` the diff touches, if `specs/backfill/<feature>/spec.md` exists it must be
   `verified: true`; otherwise **FAIL** (run backfill + approve for that feature first).

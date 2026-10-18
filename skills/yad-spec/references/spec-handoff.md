@@ -61,9 +61,12 @@ comes from the story's acceptance criteria and the **locked contract surface** �
     - request: `{ items: { sku: string, qty: number }[], address: string, payment: string, note?: string }`
   <!-- CONTRACT-QUOTE:END -->
   ```
-  Notes go outside the markers (for example, which endpoints this story builds). The contract-check gate
-  then passes the slice with **no** `Contract-Change` trailer, because it can prove every quoted line is
-  in the lock (issue #344). Never reword a line inside the block: a changed line is a surface change.
+  Each block is one **unbroken run** of consecutive surface lines, in their order; to quote two parts of
+  the surface, write two blocks. The file holds nothing else but blank lines and one `# ` title — notes
+  (for example, which endpoints this story builds) go in `spec.md` or `plan.md`. Write the slice as
+  Markdown (`.md`). The contract-check gate then passes the slice with **no** `Contract-Change` trailer,
+  because it can prove every quoted line is in the lock (issue #344). Never reword, reorder or skip a line
+  inside a block: that is a surface change, and it needs the trailer.
   **Do NOT create this folder on a short-lane epic** (`profile: chore` or `spike`). Those routes have
   no architecture step, so there is no locked `contract.md` to quote and no lock for CI to check the
   quote against — the gate refuses a slice under a lockless epic. A short-lane story consumes the

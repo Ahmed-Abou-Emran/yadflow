@@ -373,7 +373,7 @@ the product repo. Code repos are **separate git repos** under `demo-repos/<repo>
 3. **Check gates** — `yad-checks` wires the CI gates (GitHub + GitLab) that must pass before merge:
    **spec-link** (links a real story/spec), **contract-check** (a contract-surface change without
    `Contract-Change` + a re-locked contract FAILS, routing back to the architecture gate; a slice that
-   only quotes the locked lines in a `CONTRACT-QUOTE` block passes without the trailer),
+   only quotes unbroken runs of the locked lines in `CONTRACT-QUOTE` blocks, in a Markdown file, passes without the trailer),
    **build/test/lint**, **verified-commits**, and the **pattern gates** **commit-message** / **pr-title**
    / **pr-template** (profile-aware `code`|`product`, so they also run on the Product). They fail closed
    on a bad base ref.

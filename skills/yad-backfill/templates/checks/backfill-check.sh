@@ -72,6 +72,13 @@ if ! git merge-base "$BASE" HEAD >/dev/null 2>&1; then
   echo "FAIL [backfill]: '${BASE}' and HEAD share no history — fetch full history (a shallow clone has no merge base) or check the base branch."
   exit 1
 fi
+# Several merge bases (a criss-cross merge): `git diff BASE...HEAD` then reads from ONE of them, and a
+# change the other side brought in could be undone unseen. Fail closed (#363 review 1).
+if [ "$(git merge-base --all "$BASE" HEAD | wc -l | tr -d ' ')" != 1 ]; then
+  echo "FAIL [backfill]: '${BASE}' and HEAD have more than one merge base (a criss-cross merge), so the change cannot be read from one point."
+  echo "  Rebase the branch onto ${BASE}, or merge ${BASE} into it, then push again."
+  exit 1
+fi
 
 
 # Folded as macOS and Windows fold a name (E116, as E115): `Src/` IS `src/` there, and `src/Billing/` IS

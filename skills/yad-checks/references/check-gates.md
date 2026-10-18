@@ -128,7 +128,10 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
 - Computes the changed files from the merge base, `<base>...HEAD` (issue #363). A two-dot diff compared
   with the target's tip, so a slice that landed on the target after the branch split off failed a
   branch that never touched it. The trailer is still read from `git log <base>..HEAD` (this branch's own
-  commits). A base that shares no history with HEAD (a shallow clone) **FAILS** closed and says so.
+  commits). A base that shares no history with HEAD (a shallow clone) **FAILS** closed and says so,
+  and so does one with **more than one** merge base (a criss-cross merge, review 1): the three-dot diff
+  reads from one of them, and a hand-resolved merge could undo what the other side brought in. Rebase
+  the branch onto the target, or merge the target into it.
 - The surface is `specs/<story>/contracts` **and** everything under it: a path that IS
   `specs/<story>/contracts` (a link being removed) counts too.
 - If **nothing** under `specs/*/contracts/**` changed → **PASS** (normal implementation only *consumes*
@@ -141,11 +144,19 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
     - the Product is reached (the same resolution as below) and its `contract-lock.json` is readable;
     - `link.md` pins that lock's hash;
     - the Product's `epics/<epic>/contract.md` still hashes to the lock (the `CONTRACT-SURFACE` recipe),
-      so the lines are compared with the **locked** text, not a later edit;
+      so the lines are compared with the **locked** text, not a later edit. A change-epic that inherits
+      its architecture has a **pointer lock** (`inheritedFrom` / `ref`) and no `contract.md`: the owner's
+      `contract.md` is read instead, only inside the Product's `epics/`, and only while the owner's lock
+      still holds the copied hash (as `yad doctor` checks it);
     - no slice file is deleted (a deletion changes the surface);
-    - every changed slice file holds exactly one `<!-- CONTRACT-QUOTE:BEGIN -->` …
-      `<!-- CONTRACT-QUOTE:END -->` block that is not empty, and every non-blank line in it (trailing
-      spaces and a CR ignored) is a line of the locked surface block. Notes outside the block are free.
+    - every changed slice file is **Markdown** (`.md`; any other file under `contracts/` needs the
+      trailer), read from the commit by its exact name (a name holding a newline is refused), and holds
+      one or more `<!-- CONTRACT-QUOTE:BEGIN -->` … `<!-- CONTRACT-QUOTE:END -->` blocks, none empty or
+      inside another. The non-blank lines of each block (trailing spaces and a CR ignored) are **one
+      unbroken run of the locked surface's non-blank lines, in its order** — lines checked one by one
+      could be reordered into a different meaning (review 1). Outside the blocks the file holds only blank
+      lines and at most one `# ` title: a note there was never read, so a new endpoint written in it passed
+      (review 1). Notes go in `spec.md` or `plan.md`.
     A prose slice from before this rule has no block, so it still needs the trailer until `yad-spec`
     rewrites it.
   - Best-effort fidelity: when the product repo is reachable (via `link.md`'s `product-repo` path),
