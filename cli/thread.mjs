@@ -192,35 +192,40 @@ export async function runReconcile(root, { action = 'check', thread = null, runn
   }
 
   // #365: merged work the build ledger does not record — a merged task with no ship record, a story whose
-  // repos all hold merged work but whose status is not `shipped`, and possible matches to check by hand.
-  const drift = shipDrift(root, { ...(runner ? { runner } : {}), ...(env ? { env } : {}) });
-  const inScope = thread ? new Set(threadEpics(root, roots[0])) : null;
-  const ships = {
-    repos: drift.repos,
-    findings: drift.findings.filter((f) => !inScope || (f.epic ? inScope.has(f.epic) : f.stories.some((st) => inScope.has(st.replace(/-S\d+$/, ''))))),
-  };
-  if (ships.repos.length) {
-    log(c.bold('\nBuild records'));
-    const short = (sha) => (sha ? sha.slice(0, 7) : null);
-    for (const r of ships.repos) {
-      if (!r.read) warn(`${forTerminal(r.repo)}: not read — ${r.why}`);
-      else info(`${forTerminal(r.repo)}: read ${forTerminal(r.ref)} at ${short(r.sha)} (this clone's view — nothing fetched)${r.note ? `; ${r.note}` : ''}`);
-    }
-    for (const f of ships.findings) {
-      if (f.kind === 'merged-no-ship') {
-        const where = [short(f.sha), f.pr != null ? `PR/MR ${f.pr}` : null].filter(Boolean).join(', ');
-        warn(`${f.story}-${f.task} merged in ${forTerminal(f.repo)} (${where}, by ${f.via}) — no ship record`);
-        hand(f.fix);
-      } else if (f.kind === 'looks-shipped') {
-        warn(`${f.story}: every repo it names (${f.repos.map(forTerminal).join(', ')}) has merged work, but its status is ${forTerminal(f.status || 'unset')}`);
-        hand('if no task is left, set `status: shipped` (`yad checkpoint` commits it with the ledger)');
-      } else {
-        info(`${forTerminal(f.repo)} ${short(f.sha)}: ${f.via} — a possible match for ${f.stories.join(', ')}; check by hand`);
+  // repos all hold merged work but whose status is not `shipped` (a hint), and possible matches to check by
+  // hand. `check` only: it reads every repo's history and may ask the platform (review 1).
+  let ships = null;
+  let unknown = 0;
+  if (action === 'check') {
+    const drift = shipDrift(root, { epics: thread ? new Set(threadEpics(root, roots[0])) : null, ...(runner ? { runner } : {}), ...(env ? { env } : {}) });
+    ships = drift;
+    if (drift.repos.length || drift.unreadEpics.length) {
+      log(c.bold('\nBuild records'));
+      const short = (sha) => (sha ? sha.slice(0, 7) : null);
+      for (const r of drift.repos) {
+        if (!r.read) warn(`${forTerminal(r.repo)}: not read — ${r.why}`);
+        else info(`${forTerminal(r.repo)}: read ${forTerminal(r.ref)} at ${short(r.sha)} (this clone's view — nothing fetched)${r.note ? `; ${r.note}` : ''}`);
       }
+      for (const e of drift.unreadEpics) warn(`${e}: its build ledger could not be read — \`yad doctor\` says why`);
+      for (const f of drift.findings) {
+        if (f.kind === 'merged-no-ship') {
+          const where = [short(f.sha), f.pr != null ? `PR/MR ${f.pr}` : null].filter(Boolean).join(', ');
+          warn(`${f.story}-${f.task} merged in ${forTerminal(f.repo)} (${where}, by ${f.via}) — no ship record`);
+          hand(forTerminal(f.fix));
+        } else if (f.kind === 'looks-shipped') {
+          info(`${f.story}: every repo it names (${f.repos.map(forTerminal).join(', ')}) has merged work, but its status is ${forTerminal(f.status || 'unset')} — if no task is left, set \`status: shipped\` (\`yad checkpoint\` commits it with the ledger)`);
+        } else {
+          info(`${forTerminal(f.repo)} ${short(f.sha)}: ${f.via} — a possible match for ${f.stories.join(', ')}; check by hand`);
+        }
+      }
+      const counted = drift.findings.filter((f) => f.kind === 'merged-no-ship').length;
+      flags += counted;
+      // Never an all-clear over what was not read: a repo that was not, or answered in part, is unknown.
+      unknown = drift.repos.filter((r) => !r.read).length + drift.unreadEpics.length;
+      const partial = drift.repos.some((r) => r.read && r.note);
+      if (!counted && !unknown && !partial) ok('every merged task has a ship record');
+      else if (!counted) info(`no merged task without a ship record in what was read${unknown ? ` — ${unknown} repo(s) or ledger(s) not read, so merged work there is unknown` : ''}${partial ? '; the platform did not answer in full for some repos' : ''}`);
     }
-    const counted = ships.findings.filter((f) => f.kind !== 'possible').length;
-    flags += counted;
-    if (!counted) ok('every merged task has a ship record');
   }
 
   if (action === 'refresh') {
@@ -238,6 +243,7 @@ export async function runReconcile(root, { action = 'check', thread = null, runn
 
   log('');
   if (flags) { warn(`${flags} item(s) need attention — reconcile is advisory; the gates block at merge`); }
+  else if (unknown) { info(`no drift and no open debt found — but ${unknown} repo(s) or ledger(s) were not read`); }
   else { ok('all threads reconciled — no drift, no open debt'); }
-  return { action, flags, threads, ships };
+  return { action, flags, threads, ...(ships ? { ships } : {}) };
 }

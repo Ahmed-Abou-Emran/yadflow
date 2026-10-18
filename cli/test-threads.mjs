@@ -2043,7 +2043,7 @@ test('#365 reconcile: a merged task with no ship record is reported, with the co
     // A ship already exists for (S01, backend), so the retro command would be refused: say so instead.
     assert.match(s1.fix, /record the ship as yad-engineer-review does/);
     const s2 = kinds(r, 'merged-no-ship').find((f) => f.story === 'EP-shop-S02');
-    assert.equal(s2.fix, `yad checkpoint --retro-ship EP-shop/EP-shop-S02 --repo backend --task T01 --merge-commit ${shas[2].slice(0, 12)}`);
+    assert.match(s2.fix, new RegExp(`^if EP-shop-S02 predates ledger tracking: yad checkpoint --retro-ship EP-shop/EP-shop-S02 --repo backend --task T01 --merge-commit ${shas[2].slice(0, 12)} \\(the story's status must be in-build or shipped first\\); otherwise record the ship as yad-engineer-review does`));
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
@@ -2060,7 +2060,7 @@ test('#365 reconcile: a subject ID or a short tag is only a possible match; a bo
   const { T, shas } = shipProduct({
     commits: [
       'feat(s04): work on the fourth story',
-      'fix: EP-shop-S03 tweak',
+      'fix: EP-shop-S02 tweak',
       'chore: notes\n\nThis depends on EP-shop-S02.',
     ],
   });
@@ -2068,7 +2068,7 @@ test('#365 reconcile: a subject ID or a short tag is only a possible match; a bo
     const r = shipDrift(T, { platform: false });
     assert.deepEqual(kinds(r, 'merged-no-ship'), [], 'nothing here is a merged task');
     const possible = kinds(r, 'possible').map((f) => [f.sha, f.token, f.stories]);
-    assert.deepEqual(possible.sort(), [[shas[0], 's4', ['EP-shop-S04']], [shas[1], 'EP-shop-S03', ['EP-shop-S03']]].sort());
+    assert.deepEqual(possible.sort(), [[shas[0], 's4', ['EP-shop-S04']], [shas[1], 'EP-shop-S02', ['EP-shop-S02']]].sort());
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
@@ -2080,7 +2080,8 @@ test('#365 reconcile: a retroactive ship covers the story in its repo; a repo no
   const { T: T2 } = shipProduct({ clone: false });
   try {
     const r = shipDrift(T2, { platform: false });
-    assert.deepEqual(r.repos, [{ repo: 'backend', read: false, why: 'not cloned here (`yad repo clone`)' }]);
+    // Not cloned, and no git_url to clone it from: judgeRepo's own reason.
+    assert.deepEqual(r.repos, [{ repo: 'backend', read: false, why: 'no git_url recorded — clone it by hand' }]);
     assert.deepEqual(kinds(r, 'merged-no-ship'), []);
   } finally { fs.rmSync(T2, { recursive: true, force: true }); }
 });
@@ -2092,7 +2093,8 @@ test('#365 reconcile: a squashed task shows by its merged branch when the platfo
   const runner = (cmd, args) => {
     if (cmd === 'which' || cmd === 'where' || (cmd === 'glab' && args[0] === 'auth')) return { ok: true, stdout: '', stderr: '' };
     if (cmd === 'glab' && args[0] === 'api') {
-      return { ok: true, stdout: JSON.stringify([{ iid: 7, source_branch: 'feat/EP-shop-S02-T01-queue', squash_commit_sha: shas[0] }, { iid: 6, source_branch: 'hotfix/typo', merge_commit_sha: 'abc' }]), stderr: '' };
+      // A real GitLab honours target_branch; the stub returns everything, so the filter must hold on its own.
+      return { ok: true, stdout: JSON.stringify([{ iid: 7, source_branch: 'feat/EP-shop-S02-T01-queue', target_branch: 'main', squash_commit_sha: shas[0] }, { iid: 8, source_branch: 'feat/EP-shop-S01-T09-stacked', target_branch: 'feat/EP-shop-S01-T01', merge_commit_sha: 'abc' }, { iid: 6, source_branch: 'hotfix/typo', target_branch: 'main', merge_commit_sha: 'abc' }]), stderr: '' };
     }
     return { ok: false, stdout: '', stderr: 'unexpected' };
   };
@@ -2115,11 +2117,99 @@ test('#365 reconcile check prints the build records and returns them in --json',
     assert.match(out, /EP-shop-S02-T01 merged in backend \([0-9a-f]{7}, by trailer\) — no ship record/);
     assert.match(out, /yad checkpoint --retro-ship EP-shop\/EP-shop-S02 --repo backend --task T01/);
     assert.equal(r.ships.findings.filter((f) => f.kind === 'merged-no-ship').length, 1);
-    assert.ok(r.flags >= 2, 'the missing ship and the not-shipped story both need attention');
+    assert.equal(r.flags, 1, 'the missing ship counts; the not-shipped story is a hint');
     // Scoped to another thread, this epic's findings are left out.
     writeEpic(T, 'EP-other', { kind: 'feature', thread: 'EP-other' });
     let scoped;
     await grab(async () => { scoped = await runReconcile(T, { action: 'check', thread: 'EP-other', env: { YAD_PLATFORM_READ: '0' } }); });
     assert.deepEqual(scoped.ships.findings, []);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 1: the retro command is offered once per story and repo; a retro ship covers only what merged up to it', () => {
+  const { T } = shipProduct({ commits: ['feat: a\n\nTask: EP-shop-S02-T01', 'feat: b\n\nTask: EP-shop-S02-T02'] });
+  try {
+    const fixes = kinds(shipDrift(T, { platform: false }), 'merged-no-ship').map((f) => f.fix);
+    assert.equal(fixes.filter((x) => /--retro-ship/.test(x)).length, 1, 'the second would be refused');
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+  // A retro ship dated before a later task merged does not hide that task.
+  const { T: T2, shas } = shipProduct({ commits: ['feat: a\n\nTask: EP-shop-S01-T01', 'feat: b\n\nTask: EP-shop-S01-T02'] });
+  try {
+    fs.writeFileSync(path.join(T2, 'epics/EP-shop/.sdlc/build-log', buildShardName({ story: 'EP-shop-S01', task: 'retro', repo: 'backend' })),
+      JSON.stringify({ story: 'EP-shop-S01', task: 'retro', repo: 'backend', retroactive: true, mergeCommit: shas[0] }));
+    assert.deepEqual(kinds(shipDrift(T2, { platform: false }), 'merged-no-ship').map((f) => f.task), ['T02']);
+  } finally { fs.rmSync(T2, { recursive: true, force: true }); }
+});
+
+test('#365 review 1: a full task ID in a squash subject counts; a revert does not', () => {
+  const { T } = shipProduct({ commits: ['EP-shop-S02-T01: add the queue (!7)', 'Revert "EP-shop-S01-T01: orders"'] });
+  try {
+    assert.deepEqual(kinds(shipDrift(T, { platform: false }), 'merged-no-ship').map((f) => [f.story, f.task, f.via]), [['EP-shop-S02', 'T01', 'task ID in the subject']]);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 1: possible matches skip a story already shipped or recorded', () => {
+  const { T } = shipProduct({ commits: ['feat(s03): polish', 'feat(s02): more'], ships: [{ story: 'EP-shop-S02', task: 'T01', repo: 'backend' }] });
+  try {
+    assert.deepEqual(kinds(shipDrift(T, { platform: false }), 'possible'), [], 'S03 is shipped and S02 has a ship here');
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 1: git never runs in a repo judgeRepo refuses; a path outside the workspace says why', () => {
+  const { T } = shipProduct({ commits: ['feat: x\n\nTask: EP-shop-S02-T01'] });
+  try {
+    fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'backend', path: '../../../../elsewhere', default_branch: 'main' }] }));
+    const r = shipDrift(T, { platform: false });
+    assert.equal(r.repos[0].read, false);
+    assert.match(r.repos[0].why, /outside the workspace/);
+    // A plain folder with no .git and no git_url is not read either.
+    fs.mkdirSync(path.join(T, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(T, 'docs/x.md'), 'x');
+    fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'backend', path: 'docs', default_branch: 'main' }] }));
+    assert.equal(shipDrift(T, { platform: false }).repos[0].read, false);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 1: an unsafe repo name gets no command to paste', () => {
+  const { T } = shipProduct({ commits: ['feat: x\n\nTask: EP-shop-S02-T01'] });
+  try {
+    const bad = 'be$(touch PWN)';
+    fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: bad, path: 'repos/backend', default_branch: 'main' }] }));
+    const story = path.join(T, 'epics/EP-shop/stories/EP-shop-S02.md');
+    fs.writeFileSync(story, fs.readFileSync(story, 'utf8').replace('repos: [backend]', `repos: [${bad}]`));
+    const f = kinds(shipDrift(T, { platform: false }), 'merged-no-ship');
+    assert.equal(f.length, 1);
+    assert.doesNotMatch(f[0].fix, /--retro-ship/);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 1: a repo not read means no all-clear', async () => {
+  const { T } = shipProduct({ clone: false });
+  try {
+    const out = await grab(async () => { await runReconcile(T, { action: 'check', env: { YAD_PLATFORM_READ: '0' } }); });
+    assert.doesNotMatch(out, /every merged task has a ship record/);
+    assert.doesNotMatch(out, /all threads reconciled/);
+    assert.match(out, /1 repo\(s\) or ledger\(s\) not read, so merged work there is unknown/);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 1: a monorepo folder reads only its own history', () => {
+  const T = productConfig();
+  writeEpic(T, 'EP-shop', { kind: 'feature', thread: 'EP-shop' }, { stories: ['in-build'] });
+  fs.mkdirSync(path.join(T, '.sdlc'), { recursive: true });
+  // The Product's own checkout holds apps/web and apps/api.
+  const g = (...a) => execFileSync('git', a, { cwd: T, stdio: 'pipe' }).toString().trim();
+  g('init', '-q', '-b', 'main');
+  g('config', 'user.email', 'dev@shop.io');
+  g('config', 'user.name', 'dev');
+  for (const [dir, msg] of [['apps/web', 'feat: web\n\nTask: EP-shop-S01-T01'], ['apps/api', 'feat: api\n\nTask: EP-shop-S01-T02']]) {
+    fs.mkdirSync(path.join(T, dir), { recursive: true });
+    fs.writeFileSync(path.join(T, dir, 'f.txt'), msg);
+    g('add', '-A');
+    g('commit', '-q', '-m', msg);
+  }
+  fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'backend', path: 'apps/api', default_branch: 'main' }] }));
+  try {
+    assert.deepEqual(kinds(shipDrift(T, { platform: false }), 'merged-no-ship').map((f) => f.task), ['T02'], 'web\'s T01 is not credited to api');
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
