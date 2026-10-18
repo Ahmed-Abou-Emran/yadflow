@@ -999,7 +999,7 @@ test('contract-check gate: an edit to a file the base renamed into a slice is ca
   const r = runGate(CONTRACT, T);
   assert.equal(r.code, 1, r.out);
   if (MERGE_TREE) assert.match(r.out, /^ {2}specs\/EP-demo-S01\/contracts\/notes\.md$/m, 'the edit lands in the slice');
-  else assert.match(r.out, /main renamed a file this branch changes/);
+  else assert.match(r.out, /main removed or moved a file this branch changes/);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -1017,7 +1017,88 @@ test('backfill gate: an edit to a file the base renamed into a backfilled featur
   const r = runGate(BACKFILL, T);
   assert.equal(r.code, 1, r.out);
   if (MERGE_TREE) assert.match(r.out, /FAIL \[backfill\]: billing is being backfilled/);
-  else assert.match(r.out, /main renamed a file this branch changes/);
+  else assert.match(r.out, /main removed or moved a file this branch changes/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 5: a "Rebase and merge" replays each commit. A branch commit that mirrors the base's re-lock and a
+// later one that undoes it net to nothing in the merge — and land the undo in a rebase. The branch's own
+// commits that touch a slice count, so the trailer (or the quote proof) is needed.
+test('contract-check gate: slice edits that net to nothing in the merge still need the trailer (issue #344 review 5)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: the slice\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/api.md': 'v1\n' });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: re-lock\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/api.md': 'v2\n' });
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'chore: mirror the re-lock\n\nTask: EP-demo-S01-T01', { 'specs/EP-demo-S01/contracts/api.md': 'v2\n' });
+  commit(T, 'chore: and undo it\n\nTask: EP-demo-S01-T01', { 'specs/EP-demo-S01/contracts/api.md': 'v1\n' });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /^ {2}specs\/EP-demo-S01\/contracts\/api\.md$/m, 'the slice the own commits touched is on the surface');
+  assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 5: the old-git guard no longer relies on rename detection (its limit differs from the merge's).
+// A path the base removed that the branch modifies fails; both deleting it merges cleanly and passes.
+test('contract-check gate: a file the base removed and the branch modifies is refused; both deleting it passes (issue #363 review 5)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs: notes', { 'docs/notes.md': thirty, 'docs/old.md': thirty });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  git(T, 'rm', '-q', 'docs/notes.md', 'docs/old.md');
+  git(T, 'commit', '-q', '-m', 'docs: drop them');
+  git(T, 'checkout', '-q', 'feature');
+  git(T, 'rm', '-q', 'docs/old.md');
+  git(T, 'commit', '-q', '-m', 'docs: drop old too');
+  const both = runGate(CONTRACT, T);
+  assert.equal(both.code, 0, `both deleting it is a clean merge:\n${both.out}`);
+  commit(T, 'docs: edit the notes', { 'docs/notes.md': thirty.replace('line 7', 'line 7 edited') });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  if (MERGE_TREE) assert.match(r.out, /this branch does not merge cleanly into main/);
+  else assert.match(r.out, /main removed or moved a file this branch changes/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 5: the link.md that LANDS is read — the base may have re-pinned it since the branch split off.
+test('contract-check gate: a quote is checked against the link.md that lands (issue #344 review 5)', { skip: !MERGE_TREE && 'git older than 2.38 reads the branch tip' }, () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs(spec): an old pin', { 'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', '0'.repeat(64)) });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs(spec): re-pinned', { 'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash) });
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'docs(spec): quote the slice', { 'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)) });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 0, r.out);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 5: "the whole slice is gone" reads what lands. The branch removes its slice and link.md; the base
+// adds a file to that slice afterwards — the merge leaves a slice with no link.md, which is not a clean-up.
+test('contract-check gate: a slice the base adds to is not gone, though the branch removed its part (issue #344 review 5)', { skip: !MERGE_TREE && 'git older than 2.38 reads the branch tip' }, () => {
+  const T = scaffoldRepo();
+  fs.mkdirSync(path.join(T, 'product', 'epics', 'EP-demo', '.sdlc'), { recursive: true });
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: a slice\n\nContract-Change: yes', {
+    'specs/EP-demo-S01/contracts/api.md': 'v1\n',
+    'specs/EP-demo-S01/link.md': linkMd({ story: 'EP-demo-S01', 'product-repo': '../../product', 'contract-lock': 'none' }),
+  });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: another slice file\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/more.md': 'm\n' });
+  git(T, 'checkout', '-q', 'feature');
+  git(T, 'rm', '-rq', 'specs/EP-demo-S01');
+  git(T, 'commit', '-q', '-m', 'chore: drop the slice\n\nContract-Change: yes');
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /slice changes, but specs\/EP-demo-S01\/link\.md is not there/);
   fs.rmSync(T, { recursive: true, force: true });
 });
 

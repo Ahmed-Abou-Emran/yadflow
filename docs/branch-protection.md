@@ -132,6 +132,22 @@ branch with the project access token stored as the masked CI/CD variable `SDLC_G
 (`read_api` + `write_repository`). The token's role must be in "Allowed to push and merge" on the
 protected branch, or the push is refused and the ledger never advances.
 
+## Which merges the code-repo gates model
+
+`contract-check` and `backfill-check` read a pull/merge request's change as **merging the branch into
+the target** makes it (`git merge-tree --write-tree`, git 2.38+). That is exactly what lands for:
+
+- a **merge commit** and a **squash** merge (GitHub and GitLab);
+- GitLab **fast-forward** and **semi-linear** merges, whose pipeline runs on the rebased branch.
+
+A GitHub **"Rebase and merge"** replays each commit instead. The gates cover it for the contract surface:
+a slice file any of the branch's own commits touches needs `Contract-Change: yes` (or the exact-quote
+proof) even when the merge nets it to nothing, and a quote is checked on the branch tip as well. If you
+want the checks to see exactly what lands, prefer squash or merge-commit merges in code repos.
+
+Not modelled: a platform set to follow **directory** renames on its own (`merge.directoryRenames=true`).
+git's default stops such a merge with a conflict, and the gates fail closed on a conflict.
+
 ## Other direct pushes yad can make
 
 These commands push straight to the default branch: `yad update --push` (and `yad check --fix --push`),

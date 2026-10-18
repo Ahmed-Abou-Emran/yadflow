@@ -138,11 +138,17 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
   - and it misses a **rename** on the target: the real merge follows it, so an edit to a file the target
     moved into a slice (or a backfilled feature) lands there unseen (review 4).
 
-  The trailer is still read from `git log <base>..HEAD` (this branch's own commits). A branch that does
-  not merge cleanly **FAILS** closed (the platform cannot merge it either): merge the target into it.
-  A base that shares no history with HEAD (a shallow clone) **FAILS** closed. **Older git** (before
-  2.38) falls back to the merge base, `<base>...HEAD`, and fails closed when there is more than one, or
-  when the target renamed a file the branch changes.
+  The trailer is still read from `git log <base>..HEAD` (this branch's own commits), and so are the
+  slice files **the branch's own commits touch** (merge commits left out): they count as touched even
+  when the merge nets them to nothing (review 5, the user's decision). A GitHub "Rebase and merge"
+  replays each commit, so a commit that mirrors the target's re-lock and a later one that undoes it would
+  land the undo while the merge shows no change. The quote pass then reads such a file both from the
+  merge and from the branch tip (what a rebase lands), and the `link.md` that lands, from the merge.
+  A branch that does not merge cleanly **FAILS** closed (the platform cannot merge it either): merge the
+  target into it. A base that shares no history with HEAD (a shallow clone), or a merge git cannot build
+  (a missing object), **FAILS** closed. **Older git** (before 2.38) falls back to the merge base,
+  `<base>...HEAD`, and fails closed when there is more than one, or when the target **removed or moved**
+  a file the branch modifies (no rename detection: its limits differ from the merge's).
 - The surface is `specs/<story>/contracts` **and** everything under it: a path that IS
   `specs/<story>/contracts` (a link being removed) counts too.
 - If **nothing** under `specs/*/contracts/**` changed → **PASS** (normal implementation only *consumes*

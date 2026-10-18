@@ -80,24 +80,35 @@ if [ -z "$_mbs" ]; then
   exit 1
 fi
 _mb_count="$(printf '%s\n' "$_mbs" | wc -l | tr -d ' ')"
-DIFF_TO="$(git merge-tree --write-tree --no-messages "$BASE" HEAD 2>/dev/null | head -1)" || DIFF_TO=""
-if [ -n "$DIFF_TO" ] && git rev-parse --verify --quiet "${DIFF_TO}^{tree}" >/dev/null 2>&1; then
+# The exit code says which case this is (review 5): 0 a clean merge, 1 a conflict, 129 a git older than
+# 2.38 (it does not know --write-tree), anything else git could not build it (a missing object, say).
+_mt=0
+_mt_out="$(git merge-tree --write-tree --no-messages "$BASE" HEAD 2>/dev/null)" || _mt=$?
+DIFF_TO="${_mt_out%%$'\n'*}"
+if [ "$_mt" = 0 ] && [ -n "$DIFF_TO" ] && git rev-parse --verify --quiet "${DIFF_TO}^{tree}" >/dev/null 2>&1; then
   DIFF_FROM="$(git rev-parse --verify --quiet "${BASE}^{commit}")"
   [ "$_mb_count" = 1 ] || echo "note [backfill]: '${BASE}' and HEAD have ${_mb_count} merge bases — the change is read as the merge into ${BASE} makes it."
-elif git merge-tree --write-tree --no-messages HEAD HEAD >/dev/null 2>&1; then
+elif [ "$_mt" = 1 ]; then
   echo "FAIL [backfill]: this branch does not merge cleanly into ${BASE}, so what it changes there cannot be read. Merge ${BASE} into the branch, resolve the conflicts, then push again."
+  exit 1
+elif [ "$_mt" != 129 ]; then
+  echo "FAIL [backfill]: git could not build the merge of this branch into ${BASE} (git merge-tree exit ${_mt}) — fetch the full history of both, then run again."
   exit 1
 elif [ "$_mb_count" != 1 ]; then
   echo "FAIL [backfill]: '${BASE}' and HEAD have ${_mb_count} merge bases, and this git (older than 2.38) cannot build the merge into ${BASE}. Merge ${BASE} into the branch, then push again."
   exit 1
 else
   DIFF_FROM="$_mbs"; DIFF_TO="HEAD"
-  # The fallback reads the branch's own diff, so a file the base renamed since the split, and the branch
-  # changes at its old path, would land at the new path unseen. Refuse that one case.
-  _moved="$(git diff -M --diff-filter=R --name-status -z "$_mbs" "$BASE" | tr '\n\0' '?\n' | awk 'NR % 3 == 2')" || _moved=""
-  _mine="$(git diff --no-renames --name-status -z "$_mbs" HEAD | tr '\n\0' '?\n' | awk 'NR % 2 == 0')" || _mine=""
-  if [ -n "$_moved" ] && [ -n "$_mine" ] && printf '%s\n' "$_moved" | grep -Fxq -f <(printf '%s\n' "$_mine"); then
-    echo "FAIL [backfill]: ${BASE} renamed a file this branch changes, and this git (older than 2.38) cannot follow it into the merge. Merge ${BASE} into the branch, then push again."
+  # The fallback reads the branch's own diff, so an edit to a file the base has since moved would follow
+  # the rename into the merge unseen (review 4). Rename detection itself has limits the real merge does
+  # not share (review 5: `diff.renameLimit`), so it is not used: a path the base REMOVED — deleted or
+  # moved away — that the branch MODIFIES fails closed. Both deleting it is a clean merge, and passes.
+  _gone="$(git diff --no-renames --diff-filter=D --name-status -z "$_mbs" "$BASE" | tr '\n\0' '?\n' | awk 'NR % 2 == 0')" || _gone=""
+  _mine="$(git diff --no-renames --name-status -z "$_mbs" HEAD | tr '\n\0' '?\n' | awk 'NR % 2 == 1 { s = $0; next } s == "M" || s == "T"')" || _mine=""
+  # A here-string, not a pipe: `grep -q` stops at the first match, and a large list written into a pipe
+  # it has left would end in SIGPIPE — read as "no match" under pipefail (review 5).
+  if [ -n "$_gone" ] && [ -n "$_mine" ] && grep -Fxq -f <(printf '%s\n' "$_mine") <<<"$_gone"; then
+    echo "FAIL [backfill]: ${BASE} removed or moved a file this branch changes, and this git (older than 2.38) cannot follow it into the merge. Merge ${BASE} into the branch, then push again."
     exit 1
   fi
 fi
