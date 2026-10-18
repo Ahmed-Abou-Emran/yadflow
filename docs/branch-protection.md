@@ -140,10 +140,12 @@ the target** makes it (`git merge-tree --write-tree`, git 2.38+). That is exactl
 - a **merge commit** and a **squash** merge (GitHub and GitLab);
 - GitLab **fast-forward** and **semi-linear** merges, whose pipeline runs on the rebased branch.
 
-A GitHub **"Rebase and merge"** replays each commit instead. The gates cover it for the contract surface:
-a slice file any of the branch's own commits touches needs `Contract-Change: yes` (or the exact-quote
-proof) even when the merge nets it to nothing, and a quote is checked on the branch tip as well. If you
-want the checks to see exactly what lands, prefer squash or merge-commit merges in code repos.
+A GitHub **"Rebase and merge"** replays each commit instead. `contract-check` covers it for the contract
+surface: a slice file any of the branch's own commits touches needs `Contract-Change: yes` even when the
+merge nets it to nothing — or the exact-quote proof, which then also needs the branch rebased onto the
+target with no merge commits (so that every merge method lands the branch tip the gate read).
+`backfill-check` does not model a replay. If you want every check to see exactly what lands, prefer
+squash or merge-commit merges in code repos.
 
 Not modelled: a platform set to follow **directory** renames on its own (`merge.directoryRenames=true`).
 git's default stops such a merge with a conflict, and the gates fail closed on a conflict.

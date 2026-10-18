@@ -103,8 +103,8 @@ else
   # the rename into the merge unseen (review 4). Rename detection itself has limits the real merge does
   # not share (review 5: `diff.renameLimit`), so it is not used: a path the base REMOVED — deleted or
   # moved away — that the branch MODIFIES fails closed. Both deleting it is a clean merge, and passes.
-  _gone="$(git diff --no-renames --diff-filter=D --name-status -z "$_mbs" "$BASE" | tr '\n\0' '?\n' | awk 'NR % 2 == 0')" || _gone=""
-  _mine="$(git diff --no-renames --name-status -z "$_mbs" HEAD | tr '\n\0' '?\n' | awk 'NR % 2 == 1 { s = $0; next } s == "M" || s == "T"')" || _mine=""
+  _gone="$(git diff --no-renames --diff-filter=D --name-status -z "$_mbs" "$BASE" | tr '\n\0' '?\n' | awk 'NR % 2 == 0')" || { echo "FAIL [backfill]: git could not list what ${BASE} removed since the branch split off."; exit 1; }
+  _mine="$(git diff --no-renames --name-status -z "$_mbs" HEAD | tr '\n\0' '?\n' | awk 'NR % 2 == 1 { s = $0; next } s == "M" || s == "T"')" || { echo "FAIL [backfill]: git could not list what this branch changes."; exit 1; }
   # A here-string, not a pipe: `grep -q` stops at the first match, and a large list written into a pipe
   # it has left would end in SIGPIPE — read as "no match" under pipefail (review 5).
   if [ -n "$_gone" ] && [ -n "$_mine" ] && grep -Fxq -f <(printf '%s\n' "$_mine") <<<"$_gone"; then

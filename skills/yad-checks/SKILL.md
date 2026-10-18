@@ -26,7 +26,8 @@ in CI on every PR/MR and must pass before merge (build plan §C). Each is a smal
    does not merge cleanly fails closed; an older git reads from the merge base and fails closed on
    several merge bases or a file the target removed or moved that the branch modifies. A slice the
    branch's own commits touch counts even when the merge nets it to nothing (a "Rebase and merge"
-   replays every commit); `docs/branch-protection.md` lists the merge methods the gate models.
+   replays every commit), and its quote proof then needs the branch rebased onto the target with no
+   merge commits; `docs/branch-protection.md` lists the merge methods the gate models.
    Every story whose slice the diff touches is checked, not just the first — see `references/check-gates.md`.
    A claimed `Contract-Change` against an epic that has **no lock at all** fails too: an epic on a short
    lane (`chore`/`spike`) has no architecture step and never locks a surface, so it may consume the

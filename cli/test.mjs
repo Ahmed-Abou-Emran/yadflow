@@ -26725,9 +26725,10 @@ test('E114 doctor: an older contract-check or backfill-check that lists a rename
     put(backend, 'checks/contract-check.sh', shipped(CONTRACT_TPL));
     put(T, 'checks/backfill-check.sh', shipped(BACKFILL_TPL));
     assert.deepEqual(blind(), [], 'the shipped gates are fine');
-    // One list fixed and its twin not: still blind (the `deleted` list is the no-lock hatch).
+    // One list fixed and its twin not: still blind (the quote pass's list of deleted slice files — #344;
+    // the no-lock hatch's `deleted` list went in #363 review 6).
     const lines = shipped(CONTRACT_TPL).split('\n');
-    const second = lines.findIndex((l) => l.startsWith('deleted=') && l.includes('--no-renames'));
+    const second = lines.findIndex((l) => l.includes('> "$_yad_tmp/q-gone"') && l.includes('--no-renames'));
     assert.ok(second > 0);
     lines[second] = lines[second].replace(' --no-renames', '');
     put(backend, 'checks/contract-check.sh', lines.join('\n'));

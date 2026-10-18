@@ -139,11 +139,15 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
     moved into a slice (or a backfilled feature) lands there unseen (review 4).
 
   The trailer is still read from `git log <base>..HEAD` (this branch's own commits), and so are the
-  slice files **the branch's own commits touch** (merge commits left out): they count as touched even
-  when the merge nets them to nothing (review 5, the user's decision). A GitHub "Rebase and merge"
-  replays each commit, so a commit that mirrors the target's re-lock and a later one that undoes it would
-  land the undo while the merge shows no change. The quote pass then reads such a file both from the
-  merge and from the branch tip (what a rebase lands), and the `link.md` that lands, from the merge.
+  slice files **the branch's own commits touch** (merge commits left out, the full history read so a
+  merged side's commits are not dropped): they count as touched even when the merge nets them to nothing
+  (review 5, the user's decision). A GitHub "Rebase and merge" replays each commit, so a commit that
+  mirrors the target's re-lock and a later one that undoes it would land the undo while the merge shows
+  no change. So when the branch's own commits touch a slice, **the quote proof also needs the branch
+  rebased onto the target, with no merge commits** (review 6): then every merge method lands the branch
+  tip, which is the merge the gate reads, and the proof is exact. Otherwise the gate says to rebase (or
+  add the trailer). Both paths read the `link.md` that lands, from the merge. A story "only removes" its
+  slice when every slice path it touches is gone from what lands.
   A branch that does not merge cleanly **FAILS** closed (the platform cannot merge it either): merge the
   target into it. A base that shares no history with HEAD (a shallow clone), or a merge git cannot build
   (a missing object), **FAILS** closed. **Older git** (before 2.38) falls back to the merge base,

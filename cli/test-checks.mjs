@@ -1075,8 +1075,14 @@ test('contract-check gate: a quote is checked against the link.md that lands (is
   commit(T, 'docs(spec): re-pinned', { 'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash) });
   git(T, 'checkout', '-q', 'feature');
   commit(T, 'docs(spec): quote the slice', { 'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)) });
+  // Behind the base, a "Rebase and merge" would replay the branch's own slice commits onto it (review 6):
+  // the quote proof needs a branch rebased onto the base.
+  const behind = runGate(CONTRACT, T);
+  assert.equal(behind.code, 1, behind.out);
+  assert.match(behind.out, /not rebased onto main .* Rebase it, then push again/);
+  git(T, 'rebase', '-q', 'main');
   const r = runGate(CONTRACT, T);
-  assert.equal(r.code, 0, r.out);
+  assert.equal(r.code, 0, `rebased, the link.md that lands pins the lock:\n${r.out}`);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -1099,6 +1105,67 @@ test('contract-check gate: a slice the base adds to is not gone, though the bran
   const r = runGate(CONTRACT, T);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /slice changes, but specs\/EP-demo-S01\/link\.md is not there/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 6: `git log -- <path>` simplifies history, so a slice edit on a merged side whose merge result
+// matches the other parent was dropped from the branch's own commits — and a rebase replays it.
+test('contract-check gate: a slice edit hidden behind a merge still counts as the branch\'s own (issue #344 review 6)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): quote the slice\n\nContract-Change: yes', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const base = git(T, 'rev-parse', 'HEAD').toString().trim();
+  git(T, 'checkout', '-q', '-b', 'side');
+  commit(T, 'docs(spec): widen it', { 'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5), '- `DELETE /orders/{id}` — EVIL\n') });
+  git(T, 'checkout', '-q', 'feature');
+  git(T, 'merge', '-q', '-s', 'ours', '-m', 'merge side, keeping our slice', 'side');
+  const r = runGate(CONTRACT, T, [base]);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /^ {2}specs\/EP-demo-S01\/contracts\/orders\.md$/m, 'the side commit\'s slice edit is on the surface');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 6, the twin of the quote pass: the trailer path reads the link.md that LANDS. The base removing
+// it after the split leaves a slice with nothing pinning it.
+test('contract-check gate: with the trailer, the link.md that lands is read (issue #344 review 6)', { skip: !MERGE_TREE && 'git older than 2.38 reads the branch tip' }, () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs(spec): a slice\n\nContract-Change: yes', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  git(T, 'rm', '-q', 'specs/EP-demo-S01/link.md');
+  git(T, 'commit', '-q', '-m', 'chore: drop the link');
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'feat: widen\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/new.md': 'a new endpoint\n' });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /slice changes, but specs\/EP-demo-S01\/link\.md is not there/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 6: "only removes" is read from what lands. A file the branch added and removed again is in the
+// surface and in no delete list; the clean-up still passes.
+test('contract-check gate: a lockless clean-up with a file added and removed again still passes (issue #344 review 6)', () => {
+  const T = scaffoldRepo();
+  fs.mkdirSync(path.join(T, 'product', 'epics', 'EP-demo', '.sdlc'), { recursive: true });
+  commit(T, 'chore: a slice a short lane should not have\n\nContract-Change: yes', {
+    'specs/EP-demo-S01/contracts/a.md': 'a\n',
+    'specs/EP-demo-S01/link.md': linkMd({ story: 'EP-demo-S01', 'product-repo': '../../product', 'contract-lock': 'none' }),
+  });
+  const base = git(T, 'rev-parse', 'HEAD').toString().trim();
+  commit(T, 'chore: a stray file\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/c.md': 'c\n' });
+  git(T, 'rm', '-q', 'specs/EP-demo-S01/contracts/c.md', 'specs/EP-demo-S01/contracts/a.md');
+  git(T, 'commit', '-q', '-m', 'chore: drop the slice\n\nContract-Change: yes');
+  const r = runGate(CONTRACT, T, [base]);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /only REMOVES contract slice files/);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -1487,15 +1554,16 @@ test('contract-check gate: the PR that removes a linked slice under a lockless e
 });
 
 test('contract-check reads the surface as contracts(/|$) in every place, and the tree before any PASS (E115)', () => {
-  // One arm and its twin: the hatch compares `surface` and `deleted` line for line, and `stories` names
-  // who is checked. An old `contracts/` form in any of them breaks the removal PR above.
+  // One arm and its twin: `surface` names what is touched, the per-story list and `stories` who is checked.
+  // An old `contracts/` form in any of them breaks the removal PR above. (Since #363 review 6 the hatch
+  // reads "gone from what lands" per path, so there is no `deleted` list to pin beside `surface`.)
   const src = fs.readFileSync(CONTRACT, 'utf8');
   const code = src.split('\n').filter((l) => !/^\s*#/.test(l));
   assert.deepEqual(code.filter((l) => /contracts\/['"]|contracts\/\.\*/.test(l)), [], 'no old surface pattern left');
-  assert.equal(code.filter((l) => l.includes('contracts(/|$)')).length, 2);
-  // The per-story lists (the hatch's two) match `specs/<story>/contracts` as TEXT since E117 review 2 —
-  // a folder that is not a story ID may hold pattern characters — with the same `(/|$)` end.
-  assert.equal(code.filter((l) => l.includes('p="specs/${story}/contracts" awk') && l.includes('length($0) == length(p) || substr($0, length(p) + 1, 1) == "/"')).length, 2);
+  assert.equal(code.filter((l) => l.includes('contracts(/|$)')).length, 1);
+  // The per-story list matches `specs/<story>/contracts` as TEXT since E117 review 2 — a folder that is
+  // not a story ID may hold pattern characters — with the same `(/|$)` end.
+  assert.equal(code.filter((l) => l.includes('p="specs/${story}/contracts" awk') && l.includes('length($0) == length(p) || substr($0, length(p) + 1, 1) == "/"')).length, 1);
   assert.equal(code.filter((l) => l.includes('contracts(/.*)?$')).length, 1);
   const read = src.indexOf('git ls-tree -r -z --full-tree HEAD');
   assert.ok(read >= 0 && read < src.indexOf('PASS [contract-check]'), 'the tree is read before the first PASS');
@@ -1566,6 +1634,14 @@ test('contract-check and backfill-check list every change by both paths, byte-wi
   for (const rel of ['skills/yad-checks/templates/checks/contract-check.sh', 'skills/yad-backfill/templates/checks/backfill-check.sh']) {
     const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     const lists = src.split('\n').filter((l) => !/^\s*#/.test(l) && /\bgit\b.*\bdiff\b.*(--name-only|--raw)/.test(l));
+    // Every other list a gate reads names from: `git log` (the branch's own commits, #363 review 5) and the
+    // old-git guard's `--name-status` lists. Each names a rename by both paths (with rename detection on,
+    // a move is an `R` that `--diff-filter=D` never matches, and the guard would fail open — review 6),
+    // and `git log` reads the full history (a merged side's commits are otherwise dropped — review 6).
+    for (const l of src.split('\n').filter((x) => !/^\s*#/.test(x) && (/\bgit log\b.*--name-only/.test(x) || /\bgit diff\b.*--name-status/.test(x)))) {
+      assert.match(l, /--no-renames/, `${rel}: ${l.trim()}`);
+      if (/\bgit log\b.*--name-only/.test(l)) assert.match(l, /git log --full-history /, `${rel}: ${l.trim()}`);
+    }
     assert.ok(lists.length >= 1, `${rel}: no changed list found`);
     for (const l of lists) {
       assert.match(l, /--no-renames/, `${rel}: ${l.trim()}`);
