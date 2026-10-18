@@ -325,8 +325,9 @@ ${c.bold('Build helpers')}
 ${c.bold('Feature threads (post-lock change management)')}
   yad thread                           List every feature thread (genesis → changes → defects)
   yad thread <epic> [--json]           Show one thread: its epics, the resolved current truth, open debt
-  yad reconcile [check|refresh|wire]   Flag orphan drift + open hotfix debt across threads (advisory,
-                                       never a gate — the gates block at merge)
+  yad reconcile [check|refresh|wire]   Flag orphan drift + open hotfix debt across threads, and merged
+                                       tasks with no build-log ship (advisory, never a gate — the gates
+                                       block at merge)
 
 ${c.bold('Interactive docs (generated sites)')}
   yad docs list                        Show the docs target + per-site freshness

@@ -86,7 +86,7 @@ const GROUPS = [
     color: '#8e44ad',
     items: [
       'yad thread [<epic>] [--json] — list every feature thread, or show one: its epics, the resolved current truth and open debt',
-      'yad reconcile [check|refresh|wire] — flag orphan drift and open hotfix debt across threads (advisory; the gates block at merge)',
+      'yad reconcile [check|refresh|wire] — flag orphan drift, open hotfix debt and merged tasks with no ship record across threads (advisory; the gates block at merge)',
       'yad docs list | build | deploy | sync [--epic <id>|--overview] — the generated doc sites: freshness, build, Pages deploy, staleness sweep (--wire installs the Pages CI)',
     ],
   },

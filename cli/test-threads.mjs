@@ -1994,3 +1994,132 @@ test('yad epic new --parent --inherits through the real command line, and a stra
     assert.deepEqual(res.inheritedFrom, { epic: 'EP-checkout', architecture: 'EP-checkout', contract: 'EP-checkout', 'ui-design': 'EP-checkout' });
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
+
+// ---- issue #365: merged work the build ledger does not record -------------------------------------
+import { execFileSync } from 'node:child_process';
+import { shipDrift } from './ship-drift.mjs';
+import { runReconcile } from './thread.mjs';
+import { buildShardName } from './ledger.mjs';
+
+// A Product with one epic of four stories (all on `backend`), and a code repo `repos/backend` on `main`
+// whose history holds what merged. A test that commits sets its repo's identity (CI Linux cannot guess).
+function shipProduct({ statuses = ['in-build', 'in-build', 'shipped', 'ready'], commits = [], ships = [], clone = true } = {}) {
+  const T = productConfig();
+  writeEpic(T, 'EP-shop', { kind: 'feature', thread: 'EP-shop' }, { stories: statuses });
+  fs.mkdirSync(path.join(T, '.sdlc'), { recursive: true });
+  fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'backend', path: 'repos/backend', default_branch: 'main' }] }));
+  const dir = path.join(T, 'epics/EP-shop/.sdlc/build-log');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const s of ships) fs.writeFileSync(path.join(dir, buildShardName(s)), JSON.stringify(s));
+  const repo = path.join(T, 'repos/backend');
+  const shas = [];
+  if (clone) {
+    fs.mkdirSync(repo, { recursive: true });
+    const g = (...a) => execFileSync('git', a, { cwd: repo, stdio: 'pipe' }).toString().trim();
+    g('init', '-q', '-b', 'main');
+    g('config', 'user.email', 'dev@shop.io');
+    g('config', 'user.name', 'dev');
+    for (const msg of commits) { g('commit', '-q', '--allow-empty', '-m', msg); shas.push(g('rev-parse', 'HEAD')); }
+  }
+  return { T, shas };
+}
+const kinds = (r, kind) => r.findings.filter((f) => f.kind === kind);
+
+test('#365 reconcile: a merged task with no ship record is reported, with the command that records it', () => {
+  const { T, shas } = shipProduct({
+    commits: [
+      'feat: create order\n\nTask: EP-shop-S01-T01',
+      'feat: list orders\n\nTask: EP-shop-S01-T02',
+      'feat: queue\n\nTask: EP-shop-S02-T01',
+    ],
+    ships: [{ story: 'EP-shop-S01', task: 'T02', repo: 'backend' }],
+  });
+  try {
+    const r = shipDrift(T, { platform: false });
+    assert.deepEqual(r.repos.map((x) => [x.repo, x.read, x.ref]), [['backend', true, 'main']]);
+    const missing = kinds(r, 'merged-no-ship').map((f) => `${f.story}-${f.task}`).sort();
+    assert.deepEqual(missing, ['EP-shop-S01-T01', 'EP-shop-S02-T01'], 'the shipped T02 is not reported');
+    const s1 = kinds(r, 'merged-no-ship').find((f) => f.story === 'EP-shop-S01');
+    // A ship already exists for (S01, backend), so the retro command would be refused: say so instead.
+    assert.match(s1.fix, /record the ship as yad-engineer-review does/);
+    const s2 = kinds(r, 'merged-no-ship').find((f) => f.story === 'EP-shop-S02');
+    assert.equal(s2.fix, `yad checkpoint --retro-ship EP-shop/EP-shop-S02 --repo backend --task T01 --merge-commit ${shas[2].slice(0, 12)}`);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 reconcile: a story whose repos all hold merged work, but not shipped, is a hedged hint', () => {
+  const { T } = shipProduct({ commits: ['feat: x\n\nTask: EP-shop-S01-T01'], ships: [{ story: 'EP-shop-S03', task: 'T01', repo: 'backend' }] });
+  try {
+    const looks = kinds(shipDrift(T, { platform: false }), 'looks-shipped').map((f) => [f.story, f.status]);
+    // S01 merged and is in-build: a hint. S03 is already shipped; S02 and S04 hold no merged work.
+    assert.deepEqual(looks, [['EP-shop-S01', 'in-build']]);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 reconcile: a subject ID or a short tag is only a possible match; a body ID is not evidence', () => {
+  const { T, shas } = shipProduct({
+    commits: [
+      'feat(s04): work on the fourth story',
+      'fix: EP-shop-S03 tweak',
+      'chore: notes\n\nThis depends on EP-shop-S02.',
+    ],
+  });
+  try {
+    const r = shipDrift(T, { platform: false });
+    assert.deepEqual(kinds(r, 'merged-no-ship'), [], 'nothing here is a merged task');
+    const possible = kinds(r, 'possible').map((f) => [f.sha, f.token, f.stories]);
+    assert.deepEqual(possible.sort(), [[shas[0], 's4', ['EP-shop-S04']], [shas[1], 'EP-shop-S03', ['EP-shop-S03']]].sort());
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 reconcile: a retroactive ship covers the story in its repo; a repo not cloned says so', () => {
+  const { T } = shipProduct({ commits: ['feat: x\n\nTask: EP-shop-S01-T01', 'feat: y\n\nTask: EP-shop-S01-T02'], ships: [{ story: 'EP-shop-S01', task: 'retro', repo: 'backend', retroactive: true }] });
+  try {
+    assert.deepEqual(kinds(shipDrift(T, { platform: false }), 'merged-no-ship'), []);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+  const { T: T2 } = shipProduct({ clone: false });
+  try {
+    const r = shipDrift(T2, { platform: false });
+    assert.deepEqual(r.repos, [{ repo: 'backend', read: false, why: 'not cloned here (`yad repo clone`)' }]);
+    assert.deepEqual(kinds(r, 'merged-no-ship'), []);
+  } finally { fs.rmSync(T2, { recursive: true, force: true }); }
+});
+
+test('#365 reconcile: a squashed task shows by its merged branch when the platform answers', () => {
+  // A GitLab squash keeps only the MR title: no Task trailer reaches the default branch.
+  const { T, shas } = shipProduct({ commits: ['Resolve the orders work'] });
+  fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'backend', path: 'repos/backend', default_branch: 'main', platform: 'gitlab', git_url: 'git@gitlab.com:acme/backend.git' }] }));
+  const runner = (cmd, args) => {
+    if (cmd === 'which' || cmd === 'where' || (cmd === 'glab' && args[0] === 'auth')) return { ok: true, stdout: '', stderr: '' };
+    if (cmd === 'glab' && args[0] === 'api') {
+      return { ok: true, stdout: JSON.stringify([{ iid: 7, source_branch: 'feat/EP-shop-S02-T01-queue', squash_commit_sha: shas[0] }, { iid: 6, source_branch: 'hotfix/typo', merge_commit_sha: 'abc' }]), stderr: '' };
+    }
+    return { ok: false, stdout: '', stderr: 'unexpected' };
+  };
+  try {
+    const r = shipDrift(T, { runner, env: {} });
+    const f = kinds(r, 'merged-no-ship');
+    assert.deepEqual(f.map((x) => [x.story, x.task, x.pr, x.via]), [['EP-shop-S02', 'T01', 7, 'merged branch']]);
+    // Off, it says why — never "nothing merged".
+    const off = shipDrift(T, { runner, env: { YAD_PLATFORM_READ: '0' } });
+    assert.match(off.repos[0].note, /^platform not read — platform reads are turned off/);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 reconcile check prints the build records and returns them in --json', async () => {
+  const { T } = shipProduct({ commits: ['feat: queue\n\nTask: EP-shop-S02-T01'] });
+  try {
+    let r;
+    const out = await grab(async () => { r = await runReconcile(T, { action: 'check', env: { YAD_PLATFORM_READ: '0' } }); });
+    assert.match(out, /Build records/);
+    assert.match(out, /EP-shop-S02-T01 merged in backend \([0-9a-f]{7}, by trailer\) — no ship record/);
+    assert.match(out, /yad checkpoint --retro-ship EP-shop\/EP-shop-S02 --repo backend --task T01/);
+    assert.equal(r.ships.findings.filter((f) => f.kind === 'merged-no-ship').length, 1);
+    assert.ok(r.flags >= 2, 'the missing ship and the not-shipped story both need attention');
+    // Scoped to another thread, this epic's findings are left out.
+    writeEpic(T, 'EP-other', { kind: 'feature', thread: 'EP-other' });
+    let scoped;
+    await grab(async () => { scoped = await runReconcile(T, { action: 'check', thread: 'EP-other', env: { YAD_PLATFORM_READ: '0' } }); });
+    assert.deepEqual(scoped.ships.findings, []);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});

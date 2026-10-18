@@ -123,3 +123,40 @@ function listGitLab(t, sinceMs, runner) {
   return { ...t, ok: true, open, merged, openPartial: o.body.length >= PAGE, mergedPartial: m.body.length >= PAGE };
 }
 
+
+// #365 — the merged PRs/MRs of one repo, newest first, for `yad reconcile check`: which task branches
+// merged. yad's task branches carry the task ID (`feat/EP-x-S01-T01-…`), and a squash merge on GitLab keeps
+// only the MR title — so the branch name is the one place a squashed task still shows. Only the number,
+// the source branch and the merge commit are read, and the caller prints only the task ID it finds in a
+// branch name: never a title, a body, or the rest of a branch name.
+//   `{ ok: true, merged: [{ number, branch, commit }], partial }` or `{ ok: false, kind, why }`.
+const GH_MERGED_BRANCHES = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){
+pullRequests(states:MERGED,first:${PAGE},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number headRefName mergeCommit{oid}}}}}`;
+export function listMergedBranches(target, { runner = run, env = process.env, authCache = new Map() } = {}) {
+  const t = target?.cli ? target : prTarget(target, { runner, env, authCache });
+  if (!t.ok) return t;
+  if (t.platform === 'github') {
+    const parts = t.repo.split('/');
+    const fail = (res) => ({ ...t, ok: false, kind: 'other', why: whyFailed(res, { platform: 'github', host: t.host, what: `the merged pull requests of ${shown(t.repo)}`, plural: true }) });
+    if (parts.length !== 2) return { ...t, ok: false, kind: 'no-url', why: `${shown(t.repo)} is not an owner/name GitHub repo path` };
+    const r = runner('gh', ['api', '--hostname', t.host, 'graphql', '-f', `query=${GH_MERGED_BRANCHES}`, '-f', `owner=${parts[0]}`, '-f', `name=${parts[1]}`], { timeout: TIMEOUT });
+    if (!r.ok && httpStatus(r) == null && /\bGraphQL:/.test(`${r.stderr || ''}${r.stdout || ''}`)) {
+      return { ...t, ok: false, kind: 'other', why: `GitHub answered the pull-request query for ${shown(t.repo)} with an error (the repo may not exist, or your login may not see it)` };
+    }
+    if (!r.ok) return fail({ ok: false, status: httpStatus(r) });
+    let body;
+    try { body = JSON.parse(r.stdout); } catch { return fail({ unreadable: true }); }
+    const nodes = body?.data?.repository?.pullRequests?.nodes;
+    if (!Array.isArray(nodes)) return fail({ unreadable: true });
+    const merged = nodes.map((n) => ({ number: n.number, branch: typeof n.headRefName === 'string' ? n.headRefName : null, commit: n.mergeCommit?.oid || null }));
+    return { ...t, ok: true, merged, partial: nodes.length >= PAGE };
+  }
+  const m = api(runner, 'glab', t.host, `projects/${encodeURIComponent(t.repo)}/merge_requests?state=merged&order_by=updated_at&sort=desc&per_page=${PAGE}`);
+  if (!m.ok) return { ...t, ok: false, kind: 'other', why: whyFailed(m, { platform: 'gitlab', host: t.host, what: `the merged merge requests of ${shown(t.repo)}`, plural: true }) };
+  if (!Array.isArray(m.body)) return { ...t, ok: false, kind: 'other', why: whyFailed({ unreadable: true }, { platform: 'gitlab', host: t.host, what: `the merged merge requests of ${shown(t.repo)}`, plural: true }) };
+  const merged = m.body.map((x) => ({
+    number: x.iid, branch: typeof x.source_branch === 'string' ? x.source_branch : null,
+    commit: x.squash_commit_sha || x.merge_commit_sha || null,
+  }));
+  return { ...t, ok: true, merged, partial: m.body.length >= PAGE };
+}

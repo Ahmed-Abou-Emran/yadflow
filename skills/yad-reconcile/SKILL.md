@@ -39,6 +39,20 @@ Run `yad reconcile check` (optionally `--thread EP-<genesis>`). For each thread 
   production that no epic in the thread describes. Name the repo (`<repo>: <old>→<new>`).
 - **Open hotfix debt** — a `reconcile-debt.json` entry still `open`; the next normal change on that
   thread is blocked until it is paid.
+- **Build records (issue #365)** — merged work the build ledger does not record, read from each
+  registered repo's clone (its default branch as the clone last saw it; nothing is fetched) and, when
+  `gh` / `glab` answers, the merged PRs/MRs' source branch names (a squash merge keeps only the title, so
+  the branch is where a squashed task still shows). It lists:
+  - a **merged task with no ship record** — a `Task:` trailer, a merge commit naming a task branch, or a
+    merged task branch — with the command that records it: `yad checkpoint --retro-ship …` when the
+    story has no ship in that repo yet; otherwise record the ship as `yad-engineer-review` does;
+  - a story whose every repo holds merged work or a ship, but whose `status:` is not `shipped` — a hint:
+    if no task is left, set `status: shipped`;
+  - a **possible match** to check by hand: a full story ID in a commit subject with no `Task:` trailer, or
+    a short scope tag such as `feat(s06):`. Never counted as a merge. A story ID only in a commit body is
+    not evidence.
+  A repo that cannot be read says why (not cloned, no default branch, platform not read) — never "nothing
+  merged". Only SHAs, PR/MR numbers and IDs are printed, never a commit message or a branch name.
 
 Writes nothing. This is the read-only sweep a human (or CI) runs to see the picture.
 

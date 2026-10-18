@@ -4,8 +4,9 @@
 // this only DISCOVERS, exactly as yad-docs-sync flags and the build gates block. Node built-ins only.
 import path from 'node:path';
 import fs from 'node:fs';
-import { c, log, ok, info, warn, hand, readJSON, exists, emitJSON, refuse } from './lib.mjs';
+import { c, log, ok, info, warn, hand, readJSON, exists, emitJSON, refuse, forTerminal } from './lib.mjs';
 import { readShips } from './ledger.mjs';
+import { shipDrift } from './ship-drift.mjs';
 import {
   epicRoot, isValidEpicId, epicLineage, readFrontmatter, isStubEpic, typeNoun, currentPhase, isProductLevel,
   resolveThread, threadEpics, resolveCurrentArtifacts, resolveCurrentStories, THREAD_ARTIFACT_BASES,
@@ -170,7 +171,7 @@ function threadRoots(root) {
   return [...roots].sort();
 }
 
-export async function runReconcile(root, { action = 'check', thread = null } = {}) {
+export async function runReconcile(root, { action = 'check', thread = null, runner, env } = {}) {
   const roots = thread ? [resolveThread(root, thread).rootId] : threadRoots(root);
   if (!roots.length) { info('no feature threads found (no epics with epic.md yet)'); return { action, flags: 0, threads: [] }; }
 
@@ -190,6 +191,38 @@ export async function runReconcile(root, { action = 'check', thread = null } = {
     for (const i of issues) hand(i);
   }
 
+  // #365: merged work the build ledger does not record — a merged task with no ship record, a story whose
+  // repos all hold merged work but whose status is not `shipped`, and possible matches to check by hand.
+  const drift = shipDrift(root, { ...(runner ? { runner } : {}), ...(env ? { env } : {}) });
+  const inScope = thread ? new Set(threadEpics(root, roots[0])) : null;
+  const ships = {
+    repos: drift.repos,
+    findings: drift.findings.filter((f) => !inScope || (f.epic ? inScope.has(f.epic) : f.stories.some((st) => inScope.has(st.replace(/-S\d+$/, ''))))),
+  };
+  if (ships.repos.length) {
+    log(c.bold('\nBuild records'));
+    const short = (sha) => (sha ? sha.slice(0, 7) : null);
+    for (const r of ships.repos) {
+      if (!r.read) warn(`${forTerminal(r.repo)}: not read — ${r.why}`);
+      else info(`${forTerminal(r.repo)}: read ${forTerminal(r.ref)} at ${short(r.sha)} (this clone's view — nothing fetched)${r.note ? `; ${r.note}` : ''}`);
+    }
+    for (const f of ships.findings) {
+      if (f.kind === 'merged-no-ship') {
+        const where = [short(f.sha), f.pr != null ? `PR/MR ${f.pr}` : null].filter(Boolean).join(', ');
+        warn(`${f.story}-${f.task} merged in ${forTerminal(f.repo)} (${where}, by ${f.via}) — no ship record`);
+        hand(f.fix);
+      } else if (f.kind === 'looks-shipped') {
+        warn(`${f.story}: every repo it names (${f.repos.map(forTerminal).join(', ')}) has merged work, but its status is ${forTerminal(f.status || 'unset')}`);
+        hand('if no task is left, set `status: shipped` (`yad checkpoint` commits it with the ledger)');
+      } else {
+        info(`${forTerminal(f.repo)} ${short(f.sha)}: ${f.via} — a possible match for ${f.stories.join(', ')}; check by hand`);
+      }
+    }
+    const counted = ships.findings.filter((f) => f.kind !== 'possible').length;
+    flags += counted;
+    if (!counted) ok('every merged task has a ship record');
+  }
+
   if (action === 'refresh') {
     log('');
     info('refresh is advisory: open a reconcile change-epic with `yad-change` (type change) threaded to');
@@ -206,5 +239,5 @@ export async function runReconcile(root, { action = 'check', thread = null } = {
   log('');
   if (flags) { warn(`${flags} item(s) need attention — reconcile is advisory; the gates block at merge`); }
   else { ok('all threads reconciled — no drift, no open debt'); }
-  return { action, flags, threads };
+  return { action, flags, threads, ships };
 }
