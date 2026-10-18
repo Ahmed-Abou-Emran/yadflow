@@ -10229,6 +10229,64 @@ test('gate ci --merged: refuses a PR number that is not on the review branch (is
   fs.rmSync(T, { recursive: true, force: true });
 });
 
+// The trial read of an older review: a failed platform read is "could not check", not "does not
+// pass" — the run goes red and nothing moves. Its own verdict lines stay out of the log.
+test('gate ci --merged: an older review whose read fails turns the run red and moves nothing (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+  const reader = (_p, n) => (n === 7 ? { ok: false, reason: 'boom' } : { ...fullApproval, reviews: [] });
+  await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 9, merged: true, today: '2026-06-09', reader });
+  const prev = process.exitCode;
+  process.exitCode = 0;
+  const lines = [];
+  const orig = console.log;
+  console.log = (l) => lines.push(String(l));
+  try {
+    await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 7, merged: true, today: '2026-06-09', reader });
+  } finally { console.log = orig; }
+  assert.equal(process.exitCode, 1, 'a failed read of the older review fails the run');
+  process.exitCode = prev;
+  const out = lines.join('\n');
+  assert.match(out, /could not read PR #7 to check it against the gate/);
+  assert.doesNotMatch(out, /does not pass the gate/, 'never "does not pass" for a review it could not read');
+  assert.doesNotMatch(out, /boom read|PR #7, rule/, 'the trial prints nothing of its own');
+  const ptr = JSON.parse(fs.readFileSync(path.join(ci, 'epics/EP-test/.sdlc/product-prs.json'), 'utf8'));
+  assert.equal(ptr.find((p) => p.artifact === 'architecture.md').number, 9);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// A Product that moved platform starts its numbering again: an old pointer from the other platform is
+// not "newer", and the first move records a fresh URL and sync date, never the old review's.
+test('gate ci --merged: a pointer from another platform never outranks a new review (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+  const file = path.join(ci, 'epics/EP-test/.sdlc/product-prs.json');
+  const platform = 'github'; // scaffoldCiProduct's Product platform
+  const ptrs = [{ step: 'architecture-review', artifact: 'architecture.md', platform: platform === 'gitlab' ? 'github' : 'gitlab',
+    number: 50, url: 'https://old.example/50', branch: 'review/EP-test/architecture', lastSyncedAt: '2026-01-01', nudged: ['al'] }];
+  for (const f of ['product-prs.json', 'hub-prs.json']) fs.writeFileSync(path.join(ci, 'epics/EP-test/.sdlc', f), JSON.stringify(ptrs, null, 2) + '\n');
+  git(ci, 'add', '-A');
+  git(ci, 'commit', '-q', '-m', 'seed: pointer from the old platform');
+  await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 7, merged: true, today: '2026-06-09', reader: () => fullApproval });
+  const now = JSON.parse(fs.readFileSync(file, 'utf8')).find((p) => p.artifact === 'architecture.md');
+  assert.equal(now.number, 7, 'the new review is read, not the old platform\'s #50');
+  assert.equal(now.platform, platform);
+  assert.notEqual(now.url, 'https://old.example/50', 'the old review\'s URL is not carried to a new number');
+  assert.ok(!(now.nudged || []).includes('al'), 'nor its nudges');
+  assert.notEqual(now.lastSyncedAt, '2026-01-01', 'nor its sync date');
+  const st = JSON.parse(fs.readFileSync(path.join(ci, 'epics/EP-test/.sdlc/state.json'), 'utf8'));
+  assert.equal(st.steps.find((s) => s.id === 'architecture-review').status, 'done');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
 // `yad gate ci … --merged` on the default branch is the DOCUMENTED manual recovery for a stuck gate,
 // and a human's checkout is rarely pristine. Staging `git add -A -- epics/<e>` would sweep whatever
 // else sits in that directory into a `chore(gate) … [skip ci]` commit pushed straight to the default

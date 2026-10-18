@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  c, log, ok, info, warn, hand, fail, note, readJSON, readJSONStrict, writeJSON, run, pushWithRebase, isPlainObject, writeMirrored, emitJSON, refuse, collectWarning,
+  c, log, ok, info, warn, hand, fail, note, quietly, readJSON, readJSONStrict, writeJSON, run, pushWithRebase, isPlainObject, writeMirrored, emitJSON, refuse, collectWarning,
 } from './lib.mjs';
 import { OWNING_COMMIT_ENV } from './hook.mjs';
 import { PROJECT_FILES, isVerifiedLedger , productConfigPath, settingsEditHint } from './manifest.mjs';
@@ -1079,11 +1079,22 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     // A pointer from another platform (the Product moved, and numbering started again) is not newer.
     let older = merged && existing?.number != null && Number(job.pr) > 0 && Number(job.pr) < existing.number
       && (existing.platform == null || existing.platform === productConfig.platform);
+    let unread = false;
     if (older && !isPassed(step)) {
-      const trial = await gateSync(root, { epic: job.epic, artifact: job.artifact, today, reader, dryRun: true, probe: Number(job.pr), headCount: sweepCount });
+      // Silenced: its verdict is only this decision's input, and would read as a second verdict in the
+      // CI log. Its exit code is this decision's too — a failed read is said, and failed, below.
+      const code = process.exitCode;
+      const trial = await quietly(() => gateSync(root, { epic: job.epic, artifact: job.artifact, today, reader, dryRun: true, probe: Number(job.pr), headCount: sweepCount }));
+      process.exitCode = code;
       if (trial.gates.some((g) => g.passed)) older = false;
+      else if (!trial.gates.length) {
+        // A failed platform read is not "does not pass": the gate cannot tell, so the run goes red.
+        fail(`${job.epic}: could not read PR #${job.pr} to check it against the gate — syncing #${existing.number}, the review recorded for ${job.artifact}`);
+        process.exitCode = 1;
+        unread = true;
+      }
     }
-    if (older) info(`${job.epic}: PR #${job.pr} is older than #${existing.number}, the review recorded for ${job.artifact}, and does not pass the gate — syncing #${existing.number}`);
+    if (older && !unread) info(`${job.epic}: PR #${job.pr} is older than #${existing.number}, the review recorded for ${job.artifact}, and ${isPassed(step) ? 'the step is already done' : 'does not pass the gate'} — syncing #${existing.number}`);
     // Before the pointer moves to a number it has never held, ask the platform that the PR/MR is on
     // this review branch: a mistyped `--pr` on the manual recovery would otherwise become the pointer,
     // and with numbers that only grow it could stay there (issue #362 review). A platform that cannot
@@ -1117,8 +1128,11 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     }
     if (!older && (!existing || existing.number !== number || existing.branch !== job.branch)) {
       ledger.productPrs = upsertProductPr(ledger.productPrs, {
+        // A new number is a new review: its URL, nudges and sync date are not the old one's.
         step: step.id, artifact: job.artifact, platform: productConfig.platform, number,
-        url: existing?.url ?? null, branch: job.branch, lastSyncedAt: existing?.lastSyncedAt ?? null,
+        ...(existing?.number === number
+          ? { url: existing?.url ?? null, branch: job.branch, lastSyncedAt: existing?.lastSyncedAt ?? null, ...(existing?.nudged ? { nudged: existing.nudged } : {}) }
+          : { url: null, branch: job.branch, lastSyncedAt: null }),
       });
       writeMirrored(ledger.files.productPrs, ledger.files.productPrsLegacy, ledger.productPrs);
     }

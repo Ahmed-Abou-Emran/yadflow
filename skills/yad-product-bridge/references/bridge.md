@@ -116,7 +116,7 @@ repository access decides who may approve. A review with no login is not counted
   every hop commits and pushes, and the pass ends where it began — an unbounded commit loop with zero
   semantic change. That is issue #163: ~1,800 bot commits/day on the Product that reported it. Sorting is
   what makes the "nothing staged → nothing to commit" guard in `gate ci` actually hold.
-- **Never move the PR pointer back to an older review.** The PR ledger holds ONE pointer per
+- **Move the PR pointer back to an older review only when it passes the gate.** The PR ledger holds ONE pointer per
   artifact, but the sweep can find several merged reviews for one artifact: a re-review on a fresh
   PR/MR, or per-story `review/<epic>/stories-S01`, `stories-S02` branches, which all map to `stories/`.
   On a merge run, `gate ci` keeps the pointer when the PR/MR it was given has a lower number than the
@@ -126,7 +126,9 @@ repository access decides who may approve. A review with no login is not counted
   gate, the pointer moves back to it once and the step advances (a held newer review cannot block an
   approved older one, and the manual recovery still works). A pointer from another platform never
   counts as newer, and before the pointer moves to a number it has never held, `gate ci` asks the
-  platform that the PR/MR is on the review branch — a mistyped `--pr` is refused, not recorded. Before this, each visit
+  platform that the PR/MR is on the review branch — a mistyped `--pr` the platform places on another
+  branch is refused, not recorded. The dry run prints nothing; if its platform read fails, the run
+  goes red and says the older review could not be checked. Before this, each visit
   moved the pointer to its own PR/MR — done step or not — a real diff every 15 minutes for 7 days,
   committed as "advance … on merge" (issue #362: about 24,400 such commits on the Product that reported it). The commit subject now says
   `advance … on merge` only when a step really advanced; any other merge-run change says `sync … after merge`.
