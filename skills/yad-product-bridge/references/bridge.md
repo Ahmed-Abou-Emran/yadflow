@@ -127,7 +127,8 @@ repository access decides who may approve. A review with no login is not counted
   approved older one, and the manual recovery still works). A pointer from another platform never
   counts as newer, and before the pointer moves to a number it has never held, `gate ci` asks the
   platform that the PR/MR is on the review branch — a mistyped `--pr` the platform places on another
-  branch is refused, not recorded. The dry run prints nothing; if its platform read fails, the run
+  branch is refused, not recorded (one the platform cannot place is used as given, with a warning). A
+  pointer moved to a new number starts with no URL, nudges or sync date of the old review's. The dry run prints nothing; if its platform read fails, the run
   goes red and says the older review could not be checked. Before this, each visit
   moved the pointer to its own PR/MR — done step or not — a real diff every 15 minutes for 7 days,
   committed as "advance … on merge" (issue #362: about 24,400 such commits on the Product that reported it). The commit subject now says

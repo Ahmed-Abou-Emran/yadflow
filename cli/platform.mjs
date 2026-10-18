@@ -315,8 +315,7 @@ export function findPrForBranch(platform, branch, { cwd } = {}) {
 
 // The head/source branch of a PR/MR, so a caller can confirm a number a human typed actually belongs
 // to the review it is about to bind approvals to. Returns { ok, branch }; never throws.
-export function prBranch(platform, n, { cwd, env = process.env } = {}) {
-  if (env.YAD_PLATFORM_READ === '0') return { ok: false, reason: 'platform reads are turned off (YAD_PLATFORM_READ=0)' };
+export function prBranch(platform, n, { cwd } = {}) {
   if (!platformReady(platform)) return { ok: false, reason: `${cliFor(platform) || 'platform CLI'} not available` };
   if (platform === 'gitlab') {
     const r = run('glab', ['api', `projects/:id/merge_requests/${Number(n)}`], { cwd });

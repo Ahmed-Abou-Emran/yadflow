@@ -10229,6 +10229,26 @@ test('gate ci --merged: refuses a PR number that is not on the review branch (is
   fs.rmSync(T, { recursive: true, force: true });
 });
 
+// The twin of `gate sync --pr`: a number the platform cannot place is used as given — but said.
+test('gate ci --merged: warns when the platform cannot confirm the PR number (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+  const lines = [];
+  const orig = console.log;
+  console.log = (l) => lines.push(String(l));
+  try {
+    await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 7, merged: true, today: '2026-06-09', reader: () => fullApproval, branchOf: () => ({ ok: false, reason: 'offline' }) });
+  } finally { console.log = orig; }
+  assert.match(lines.join('\n'), /could not confirm #7 belongs to review\/EP-test\/architecture \(offline\) — using it as given/);
+  const st = JSON.parse(fs.readFileSync(path.join(ci, 'epics/EP-test/.sdlc/state.json'), 'utf8'));
+  assert.equal(st.steps.find((s) => s.id === 'architecture-review').status, 'done', 'and the merge still advances');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
 // The trial read of an older review: a failed platform read is "could not check", not "does not
 // pass" — the run goes red and nothing moves. Its own verdict lines stay out of the log.
 test('gate ci --merged: an older review whose read fails turns the run red and moves nothing (issue #362)', async () => {

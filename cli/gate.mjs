@@ -1094,7 +1094,7 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
         unread = true;
       }
     }
-    if (older && !unread) info(`${job.epic}: PR #${job.pr} is older than #${existing.number}, the review recorded for ${job.artifact}, and ${isPassed(step) ? 'the step is already done' : 'does not pass the gate'} — syncing #${existing.number}`);
+    if (older && !unread) info(`${job.epic}: PR #${job.pr} is older than #${existing.number}, the review recorded for ${job.artifact}, and ${isPassed(step) ? `the step is already ${stepStatus(step) === 'deferred' ? 'deferred' : stepStatus(step) === 'skipped' ? 'skipped' : 'done'}` : 'does not pass the gate'} — syncing #${existing.number}`);
     // Before the pointer moves to a number it has never held, ask the platform that the PR/MR is on
     // this review branch: a mistyped `--pr` on the manual recovery would otherwise become the pointer,
     // and with numbers that only grow it could stay there (issue #362 review). A platform that cannot
@@ -1106,6 +1106,8 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
         process.exitCode = 1;
         continue;
       }
+      // Said, as `gate sync --pr` says it: an unconfirmed number is used as given, never silently.
+      if (!head.ok) warn(`could not confirm #${job.pr} belongs to ${job.branch} (${head.reason}) — using it as given`);
     }
     const number = older ? existing.number : Number(job.pr) || existing?.number || null;
     // Same migration as gateSync, at the one point CI knows the OLD pointer: stamp the approvals it
