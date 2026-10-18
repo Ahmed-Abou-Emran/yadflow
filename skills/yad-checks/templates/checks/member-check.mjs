@@ -70,11 +70,6 @@ const onProduct = (a) => a?.platform === platform && String(a?.host || '').toLow
 const base = process.argv[2];
 if (!base) { say('FAIL [member-check]: usage: node checks/member-check.mjs <base-ref>'); process.exit(1); }
 if (!git('rev-parse', '--verify', '-q', `${base}^{commit}`).ok) { say(`FAIL [member-check]: cannot resolve the base ref ${base} (fetch-depth: 0?)`); process.exit(1); }
-// `${base}...HEAD` below reads from ONE merge base. With several (a criss-cross merge) a hand-resolved
-// merge could bring in a member file the diff never lists, unjudged (#363 review 2). Fail closed.
-const bases = git('merge-base', '--all', base, 'HEAD');
-const baseCount = bases.ok ? bases.out.split('\n').filter(Boolean).length : 0;
-if (baseCount !== 1) { say(`FAIL [member-check]: ${base} and HEAD have ${baseCount ? 'more than one merge base (a criss-cross merge)' : 'no merge base (fetch-depth: 0?)'} — rebase the branch onto ${base}, or merge ${base} into it`); process.exit(1); }
 
 // Every path the PR touches, with its status. NUL-separated, no renames (a rename is a delete plus an add,
 // and each is judged).

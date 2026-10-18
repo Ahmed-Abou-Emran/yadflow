@@ -128,10 +128,15 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
 - Computes the changed files from the merge base, `<base>...HEAD` (issue #363). A two-dot diff compared
   with the target's tip, so a slice that landed on the target after the branch split off failed a
   branch that never touched it. The trailer is still read from `git log <base>..HEAD` (this branch's own
-  commits). A base that shares no history with HEAD (a shallow clone) **FAILS** closed and says so,
-  and so does one with **more than one** merge base (a criss-cross merge, review 1): the three-dot diff
-  reads from one of them, and a hand-resolved merge could undo what the other side brought in. Rebase
-  the branch onto the target, or merge the target into it.
+  commits). A base that shares no history with HEAD (a shallow clone) **FAILS** closed and says so.
+  With **more than one** merge base (a hotfix merged into both, stacked branches, a criss-cross merge),
+  the three-dot diff reads from one of them, and a hand-resolved merge could undo what the other side
+  brought in (review 1); a diff from each one would instead blame the branch for what the target already
+  holds (review 3). So the change is read as **the merge into the target** would make it:
+  `git merge-tree --write-tree <base> HEAD` (git 2.38+) builds that result without touching anything,
+  and the diff runs from the target to it — what GitHub's merge checkout gives. The quote pass reads the
+  slice's content from that result too. If the merge conflicts, or git is older than 2.38, the gate
+  **FAILS** closed: merge the target into the branch.
 - The surface is `specs/<story>/contracts` **and** everything under it: a path that IS
   `specs/<story>/contracts` (a link being removed) counts too.
 - If **nothing** under `specs/*/contracts/**` changed → **PASS** (normal implementation only *consumes*
@@ -147,7 +152,9 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
       so the lines are compared with the **locked** text, not a later edit. A change-epic that inherits
       its architecture has a **pointer lock** (`inheritedFrom` / `ref`) and no `contract.md`: the owner's
       `contract.md` is read instead, only inside the Product's `epics/`, and only while the owner's lock
-      still holds the copied hash (as `yad doctor` checks it);
+      still holds the copied hash. An epic that re-authored its architecture and kept the pointer fields
+      has its own `contract.md`, and that is read (`yad doctor` reads it too, and also warns about the
+      leftover fields);
     - no slice file is deleted (a deletion changes the surface);
     - every changed slice file is **Markdown** (`.md`; any other file under `contracts/` needs the
       trailer), read from the commit by its exact name (a name holding a newline, or content holding a
@@ -160,9 +167,6 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
       `# Contract slice — <story ID>` (exactly that text; a leading BOM is ignored): a note there was never
       read, so a new endpoint written in it passed (review 1), and a free title could say anything
       (review 2). Notes go in `spec.md` or `plan.md`.
-    - A change-epic's pointer lock is followed only when the epic has **no** `contract.md` of its own; one
-      that re-authored its architecture and kept the pointer fields is read from its own surface, as
-      `yad doctor` reads it.
     A prose slice from before this rule has no block, so it still needs the trailer until `yad-spec`
     rewrites it.
   - Best-effort fidelity: when the product repo is reachable (via `link.md`'s `product-repo` path),

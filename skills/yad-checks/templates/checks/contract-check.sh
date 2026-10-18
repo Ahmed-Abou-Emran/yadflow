@@ -70,22 +70,34 @@ if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
 fi
 # Two ranges (issue #363). The TRAILER is read from this branch's own commits: `git log BASE..HEAD`
 # (three dots in `log` would add the base's commits too). The CHANGE is measured from where this branch
-# left the base: `git diff BASE...HEAD`. A two-dot diff compares with the base's TIP, so a slice that
-# changed on the base after the branch split off was blamed on a branch that never touched it.
+# left the base — its merge base(s) — not from the base's TIP: a two-dot diff blamed a branch for a
+# slice that changed on the base after the branch split off.
 RANGE="${BASE}..HEAD"
-DIFF_RANGE="${BASE}...HEAD"
-# The three-dot range needs a merge base, which a shallow clone or unrelated history does not have —
-# git would exit 128 mid-pipeline. Fail closed and say why, never read it as "no surface change".
-if ! git merge-base "$BASE" HEAD >/dev/null 2>&1; then
+# Every merge base, not one (review 3). `git diff BASE...HEAD` reads from ONE when there are several, so a
+# hand-resolved merge could undo what the other side brought in, unseen (review 1). Several are common on
+# a branch tip (a hotfix merged into both; stacked branches), so they are not a reason to block — and a
+# diff from each merge base would blame the branch for what the base already holds (review 3). So with
+# several, the change is what MERGING the branch into BASE would change: `git merge-tree --write-tree`
+# builds that result without touching anything (git 2.38+), and the diff runs from BASE to it — what
+# GitHub's own merge checkout gives. A conflict, or an older git, fails closed. No merge base at all (a
+# shallow clone, unrelated history) fails closed too: it is never "no change".
+_mbs="$(git merge-base --all "$BASE" HEAD 2>/dev/null)" || _mbs=""
+if [ -z "$_mbs" ]; then
   echo "FAIL [contract-check]: '${BASE}' and HEAD share no history — fetch full history (a shallow clone has no merge base) or check the base branch."
   exit 1
 fi
-# Several merge bases (a criss-cross merge): `git diff BASE...HEAD` then reads from ONE of them, and a
-# hand-resolved merge could undo a re-locked slice that the other side brought in, unseen (review 1).
-if [ "$(git merge-base --all "$BASE" HEAD | wc -l | tr -d ' ')" != 1 ]; then
-  echo "FAIL [contract-check]: '${BASE}' and HEAD have more than one merge base (a criss-cross merge), so the change cannot be read from one point."
-  echo "  Rebase the branch onto ${BASE}, or merge ${BASE} into it, then push again."
-  exit 1
+_mb_count="$(printf '%s\n' "$_mbs" | wc -l | tr -d ' ')"
+if [ "$_mb_count" = 1 ]; then
+  DIFF_FROM="$_mbs"; DIFF_TO="HEAD"
+else
+  DIFF_FROM="$(git rev-parse --verify --quiet "${BASE}^{commit}")"
+  DIFF_TO="$(git merge-tree --write-tree --no-messages "$BASE" HEAD 2>/dev/null | head -1)" || DIFF_TO=""
+  if [ -z "$DIFF_TO" ] || ! git rev-parse --verify --quiet "${DIFF_TO}^{tree}" >/dev/null 2>&1; then
+    echo "FAIL [contract-check]: '${BASE}' and HEAD have ${_mb_count} merge bases, and the merge of this branch into ${BASE} could not be built here"
+    echo "  (it conflicts, or this git is older than 2.38). Merge ${BASE} into the branch, then push again."
+    exit 1
+  fi
+  echo "note [contract-check]: '${BASE}' and HEAD have ${_mb_count} merge bases — the change is read as the merge into ${BASE} would make it."
 fi
 
 # No symlink and no submodule anywhere under specs/ (E115). The gate reads PATHS: a link lets the
@@ -162,7 +174,7 @@ fi
 #                 slice change and failed the PR over a file that does not exist.
 # Both lists (this one and `deleted` below) are built the SAME way: the no-lock escape hatch compares
 # them line for line.
-changed="$(git diff --no-renames --name-only -z "$DIFF_RANGE" | tr '\n\0' '?\n')"
+changed="$(git diff --no-renames --name-only -z "$DIFF_FROM" "$DIFF_TO" | tr '\n\0' '?\n')"
 surface="$(printf '%s\n' "$changed" | grep -E '^specs/[^/]+/contracts(/|$)' || true)"
 
 # Slice paths this diff DELETES. `--name-only` above lists a deleted file exactly like a changed one,
@@ -180,7 +192,7 @@ surface="$(printf '%s\n' "$changed" | grep -E '^specs/[^/]+/contracts(/|$)' || t
 # change and every rule below applies to it unchanged).
 # --no-renames matters here too: a slice MOVED out of contracts/ is a delete of the old path, and
 # without it git reports an `R`, which --diff-filter=D never matches — the hatch would refuse the move.
-deleted="$(git diff --no-renames --diff-filter=D --name-only -z "$DIFF_RANGE" | tr '\n\0' '?\n' | grep -E '^specs/[^/]+/contracts(/|$)' || true)"
+deleted="$(git diff --no-renames --diff-filter=D --name-only -z "$DIFF_FROM" "$DIFF_TO" | tr '\n\0' '?\n' | grep -E '^specs/[^/]+/contracts(/|$)' || true)"
 
 if [ -z "$surface" ]; then
   echo "PASS [contract-check]: diff does not touch the contract surface (specs/*/contracts and everything under it)."
@@ -610,8 +622,8 @@ quote_story() {
   fi
   _qp="specs/${_qs}/contracts"   # a story ID holds no pattern character, so this pathspec is exact
   yad_tmp
-  git diff --no-renames --diff-filter=D --name-only -z "$DIFF_RANGE" -- "$_qp" > "$_yad_tmp/q-gone" || { echo "  ${_qs}: git could not list the slice's deletions."; return 1; }
-  git diff --no-renames --diff-filter=d --name-only -z "$DIFF_RANGE" -- "$_qp" > "$_yad_tmp/q-files" || { echo "  ${_qs}: git could not list the slice's changes."; return 1; }
+  git diff --no-renames --diff-filter=D --name-only -z "$DIFF_FROM" "$DIFF_TO" -- "$_qp" > "$_yad_tmp/q-gone" || { echo "  ${_qs}: git could not list the slice's deletions."; return 1; }
+  git diff --no-renames --diff-filter=d --name-only -z "$DIFF_FROM" "$DIFF_TO" -- "$_qp" > "$_yad_tmp/q-files" || { echo "  ${_qs}: git could not list the slice's changes."; return 1; }
   # Never a PASS by an empty list: the surface named this story, so its slice has changed files.
   if [ ! -s "$_yad_tmp/q-files" ] && [ ! -s "$_yad_tmp/q-gone" ]; then
     echo "  ${_qs}: git listed no changed slice file for this story — the quote cannot be checked."; return 1
@@ -646,7 +658,9 @@ quote_story() {
   # (`inheritedFrom` / `ref`, yad-change) and no contract.md of its own: the surface is the owner's. Read
   # it there, as `yad doctor` does — only inside this Product's epics/, and only when the owner's lock
   # still holds the hash this one copied. An epic WITH its own contract.md re-authored its architecture
-  # and left the pointer fields behind: its own surface is read, as doctor reads it (review 2).
+  # and left the pointer fields behind: its own surface is read (review 2). `yad doctor` reads it too, and
+  # also still checks the pointer and warns about the leftover fields; the gate needs only the surface
+  # the quote is compared with, so it does not.
   _qc="${prod}/epics/${_qepic}/contract.md"
   _qref="$(lock_str "$_qlock" ref)"
   _qfrom="$(lock_str "$_qlock" inheritedFrom)"
@@ -685,9 +699,10 @@ quote_story() {
       *.md) ;;
       *) echo "  ${_f}: only a Markdown slice can pass as a quote; any other file under contracts/ needs the trailer."; _qbad=1; continue ;;
     esac
-    # The committed content, by its exact name — never a file on disk that a folded name might point at.
-    if ! git cat-file blob "HEAD:${_f}" > "$_yad_tmp/q-file" 2>/dev/null; then
-      echo "  ${_f}: could not be read from HEAD."; _qbad=1; continue
+    # The content as it lands (HEAD, or the merge into the base when there are several merge bases), by
+    # its exact name — never a file on disk that a folded name might point at.
+    if ! git cat-file blob "${DIFF_TO}:${_f}" > "$_yad_tmp/q-file" 2>/dev/null; then
+      echo "  ${_f}: could not be read from the commit."; _qbad=1; continue
     fi
     # A zero byte ends a line for some awks (macOS), so text after it was never compared (review 2).
     if ! tr -d '\000' < "$_yad_tmp/q-file" | cmp -s - "$_yad_tmp/q-file"; then
@@ -727,7 +742,7 @@ quote_story() {
       }' "$_yad_tmp/surface" - < "$_yad_tmp/q-file")" || _qv="unreadable"
     case "$_qv" in
       ok) ;;
-      none) echo "  ${_f} has no CONTRACT-QUOTE block, so it cannot be told from a change."; _qbad=1 ;;
+      none) echo "  ${_f}: has no CONTRACT-QUOTE block, so it cannot be told from a change."; _qbad=1 ;;
       count) echo "  ${_f}: every CONTRACT-QUOTE block must be closed, BEGIN before END, none inside another."; _qbad=1 ;;
       many) echo "  ${_f}: holds more than one CONTRACT-QUOTE block — one block per file; quote another part of the surface in another file."; _qbad=1 ;;
       empty) echo "  ${_f}: a CONTRACT-QUOTE block quotes nothing."; _qbad=1 ;;

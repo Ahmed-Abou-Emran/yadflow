@@ -665,7 +665,7 @@ test('contract-check gate: a prose slice with no quote block still needs the tra
   });
   const r = runGate(CONTRACT, T);
   assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /orders\.md has no CONTRACT-QUOTE block/);
+  assert.match(r.out, /orders\.md: has no CONTRACT-QUOTE block/);
   assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
   fs.rmSync(T, { recursive: true, force: true });
 });
@@ -784,6 +784,11 @@ test('contract-check gate: the title is fixed text and comes first (issue #344 r
     'specs/EP-demo-S01/contracts/orders.md': [quoteBlock(SURFACE_LINES.slice(2, 5)), '', '# Contract slice — EP-demo-S01', ''].join('\n'),
   });
   assert.equal(runGate(CONTRACT, T).code, 1, 'the title only comes first');
+  // The right title twice: the second is a line outside the block.
+  commit(T, 'docs(spec): the title twice', {
+    'specs/EP-demo-S01/contracts/orders.md': ['# Contract slice — EP-demo-S01', '# Contract slice — EP-demo-S01', '', quoteBlock(SURFACE_LINES.slice(2, 5)), ''].join('\n'),
+  });
+  assert.equal(runGate(CONTRACT, T).code, 1, 'one title only');
   // No title at all is fine; so is the right one behind a BOM.
   commit(T, 'docs(spec): no title', { 'specs/EP-demo-S01/contracts/orders.md': `${quoteBlock(SURFACE_LINES.slice(2, 5))}\n` });
   assert.equal(runGate(CONTRACT, T).code, 0, 'the title is optional');
@@ -919,26 +924,74 @@ test('contract-check gate: a change-epic\'s pointer lock reads the owner\'s cont
   fs.rmSync(T, { recursive: true, force: true });
 });
 
-// Review 1, hole D: with two merge bases, `git diff BASE...HEAD` reads from one, and a hand-resolved
-// merge can undo what the other side brought in.
-test('contract-check and backfill-check fail closed on more than one merge base (issue #363 review 1)', () => {
-  const T = scaffoldRepo();
+// Review 1, hole D: with two merge bases, `git diff BASE...HEAD` reads from ONE, and a hand-resolved merge
+// can undo what the other side brought in. Review 3: two merge bases are common on a branch tip (a hotfix
+// merged into both; stacked branches), so the gates read from EVERY merge base instead of blocking.
+// Two sides off one root: a1 changes nothing that matters, b1 changes `file`. main merges both; the branch
+// starts from a1 and merges b1 with `-s ours` — a hand resolution that keeps a1's tree, undoing b1's change.
+// `git merge-tree --write-tree` (git 2.38+) builds the merge the gates read with several merge bases; an
+// older git cannot, and the gates fail closed — each test below checks whichever this machine has.
+const MERGE_TREE = (() => {
+  const m = execFileSync('git', ['--version']).toString().match(/(\d+)\.(\d+)/);
+  return !!m && (Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 38));
+})();
+const OLD_GIT = /merge of this branch into main could not be built here/;
+function crissCross(T, file, before, after) {
   git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: the root holds it\n\nContract-Change: yes', { [file]: before });
   git(T, 'checkout', '-q', '-b', 'a1');
   commit(T, 'chore: side a', { 'a1.txt': 'a' });
   git(T, 'checkout', '-q', 'main');
   git(T, 'checkout', '-q', '-b', 'b1');
-  commit(T, 'chore: side b', { 'b1.txt': 'b' });
+  commit(T, 'chore: side b changes it\n\nContract-Change: yes', { [file]: after });
   git(T, 'checkout', '-q', 'main');
   git(T, 'merge', '-q', '--no-ff', '-m', 'merge a1', 'a1');
   git(T, 'merge', '-q', '--no-ff', '-m', 'merge b1', 'b1');
   git(T, 'checkout', '-q', '-B', 'feature', 'a1');
-  git(T, 'merge', '-q', '--no-ff', '-m', 'merge b1 into the branch', 'b1');
-  assert.equal(git(T, 'merge-base', '--all', 'main', 'HEAD').toString().trim().split('\n').length, 2, 'two merge bases');
+  return () => assert.equal(git(T, 'merge-base', '--all', 'main', 'HEAD').toString().trim().split('\n').length, 2, 'two merge bases');
+}
+
+test('contract-check gate: with two merge bases, a hand-resolved merge that undoes a slice change is caught (issue #363 review 3)', () => {
+  const T = scaffoldRepo();
+  const twoBases = crissCross(T, 'specs/EP-demo-S01/contracts/api.md', 'v1\n', 'v2 re-locked\n');
+  git(T, 'merge', '-q', '-s', 'ours', '-m', 'merge b1, keeping our slice', 'b1');
+  twoBases();
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  if (!MERGE_TREE) { assert.match(r.out, OLD_GIT); fs.rmSync(T, { recursive: true, force: true }); return; }
+  assert.match(r.out, /2 merge bases — the change is read as the merge into main would make it/);
+  assert.match(r.out, /^ {2}specs\/EP-demo-S01\/contracts\/api\.md$/m, 'the undone slice is on the surface');
+  assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('backfill gate: with two merge bases, a hand-resolved merge that undoes a feature change is caught (issue #363 review 3)', () => {
+  const T = scaffoldRepo();
+  commit(T, 'docs: billing is being backfilled', { 'specs/backfill/billing/spec.md': backfillSpec(false) });
+  git(T, 'checkout', '-q', 'main');
+  git(T, 'merge', '-q', '--ff-only', 'feature');
+  const twoBases = crissCross(T, 'src/billing/pay.js', 'pay()\n', 'pay(2)\n');
+  git(T, 'merge', '-q', '-s', 'ours', '-m', 'merge b1, keeping our billing', 'b1');
+  twoBases();
+  const r = runGate(BACKFILL, T);
+  assert.equal(r.code, 1, r.out);
+  if (!MERGE_TREE) { assert.match(r.out, OLD_GIT); fs.rmSync(T, { recursive: true, force: true }); return; }
+  assert.match(r.out, /2 merge bases — the change is read as the merge into main would make it/);
+  assert.match(r.out, /FAIL \[backfill\]: billing is being backfilled/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check and backfill-check pass two merge bases that hide nothing (issue #363 review 3)', () => {
+  const T = scaffoldRepo();
+  const twoBases = crissCross(T, 'specs/EP-demo-S01/contracts/api.md', 'v1\n', 'v2 re-locked\n');
+  git(T, 'merge', '-q', '--no-ff', '-m', 'merge b1 into the branch', 'b1'); // a plain merge: the branch holds b1's slice
+  commit(T, 'feat: implement endpoint\n\nTask: EP-demo-S01-T01', { 'src/api.js': 'x' });
+  twoBases();
   for (const [gate, tag] of [[CONTRACT, 'contract-check'], [BACKFILL, 'backfill']]) {
     const r = runGate(gate, T);
-    assert.equal(r.code, 1, `${tag}: ${r.out}`);
-    assert.match(r.out, new RegExp(`FAIL \\[${tag}\\]: 'main' and HEAD have more than one merge base`), `${tag}: ${r.out}`);
+    if (!MERGE_TREE) { assert.equal(r.code, 1, `${tag}: ${r.out}`); assert.match(r.out, OLD_GIT); continue; }
+    assert.equal(r.code, 0, `${tag}: ${r.out}`);
+    assert.match(r.out, new RegExp(`note \\[${tag}\\]: 'main' and HEAD have 2 merge bases`), `${tag}: ${r.out}`);
   }
   fs.rmSync(T, { recursive: true, force: true });
 });
@@ -1394,11 +1447,14 @@ test('contract-check and backfill-check list every change by both paths, byte-wi
         const readers = (f) => code.filter((c) => c.includes(`"$_yad_tmp/${f}"`) && !/ -z .* > /.test(c) && !/\[ (!\s)?-s /.test(c));
         assert.deepEqual(readers('q-files').map((c) => c.trim()), ['done < "$_yad_tmp/q-files"'], `${rel}: q-files has one reader`);
         assert.ok(src.includes(`while IFS= read -r -d '' _f; do`), `${rel}: q-files is read NUL by NUL`);
-        assert.deepEqual(readers('q-gone').map((c) => c.trim()), [`tr '\\n\\0' '?\\n' < "$_yad_tmp/q-gone" | while IFS= read -r _f; do echo "  \${_f}: this removes slice file(s) — a deletion changes the surface."; done`], `${rel}: q-gone is folded before it is printed`);
+        const gone = readers('q-gone').map((c) => c.trim());
+        assert.equal(gone.length, 1, `${rel}: q-gone has one reader`);
+        assert.ok(gone[0].startsWith(`tr '\\n\\0' '?\\n' < "$_yad_tmp/q-gone" | while IFS= read -r _f; do`), `${rel}: q-gone is folded before it is printed`);
       }
       else assert.match(l, / -z .*\| tr '\\n\\0' '\?\\n'/, `${rel}: ${l.trim()}`);
-      // Measured from the merge base (issue #363): two dots compared with the base's tip.
-      assert.match(l, /"\$\{?DIFF_RANGE\}?"|\.\.\.HEAD/, `${rel}: ${l.trim()}`);
+      // From the merge base, or the merge into the base when there are several (issue #363, review 3): two
+      // dots compared with the base's tip, and `BASE...HEAD` reads from one merge base when there are several.
+      assert.match(l, /"\$DIFF_FROM" "\$DIFF_TO"/, `${rel}: ${l.trim()}`);
     }
     assert.ok(src.indexOf('export LC_ALL=C') >= 0 && src.indexOf('export LC_ALL=C') < src.indexOf(lists[0]), `${rel}: bytes before the list`);
   }
