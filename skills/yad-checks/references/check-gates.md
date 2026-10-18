@@ -125,13 +125,29 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
   `yad-spec` writes real files, so nothing legitimate lives there as a link. Removing a link under
   `contracts/` is a change to the surface and needs `Contract-Change: yes`; on a lockless epic it takes
   the removal hatch below. `yad doctor` warns `checks:symlink-blind` for an older copy without this check.
-- Computes the changed files in `<base>..HEAD`.
+- Computes the changed files from the merge base, `<base>...HEAD` (issue #363). A two-dot diff compared
+  with the target's tip, so a slice that landed on the target after the branch split off failed a
+  branch that never touched it. The trailer is still read from `git log <base>..HEAD` (this branch's own
+  commits). A base that shares no history with HEAD (a shallow clone) **FAILS** closed and says so.
 - The surface is `specs/<story>/contracts` **and** everything under it: a path that IS
   `specs/<story>/contracts` (a link being removed) counts too.
 - If **nothing** under `specs/*/contracts/**` changed → **PASS** (normal implementation only *consumes*
   the contract).
 - If the surface slice changed:
-  - Require a `Contract-Change: yes` trailer. **FAIL** (route back to the architecture gate) if absent.
+  - Require a `Contract-Change: yes` trailer. **FAIL** (route back to the architecture gate) if absent —
+    **unless every touched story's slice is an exact quote** (issue #344). A story's slice is a quote
+    when all of these hold, and the failure lists each one that does not:
+    - the story's folder is a story ID and its `link.md` is there;
+    - the Product is reached (the same resolution as below) and its `contract-lock.json` is readable;
+    - `link.md` pins that lock's hash;
+    - the Product's `epics/<epic>/contract.md` still hashes to the lock (the `CONTRACT-SURFACE` recipe),
+      so the lines are compared with the **locked** text, not a later edit;
+    - no slice file is deleted (a deletion changes the surface);
+    - every changed slice file holds exactly one `<!-- CONTRACT-QUOTE:BEGIN -->` …
+      `<!-- CONTRACT-QUOTE:END -->` block that is not empty, and every non-blank line in it (trailing
+      spaces and a CR ignored) is a line of the locked surface block. Notes outside the block are free.
+    A prose slice from before this rule has no block, so it still needs the trailer until `yad-spec`
+    rewrites it.
   - Best-effort fidelity: when the product repo is reachable (via `link.md`'s `product-repo` path),
     require `link.md`'s pinned `contract-lock` hash to match the product repo's current
     `contract-lock.json`. A claimed change that still pins the **old** lock **FAILS** — re-run

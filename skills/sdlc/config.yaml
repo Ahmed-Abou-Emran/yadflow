@@ -202,7 +202,7 @@ build:
   # the separate security gate (a platform-Verified signature only; no author allowlist since E62). All blocking in CI; both repos + Product.
   pattern_gates: [commit-message, pr-title, pr-template]
   ci_platforms: [github, gitlab]   # both wired from skills/yad-checks/templates/; GitHub is this product repo's platform
-  contract_surface_glob: "specs/*/contracts/**"   # the repo's quoted contract slice; a diff here needs Contract-Change + a re-locked contract
+  contract_surface_glob: "specs/*/contracts/**"   # the repo's quoted contract slice; a diff here needs Contract-Change + a re-locked contract, unless it is an exact CONTRACT-QUOTE of the lock (#344)
   # Step D (yad-pr-template) — platform-matched PR/MR template + risk routing.
   pr_templates:
     github: ".github/pull_request_template.md"

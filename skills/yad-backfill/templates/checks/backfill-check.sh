@@ -64,6 +64,14 @@ if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
   echo "FAIL [backfill]: base ref '${BASE}' not found — fetch full history / check the base branch."
   exit 1
 fi
+# The change is measured from where this branch left the base (issue #363): `git diff BASE...HEAD`
+# below. Two dots compared with the base's TIP, so a file that changed on the base after the branch
+# split off was blamed on a branch that never touched it. Three dots need a merge base, which a
+# shallow clone or unrelated history does not have — fail closed and say why.
+if ! git merge-base "$BASE" HEAD >/dev/null 2>&1; then
+  echo "FAIL [backfill]: '${BASE}' and HEAD share no history — fetch full history (a shallow clone has no merge base) or check the base branch."
+  exit 1
+fi
 
 
 # Folded as macOS and Windows fold a name (E116, as E115): `Src/` IS `src/` there, and `src/Billing/` IS
@@ -167,7 +175,7 @@ fi
 # The two are paired here, NUL by NUL, into one line — `<modes and status><TAB><path>` — and a newline
 # inside a path becomes `?`: split into lines first, one file named `a<newline>b` put every later header
 # where its path should be, and every src/<feature> change after it was never seen (review 1).
-changed="$(git diff --no-renames --raw -z "${BASE}..HEAD" | while IFS= read -r -d '' h && IFS= read -r -d '' p; do
+changed="$(git diff --no-renames --raw -z "${BASE}...HEAD" | while IFS= read -r -d '' h && IFS= read -r -d '' p; do
   printf '%s\t%s\n' "$h" "${p//$'\n'/?}"
 done)" || {
   echo "FAIL [backfill]: git could not list the changes between '${BASE}' and HEAD."

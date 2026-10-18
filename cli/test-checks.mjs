@@ -7,6 +7,7 @@ import './fixtures/git-quiet.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -554,6 +555,205 @@ const storySlice = (story, lock) => ({
   }),
 });
 
+// ---------- issue #363: the diff is measured from where the branch left its base ----------
+// A two-dot `git diff BASE..HEAD` compares with the base's TIP, so a slice that changed on the base
+// AFTER this branch split off was blamed on the branch, which never touched it.
+
+test('contract-check gate: a slice that changed on the base after the branch split is not this branch\'s change (issue #363)', () => {
+  const T = scaffoldRepo();
+  // The base moves on: someone else's merged PR changes a slice.
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'feat: a re-locked slice, merged on main\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/api.md': 'v2\n' });
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'feat: implement endpoint\n\nTask: EP-demo-S01-T01', { 'src/api.js': 'x' });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /does not touch the contract surface/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a branch behind its base that DOES change a slice still fails (issue #363)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: unrelated work on main', { 'b.txt': '2' });
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'feat: widen the API quietly', { 'specs/EP-demo-S01/contracts/api.md': 'new endpoint\n' });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check and backfill-check fail closed when the base shares no history with HEAD (issue #363)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', '--orphan', 'island');
+  git(T, 'rm', '-rq', '--cached', '.');
+  commit(T, 'chore: an unrelated root', { 'z.txt': 'z' });
+  git(T, 'checkout', '-q', '-f', 'feature');
+  commit(T, 'feat: implement endpoint\n\nTask: EP-demo-S01-T01', { 'src/api.js': 'x' });
+  for (const [gate, tag] of [[CONTRACT, 'contract-check'], [BACKFILL, 'backfill']]) {
+    const r = runGate(gate, T, ['island']);
+    assert.equal(r.code, 1, `${tag}: ${r.out}`);
+    assert.match(r.out, new RegExp(`FAIL \\[${tag}\\]: 'island' and HEAD share no history`), `${tag}: ${r.out}`);
+  }
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// ---------- issue #344: an exact quote of the locked contract is not a change ----------
+// The locked surface, its hash by the recipe every yadflow lock uses (contractSurfaceHash): the lines
+// between the markers, CRs dropped, with the trailing newline.
+const SURFACE_LINES = [
+  '## API',
+  '',
+  '- `POST /orders` — place an order from the cart.',
+  '  - request: `{ items: { sku: string, qty: number }[] }`',
+  '  - response: `{ id: string, status: "placed" }`',
+  '- `GET /orders/{id}` — read one order.',
+  '  - response: `Order`',
+];
+const surfaceHash = (lines) => createHash('sha256').update(lines.join('\n') + '\n').digest('hex');
+const contractMd = (lines) => ['# Contract', '', '<!-- CONTRACT-SURFACE:BEGIN -->', ...lines, '<!-- CONTRACT-SURFACE:END -->', ''].join('\n');
+const quoteSlice = (lines, notes = 'Notes: only this endpoint is built here.') =>
+  ['# Contract slice', '', '<!-- CONTRACT-QUOTE:BEGIN -->', ...lines, '<!-- CONTRACT-QUOTE:END -->', '', notes, ''].join('\n');
+// A Product at <repo>/product holding the locked contract.md and its lock. `lockLines` lets a test lock
+// one surface and leave contract.md saying another (a drifted contract).
+function seedLockedContract(T, epic = 'EP-demo', { lines = SURFACE_LINES, lockLines = lines } = {}) {
+  const dir = path.join(T, 'product', 'epics', epic);
+  fs.mkdirSync(path.join(dir, '.sdlc'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'contract.md'), contractMd(lines));
+  const hash = surfaceHash(lockLines);
+  fs.writeFileSync(path.join(dir, '.sdlc/contract-lock.json'), JSON.stringify({ hash: `sha256:${hash}` }));
+  return hash;
+}
+const quoteLink = (story, hash, product = '../../product') =>
+  linkMd({ story, 'product-repo': product, 'contract-lock': `sha256:${hash}` });
+
+test('contract-check gate: a slice that is an exact quote of the locked surface passes with no trailer (issue #344)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): quote the S01 slice\n\nTask: EP-demo-S01-T01', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /PASS \[contract-check\]: every changed slice is an exact quote of its locked contract/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a quote holding a line the lock does not have fails, naming it (issue #344)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): quote the S01 slice', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice([...SURFACE_LINES.slice(2, 5), '- `DELETE /orders/{id}` — cancel an order.']),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /specs\/EP-demo-S01\/contracts\/orders\.md: this line is not in the locked surface: - `DELETE \/orders\/\{id\}` — cancel an order\./);
+  assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a prose slice with no quote block still needs the trailer (issue #344)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): describe the S01 slice', {
+    'specs/EP-demo-S01/contracts/orders.md': 'POST /orders places an order.\n',
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /orders\.md has no CONTRACT-QUOTE block/);
+  assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a quote cannot be proven when the Product is not reached (issue #344)', () => {
+  const T = scaffoldRepo();
+  commit(T, 'docs(spec): quote the S01 slice', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', 'a'.repeat(64), '../../nowhere'),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /cannot check EP-demo-S01's slice against its lock/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a contract.md that drifted from its lock proves no quote (issue #344)', () => {
+  const T = scaffoldRepo();
+  // contract.md now holds a line the LOCK never had; quoting that line must not pass.
+  const drifted = [...SURFACE_LINES, '- `DELETE /orders/{id}` — cancel an order.'];
+  const hash = seedLockedContract(T, 'EP-demo', { lines: drifted, lockLines: SURFACE_LINES });
+  commit(T, 'docs(spec): quote the S01 slice', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(['- `DELETE /orders/{id}` — cancel an order.']),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /contract\.md no longer matches its lock/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a quote whose link.md pins an older lock still needs the trailer (issue #344)', () => {
+  const T = scaffoldRepo();
+  seedLockedContract(T);
+  commit(T, 'docs(spec): quote the S01 slice', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', 'b'.repeat(64)),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /pins bbbbbbbbbbbb…, not the current lock/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: one story quoting and one changing fails for the change only (issue #344)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): two slices', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+    'specs/EP-demo-S02/contracts/orders.md': 'a brand new endpoint\n',
+    'specs/EP-demo-S02/link.md': quoteLink('EP-demo-S02', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /note \[contract-check\]: EP-demo-S01's slice is an exact quote of the locked contract/);
+  assert.match(r.out, /EP-demo-S02.*no CONTRACT-QUOTE block/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: DELETING a quoted slice file still needs the trailer where a lock exists (issue #344)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): quote the S01 slice\n\nContract-Change: yes', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const base = git(T, 'rev-parse', 'HEAD').toString().trim();
+  git(T, 'rm', '-q', 'specs/EP-demo-S01/contracts/orders.md');
+  git(T, 'commit', '-q', '-m', 'docs(spec): drop the slice');
+  const r = runGate(CONTRACT, T, [base]);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /removes slice file/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: two quote blocks in one file are refused (issue #344)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): quote twice', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 3)) + quoteSlice(SURFACE_LINES.slice(3, 4)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /orders\.md must hold exactly one CONTRACT-QUOTE block/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
 test('contract-check gate: a LATER story pinning a stale lock is not masked by a clean first one (issue #161)', () => {
   const T = scaffoldRepo();
   const hash = 'c'.repeat(64);
@@ -997,6 +1197,8 @@ test('contract-check and backfill-check list every change by both paths, byte-wi
       if (/--raw/.test(l)) assert.match(l, / -z .*\| while IFS= read -r -d '' h && IFS= read -r -d '' p; do/, `${rel}: ${l.trim()}`);
       // A newline inside a path becomes `?` (E121): split on newlines alone, one odd name made a path.
       else assert.match(l, / -z .*\| tr '\\n\\0' '\?\\n'/, `${rel}: ${l.trim()}`);
+      // Measured from the merge base (issue #363): two dots compared with the base's tip.
+      assert.match(l, /"\$\{?DIFF_RANGE\}?"|\.\.\.HEAD/, `${rel}: ${l.trim()}`);
     }
     assert.ok(src.indexOf('export LC_ALL=C') >= 0 && src.indexOf('export LC_ALL=C') < src.indexOf(lists[0]), `${rel}: bytes before the list`);
   }

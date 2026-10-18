@@ -233,6 +233,26 @@ say "installed check gates pass on the linked branch"
 ( cd "$BACKEND" && bash checks/spec-link.sh main ) || die "spec-link should pass on a linked branch"
 ( cd "$BACKEND" && bash checks/contract-check.sh main ) || die "contract-check should pass when the surface is untouched"
 
+say "contract-check passes a slice that only quotes the locked contract, with no trailer (issue #344)"
+printf '# Contract\n\n<!-- CONTRACT-SURFACE:BEGIN -->\n## API\n- `POST /e2e` — create one.\n- `GET /e2e/{id}` — read one.\n<!-- CONTRACT-SURFACE:END -->\n' > "$EPIC/contract.md"
+E2E_HASH="$(awk '/CONTRACT-SURFACE:BEGIN/{f=1;next} /CONTRACT-SURFACE:END/{f=0} f' "$EPIC/contract.md" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)"
+printf '{ "hash": "sha256:%s" }\n' "$E2E_HASH" > "$EPIC/.sdlc/contract-lock.json"
+( cd "$BACKEND" && git checkout -q main && git checkout -qb feat/EP-e2e-S02-T01-quote )
+mkdir -p "$BACKEND/specs/EP-e2e-S02/contracts"
+printf -- '---\nstory: EP-e2e-S02\nproduct-repo: ../../../..\ncontract-lock: sha256:%s\n---\n' "$E2E_HASH" > "$BACKEND/specs/EP-e2e-S02/link.md"
+printf '# Slice\n\n<!-- CONTRACT-QUOTE:BEGIN -->\n- `POST /e2e` — create one.\n<!-- CONTRACT-QUOTE:END -->\n\nOnly the create endpoint is built here.\n' > "$BACKEND/specs/EP-e2e-S02/contracts/api.md"
+( cd "$BACKEND" && git add -A && git commit -qm "docs(spec): quote the S02 slice" )
+# The repo's .sdlc/product-link.json says CI checks the Product out at .yad/product; put it there for
+# the gate runs (a link, removed again before anything stages the tree).
+mkdir -p "$BACKEND/.yad" && ln -s "$PRODUCT" "$BACKEND/.yad/product"
+( cd "$BACKEND" && bash checks/contract-check.sh main ) || die "contract-check should pass a slice that only quotes the locked contract"
+printf '# Slice\n\n<!-- CONTRACT-QUOTE:BEGIN -->\n- `POST /e2e` — create one.\n- `DELETE /e2e/{id}` — not in the lock.\n<!-- CONTRACT-QUOTE:END -->\n' > "$BACKEND/specs/EP-e2e-S02/contracts/api.md"
+( cd "$BACKEND" && git add specs && git commit -qm "docs(spec): a quote that is not one" )
+if ( cd "$BACKEND" && bash checks/contract-check.sh main >/dev/null 2>&1 ); then
+  die "contract-check must fail a quote holding a line the lock does not have"
+fi
+rm -f "$BACKEND/.yad/product"
+
 say "check gates fail closed on violations"
 ( cd "$BACKEND" && git checkout -q main && git checkout -qb feat/unlinked )
 mkdir -p "$BACKEND/src"

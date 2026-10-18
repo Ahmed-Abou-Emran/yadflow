@@ -86,7 +86,10 @@ Map `repo` → `{project-root}/demo-repos/<repo>/`. Confirm it exists and is its
 ### Step 3 — Read the contract (reference, do NOT re-invent)
 Read `epics/<epic>/contract.md` and `epics/<epic>/.sdlc/contract-lock.json`. The spec's contract
 inputs (the API shapes, data-model entities, and events the story touches) are **quoted from the
-locked surface**, not re-authored. The spec MUST stay within that surface. If the story needs surface
+locked surface**, not re-authored. Each `contracts/` file holds the quoted lines, copied whole and word
+for word, in one `<!-- CONTRACT-QUOTE:BEGIN -->` … `<!-- CONTRACT-QUOTE:END -->` block (notes go
+outside it), so the contract-check gate can prove it is a quote and needs no `Contract-Change` trailer
+(see `references/spec-handoff.md`). The spec MUST stay within that surface. If the story needs surface
 the contract does not define, STOP and route back to the **architecture gate** — never extend the
 contract here. (On a route that HAS one; the short lanes do not — see below.)
 
