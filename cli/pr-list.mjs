@@ -133,9 +133,11 @@ function listGitLab(t, sinceMs, runner) {
 // stacked parent or `develop` has not reached it (review 1).
 //   `{ ok: true, merged: [{ number, branch, commit }], partial }` or `{ ok: false, kind, why }`.
 // What the platform says is printed and pasted (review 2): a number only when it is one, a SHA only when hex.
-const hexSha = (v) => (typeof v === 'string' && /^[0-9a-f]{7,64}$/.test(v) ? v : null);
+const hexSha = (v) => (typeof v === 'string' && /^[0-9a-f]{7,64}$/i.test(v) ? v.toLowerCase() : null);
+// The day it merged, `YYYY-MM-DD` — what a retroactive ship's date is compared with (#365 review 3).
+const dayOf = (v) => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? new Date(v).toISOString().slice(0, 10) : null);
 const GH_MERGED_BRANCHES = `query($owner:String!,$name:String!,$base:String){repository(owner:$owner,name:$name){
-pullRequests(states:MERGED,baseRefName:$base,first:${PAGE},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number headRefName baseRefName mergeCommit{oid}}}}}`;
+pullRequests(states:MERGED,baseRefName:$base,first:${PAGE},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number headRefName baseRefName mergedAt mergeCommit{oid}}}}}`;
 export function listMergedBranches(target, { base = null, runner = run, env = process.env, authCache = new Map() } = {}) {
   const t = target?.cli ? target : prTarget(target, { runner, env, authCache });
   if (!t.ok) return t;
@@ -153,7 +155,7 @@ export function listMergedBranches(target, { base = null, runner = run, env = pr
     const nodes = body?.data?.repository?.pullRequests?.nodes;
     if (!Array.isArray(nodes)) return fail({ unreadable: true });
     const merged = nodes.filter((n) => !base || n.baseRefName === base)
-      .map((n) => ({ number: Number.isInteger(n.number) ? n.number : null, branch: typeof n.headRefName === 'string' ? n.headRefName : null, commit: hexSha(n.mergeCommit?.oid) }));
+      .map((n) => ({ number: Number.isInteger(n.number) ? n.number : null, branch: typeof n.headRefName === 'string' ? n.headRefName : null, commit: hexSha(n.mergeCommit?.oid), date: dayOf(n.mergedAt) }));
     return { ...t, ok: true, merged, partial: nodes.length >= PAGE };
   }
   const m = api(runner, 'glab', t.host, `projects/${encodeURIComponent(t.repo)}/merge_requests?state=merged${base ? `&target_branch=${encodeURIComponent(base)}` : ''}&order_by=updated_at&sort=desc&per_page=${PAGE}`);
@@ -161,7 +163,7 @@ export function listMergedBranches(target, { base = null, runner = run, env = pr
   if (!Array.isArray(m.body)) return { ...t, ok: false, kind: 'other', why: whyFailed({ unreadable: true }, { platform: 'gitlab', host: t.host, what: `the merged merge requests of ${shown(t.repo)}`, plural: true }) };
   const merged = m.body.filter((x) => !base || x.target_branch === base).map((x) => ({
     number: Number.isInteger(x.iid) ? x.iid : null, branch: typeof x.source_branch === 'string' ? x.source_branch : null,
-    commit: hexSha(x.squash_commit_sha) || hexSha(x.merge_commit_sha),
+    commit: hexSha(x.squash_commit_sha) || hexSha(x.merge_commit_sha), date: dayOf(x.merged_at),
   }));
   return { ...t, ok: true, merged, partial: m.body.length >= PAGE };
 }

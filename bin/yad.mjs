@@ -909,8 +909,8 @@ async function main() {
         if (!story || !/^EP-[a-z0-9-]+-S\d+$/.test(story) || !story.startsWith(`${epic}-S`)) { refuse(`invalid --retro-ship: expected <epic>/<story> with story <epic>-S<NN> (got ${o['retro-ship']})`); break; }
         // A SHA, never a ref or a search (`main`, `HEAD`, `:/text`): `yad reconcile check` reads a retro ship's
         // merge commit as the point it covers up to (#365 review 2), and a ref would cover every later merge.
-        if (o['merge-commit'] != null && !/^[0-9a-f]{7,64}$/.test(String(o['merge-commit']))) { refuse('invalid --merge-commit: expected a commit SHA (7 to 64 hex characters), never a branch name or a ref'); break; }
-        retroShip = { epic, story, repo: o.repo, task: o.task, mergeCommit: o['merge-commit'], today };
+        if (o['merge-commit'] != null && !/^[0-9a-f]{7,64}$/i.test(String(o['merge-commit']))) { refuse('invalid --merge-commit: expected a commit SHA (7 to 64 hex characters), never a branch name or a ref'); break; }
+        retroShip = { epic, story, repo: o.repo, task: o.task, mergeCommit: o['merge-commit'] == null ? undefined : String(o['merge-commit']).toLowerCase(), today };
       }
       result = await commands.runCheckpoint(o.dir, { push: o.push, allowBranch: o.allowBranch, dryRun: o.dryRun, retroShip });
       break;

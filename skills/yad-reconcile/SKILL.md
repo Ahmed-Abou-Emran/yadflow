@@ -57,7 +57,8 @@ Run `yad reconcile check` (optionally `--thread EP-<genesis>`). For each thread 
   (a committed folder shaped like a bare repo would have git read its config), and never fetches; a folder
   inside a shared checkout reads only its own history and is not asked about on the platform. A repo,
   ledger or `repos.json` that cannot be read in full — including a repo a story names that is not
-  registered — says why, and then there is no all-clear. Only SHAs, PR/MR numbers
+  registered — says why, and then there is no all-clear. It also lists a merged task whose story no file
+  holds (a typo in a `Task:` trailer), and a story that names no repo while more than one is registered. Only SHAs, PR/MR numbers
   and IDs are printed, never a commit message or a branch name.
 
 Writes nothing. This is the read-only sweep a human (or CI) runs to see the picture.
