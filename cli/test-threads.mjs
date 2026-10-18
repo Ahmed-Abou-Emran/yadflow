@@ -2189,7 +2189,7 @@ test('#365 review 1: a repo not read means no all-clear', async () => {
     const out = await grab(async () => { await runReconcile(T, { action: 'check', env: { YAD_PLATFORM_READ: '0' } }); });
     assert.doesNotMatch(out, /every merged task has a ship record/);
     assert.doesNotMatch(out, /all threads reconciled/);
-    assert.match(out, /1 repo\(s\) or ledger\(s\) not read, so merged work there is unknown/);
+    assert.match(out, /1 repo\(s\), ledger\(s\) or registry not read in full, so merged work there is unknown/);
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
@@ -2211,5 +2211,86 @@ test('#365 review 1: a monorepo folder reads only its own history', () => {
   fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'backend', path: 'apps/api', default_branch: 'main' }] }));
   try {
     assert.deepEqual(kinds(shipDrift(T, { platform: false }), 'merged-no-ship').map((f) => f.task), ['T02'], 'web\'s T01 is not credited to api');
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 2: a broken repos.json, or a repo no registry holds, is unknown — never an all-clear', async () => {
+  const { T } = shipProduct({ commits: ['feat: x\n\nTask: EP-shop-S02-T01'] });
+  try {
+    fs.writeFileSync(path.join(T, '.sdlc/repos.json'), '{"repos": [');
+    let r;
+    const out = await grab(async () => { r = await runReconcile(T, { action: 'check', env: { YAD_PLATFORM_READ: '0' } }); });
+    assert.equal(r.ships.registry, 'it does not parse');
+    assert.match(out, /repos\.json could not be read in full/);
+    assert.doesNotMatch(out, /all threads reconciled/);
+    // A story names a repo the (readable, empty) registry does not hold.
+    fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [] }));
+    const r2 = shipDrift(T, { platform: false });
+    assert.deepEqual(r2.repos, [{ repo: 'backend', read: false, why: 'a story names it, but it is not in repos.json' }]);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 2: a code repo registered as the Product itself (path ".") is read', () => {
+  const T = productConfig();
+  writeEpic(T, 'EP-shop', { kind: 'feature', thread: 'EP-shop' }, { stories: ['in-build'] });
+  fs.mkdirSync(path.join(T, '.sdlc'), { recursive: true });
+  const g = (...a) => execFileSync('git', a, { cwd: T, stdio: 'pipe' }).toString().trim();
+  g('init', '-q', '-b', 'main');
+  g('config', 'user.email', 'dev@shop.io');
+  g('config', 'user.name', 'dev');
+  g('commit', '-q', '--allow-empty', '-m', 'feat: x\n\nTask: EP-shop-S01-T01');
+  fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'backend', path: '.', default_branch: 'main' }] }));
+  try {
+    const r = shipDrift(T, { platform: false });
+    assert.equal(r.repos[0].read, true);
+    assert.deepEqual(kinds(r, 'merged-no-ship').map((f) => f.task), ['T01']);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 2: monorepo folders sharing one remote never ask the platform', () => {
+  const { T } = shipProduct({ commits: ['feat: x'] });
+  fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [
+    { name: 'backend', path: 'repos/backend', default_branch: 'main', platform: 'gitlab', git_url: 'git@gitlab.com:acme/mono.git' },
+    { name: 'web', path: 'repos/web', default_branch: 'main', platform: 'gitlab', git_url: 'git@gitlab.com:acme/mono.git' },
+  ] }));
+  let asked = 0;
+  const runner = (cmd) => { if (cmd === 'glab') asked++; return { ok: true, stdout: '[]', stderr: '' }; };
+  try {
+    const r = shipDrift(T, { runner, env: {} });
+    assert.equal(asked, 0, 'the platform cannot tell the folders apart');
+    assert.match(r.repos[0].note, /platform not asked — the repo shares its checkout/);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 2: a retro ship whose merge commit is a ref, not a SHA, covers nothing by it', () => {
+  const { T } = shipProduct({ commits: ['feat: a\n\nTask: EP-shop-S01-T01', 'feat: b\n\nTask: EP-shop-S01-T02'] });
+  try {
+    fs.writeFileSync(path.join(T, 'epics/EP-shop/.sdlc/build-log', buildShardName({ story: 'EP-shop-S01', task: 'retro', repo: 'backend' })),
+      JSON.stringify({ story: 'EP-shop-S01', task: 'retro', repo: 'backend', retroactive: true, mergeCommit: 'main', shippedAt: '2000-01-01' }));
+    // `main` would cover every merge; it is ignored, and the date (long before) covers nothing.
+    assert.deepEqual(kinds(shipDrift(T, { platform: false }), 'merged-no-ship').map((f) => f.task).sort(), ['T01', 'T02']);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 2: a commit that cannot be read safely is counted, and the repo reads as partial', () => {
+  const { T } = shipProduct({ commits: ['feat: a\u001fb\n\nTask: EP-shop-S01-T01'] });
+  try {
+    const r = shipDrift(T, { platform: false });
+    assert.equal(r.repos[0].partial, true);
+    assert.match(r.repos[0].note, /1 commit\(s\) could not be read/);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 2: a platform number or SHA that is not one is dropped, never printed', () => {
+  const { T } = shipProduct({ commits: ['Resolve the orders work'] });
+  fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'backend', path: 'repos/backend', default_branch: 'main', platform: 'gitlab', git_url: 'git@gitlab.com:acme/backend.git' }] }));
+  const runner = (cmd, args) => {
+    if (cmd === 'which' || cmd === 'where' || (cmd === 'glab' && args[0] === 'auth')) return { ok: true, stdout: '', stderr: '' };
+    return { ok: true, stdout: JSON.stringify([{ iid: '7\u001b[31mRED', source_branch: 'feat/EP-shop-S02-T01-q', target_branch: 'main', merge_commit_sha: '$(id>x);' }]), stderr: '' };
+  };
+  try {
+    const f = kinds(shipDrift(T, { runner, env: {} }), 'merged-no-ship')[0];
+    assert.deepEqual([f.pr, f.sha], [null, null]);
+    assert.ok(!f.fix.includes('$(') && !f.fix.includes('\u001b'), 'no shell text or escape byte in the command');
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });

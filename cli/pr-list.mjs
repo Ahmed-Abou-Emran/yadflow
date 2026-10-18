@@ -132,6 +132,8 @@ function listGitLab(t, sinceMs, runner) {
 // `base` keeps only those merged INTO it (the repo's default branch): a task merged into a release branch, a
 // stacked parent or `develop` has not reached it (review 1).
 //   `{ ok: true, merged: [{ number, branch, commit }], partial }` or `{ ok: false, kind, why }`.
+// What the platform says is printed and pasted (review 2): a number only when it is one, a SHA only when hex.
+const hexSha = (v) => (typeof v === 'string' && /^[0-9a-f]{7,64}$/.test(v) ? v : null);
 const GH_MERGED_BRANCHES = `query($owner:String!,$name:String!,$base:String){repository(owner:$owner,name:$name){
 pullRequests(states:MERGED,baseRefName:$base,first:${PAGE},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number headRefName baseRefName mergeCommit{oid}}}}}`;
 export function listMergedBranches(target, { base = null, runner = run, env = process.env, authCache = new Map() } = {}) {
@@ -151,15 +153,15 @@ export function listMergedBranches(target, { base = null, runner = run, env = pr
     const nodes = body?.data?.repository?.pullRequests?.nodes;
     if (!Array.isArray(nodes)) return fail({ unreadable: true });
     const merged = nodes.filter((n) => !base || n.baseRefName === base)
-      .map((n) => ({ number: n.number, branch: typeof n.headRefName === 'string' ? n.headRefName : null, commit: n.mergeCommit?.oid || null }));
+      .map((n) => ({ number: Number.isInteger(n.number) ? n.number : null, branch: typeof n.headRefName === 'string' ? n.headRefName : null, commit: hexSha(n.mergeCommit?.oid) }));
     return { ...t, ok: true, merged, partial: nodes.length >= PAGE };
   }
   const m = api(runner, 'glab', t.host, `projects/${encodeURIComponent(t.repo)}/merge_requests?state=merged${base ? `&target_branch=${encodeURIComponent(base)}` : ''}&order_by=updated_at&sort=desc&per_page=${PAGE}`);
   if (!m.ok) return { ...t, ok: false, kind: 'other', why: whyFailed(m, { platform: 'gitlab', host: t.host, what: `the merged merge requests of ${shown(t.repo)}`, plural: true }) };
   if (!Array.isArray(m.body)) return { ...t, ok: false, kind: 'other', why: whyFailed({ unreadable: true }, { platform: 'gitlab', host: t.host, what: `the merged merge requests of ${shown(t.repo)}`, plural: true }) };
   const merged = m.body.filter((x) => !base || x.target_branch === base).map((x) => ({
-    number: x.iid, branch: typeof x.source_branch === 'string' ? x.source_branch : null,
-    commit: x.squash_commit_sha || x.merge_commit_sha || null,
+    number: Number.isInteger(x.iid) ? x.iid : null, branch: typeof x.source_branch === 'string' ? x.source_branch : null,
+    commit: hexSha(x.squash_commit_sha) || hexSha(x.merge_commit_sha),
   }));
   return { ...t, ok: true, merged, partial: m.body.length >= PAGE };
 }

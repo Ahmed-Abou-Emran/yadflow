@@ -17,11 +17,12 @@
 // git runs only in a repo `judgeRepo` finds present — the guard `yad doctor` and `yad repo clone` use: a
 // committed folder shaped like a bare repo would have git read its config, and a path outside the
 // workspace is not this Product's to read (review 1). Facts only: a SHA, a PR/MR number and an ID — never
-// a subject, a body or a branch name.
+// a subject, a body or a branch name. Never an all-clear over what was not read (review 2): a repo, a
+// registry or a ledger that could not be read, or read only in part, is said and counted as unknown.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { readJSON, exists, forTerminal, asArg } from './lib.mjs';
+import { readJSONStrict, exists, forTerminal, asArg } from './lib.mjs';
 import { PROJECT_FILES, TASK_ID_RE, TASK_TRAILER } from './manifest.mjs';
 import { taskFromBranch } from './commit.mjs';
 import { epicIds, epicRoot, readFrontmatter, declaredRepos } from './epic-state.mjs';
@@ -32,13 +33,15 @@ import { judgeRepo } from './workspace.mjs';
 const STORY_IN_TEXT = /\bEP-[a-z0-9-]+-S\d+\b(?!-T\d)/g;
 const TASK_IN_TEXT = /\bEP-[a-z0-9-]+-S\d+-T\d+\b/g;
 const SHORT_TAG = /^[a-z]+\(\s*(s\d+)\s*\)!?:/i;
+const SHA = /^[0-9a-f]{7,64}$/;
 const storyOf = (task) => task.replace(/-T\d+$/, '');
 
 // git, raw: `run()` trims its output, and these records are split on NUL and unit separators. Signatures
-// are never checked: `log.showSignature` in a repo's config runs a program of its choosing.
+// are never checked (`log.showSignature` in a repo's config runs a program of its choosing), and a partial
+// clone never fetches a missing object (review 2): "nothing is fetched" stays true.
 const git = (cwd, args) => {
-  const r = spawnSync('git', ['-c', 'log.showSignature=false', ...args], { cwd, encoding: 'utf8', maxBuffer: 1 << 28 });
-  return { ok: r.status === 0, out: r.stdout || '' };
+  const r = spawnSync('git', ['-c', 'log.showSignature=false', ...args], { cwd, encoding: 'utf8', maxBuffer: 1 << 28, env: { ...process.env, GIT_NO_LAZY_FETCH: '1' } });
+  return { ok: r.status === 0, status: r.status, out: r.stdout || '' };
 };
 
 // The default branch of one clone: origin's copy when the clone has one, else the local branch.
@@ -56,29 +59,41 @@ function mergedBranch(subject) {
   return m ? m[1] : null;
 }
 
-// One repo's merged work, read from its clone. `{ read: true, ref, sha, dir, tasks: Map(task -> evidence),
-// possible }` or `{ read: false, why }` — a repo that cannot be read says so, and is never "nothing merged".
+// One repo's merged work, read from its clone. `{ read: true, ref, sha, dir, shared, tasks: Map(task ->
+// evidence), possible, skipped }` or `{ read: false, why }` — a repo that cannot be read says so, and is
+// never "nothing merged".
 export function readRepoMerges(root, repo) {
   const judged = judgeRepo(root, repo);
   if (judged.state === 'missing') return { read: false, why: 'not cloned here (`yad repo clone`)' };
-  if (judged.state !== 'present') return { read: false, why: judged.state === 'product' ? 'it is the Product itself' : judged.reason };
+  // `path: "."` — the Product's own checkout IS the code repo (a supported monorepo layout, review 2).
+  if (judged.state !== 'present' && judged.state !== 'product') return { read: false, why: judged.reason };
   if (judged.linked) return { read: false, why: 'it is reached through a link inside a repo, so git would read somewhere else' };
-  const dir = judged.target;
+  const dir = judged.state === 'product' ? path.resolve(root) : judged.target;
   const ref = defaultRef(dir, typeof repo.default_branch === 'string' ? repo.default_branch : '');
   if (!ref) return { read: false, why: repo.default_branch ? `no branch ${forTerminal(repo.default_branch)} in the clone` : 'no default_branch in repos.json' };
   // A repo folder inside a shared checkout (the monorepo layout) reads only its own folder's history: the
-  // whole history would credit every other folder's tasks to it too (review 1).
-  const only = judged.inside ? path.relative(judged.inside, dir) : null;
+  // whole history would credit every other folder's tasks to it too (review 1). The folder is named as it
+  // is on disk (its true letter case) and matched literally — `Apps/API` or a folder named `apps/*` must not
+  // match nothing, or more (review 2) — and merge commits are kept (`--full-history`).
+  let only = null;
+  if (judged.inside) {
+    try { only = path.relative(fs.realpathSync.native(judged.inside), fs.realpathSync.native(dir)).split(path.sep).join('/'); } catch { return { read: false, why: 'its folder could not be resolved' }; }
+  }
   // One record per commit: SHA, commit date, subject, Task trailer values — split by 0x1f, records by NUL.
-  const log = git(dir, ['log', '--no-show-signature', '-z', `--format=%H%x1f%cs%x1f%s%x1f%(trailers:key=${TASK_TRAILER},valueonly,separator=%x1e)`,
-    '--end-of-options', ref, '--', ...(only ? [`:(top)${only.split(path.sep).join('/')}`] : [])]);
+  const log = git(dir, ['log', '--no-show-signature', ...(only ? ['--full-history'] : []), '-z',
+    `--format=%H%x1f%cs%x1f%s%x1f%(trailers:key=${TASK_TRAILER},valueonly,separator=%x1e)`,
+    '--end-of-options', ref, '--', ...(only ? [`:(top,literal)${only}`] : [])]);
   if (!log.ok) return { read: false, why: `git could not read ${forTerminal(ref)}` };
   const tasks = new Map();
   const possible = [];
+  let skipped = 0;
   const add = (task, ev) => { if (!tasks.has(task)) tasks.set(task, ev); };
   for (const rec of log.out.split('\0')) {
+    if (!rec.trim()) continue;
     const fields = rec.replace(/^\n/, '').split('\x1f');
-    if (fields.length !== 4 || !/^[0-9a-f]{40,64}$/.test(fields[0])) continue; // a separator in a subject is not a field
+    // A 0x1f inside a subject or trailer makes more fields: such a commit cannot be read safely, and is
+    // counted (review 2), never dropped without a word.
+    if (fields.length !== 4 || !/^[0-9a-f]{40,64}$/.test(fields[0])) { skipped++; continue; }
     const [sha, date, subject, trailers] = fields;
     let hadTask = false;
     for (const v of trailers.split('\x1e').map((s) => s.trim())) {
@@ -96,36 +111,49 @@ export function readRepoMerges(root, repo) {
     if (tag) possible.push({ sha, tag: `s${Number(tag[1].slice(1))}`, via: `short tag ${tag[1].toLowerCase()}` });
   }
   const sha = git(dir, ['rev-parse', '--verify', '--quiet', '--end-of-options', ref]).out.trim();
-  return { read: true, ref, sha, dir, tasks, possible };
+  return { read: true, ref, sha, dir, shared: !!only || judged.state === 'product', tasks, possible, skipped };
 }
 
 // The task branches merged INTO the default branch that the platform knows of, when it answers. Adds to
-// `tasks`, never replaces a commit already found. Returns a note when it did not answer, or in part.
+// `tasks`, never replaces a commit already found. Returns `{ note, partial }`: turned off on purpose, or no
+// platform to ask, is a note; a platform that should have answered and did not (or in part) is partial.
 function addPlatformMerges(repo, merges, { runner, env, authCache }) {
   const t = { platform: repo.platform || null, gitUrl: repo.git_url || '' };
   const r = listMergedBranches(t, { base: repo.default_branch, ...(runner ? { runner } : {}), env, authCache });
-  if (!r.ok) return `platform not read — ${r.why}`;
+  if (!r.ok) {
+    const deliberate = ['off', 'no-platform', 'no-url'].includes(r.kind);
+    return { note: `platform not read — ${r.why}`, partial: !deliberate };
+  }
   for (const m of r.merged) {
     const task = m.branch ? taskFromBranch(m.branch) : null;
-    if (task && TASK_ID_RE.test(task)) merges.tasks.has(task) || merges.tasks.set(task, { sha: m.commit, pr: m.number, via: 'merged branch' });
+    if (task && TASK_ID_RE.test(task) && !merges.tasks.has(task)) merges.tasks.set(task, { sha: m.commit, pr: m.number, via: 'merged branch' });
   }
-  return r.partial ? 'the platform listed only its most recently updated merged PRs/MRs — older ones may be missing' : null;
+  return r.partial ? { note: 'the platform listed only its most recently updated merged PRs/MRs — older ones may be missing', partial: true } : { note: null, partial: false };
 }
 
 // Does a retroactive ship stand for this merged task? It covers what merged up to it: a task commit its
-// merge commit holds, else one dated on or before it. A retro ship with neither records nothing to tell
-// by, and stands for the whole story here, as before. A task merged after it is reported (review 1).
+// merge commit holds, else one dated on or before it. Only a hex SHA that resolves to a commit here is
+// asked about — `main` or `:/text` would cover everything (review 2); one this clone lacks falls back to the
+// date. A retro ship with neither a usable commit nor a date records nothing to tell by, and stands for the
+// whole story here, as before. A task merged after it is reported (review 1).
 function retroCovers(retro, ev, dir) {
-  if (retro.mergeCommit && ev.sha && dir) {
-    return git(dir, ['merge-base', '--is-ancestor', '--end-of-options', ev.sha, retro.mergeCommit]).ok;
+  const mc = typeof retro.mergeCommit === 'string' && SHA.test(retro.mergeCommit) && dir
+    && git(dir, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${retro.mergeCommit}^{commit}`]).ok ? retro.mergeCommit : null;
+  if (mc && ev.sha && SHA.test(ev.sha)) {
+    const r = git(dir, ['merge-base', '--is-ancestor', '--end-of-options', ev.sha, mc]);
+    if (r.status === 0) return true;
+    if (r.status === 1) return false;
+    // anything else (an object this clone lacks): fall back to the date
   }
-  if (retro.shippedAt && ev.date) return ev.date <= String(retro.shippedAt).slice(0, 10);
-  return !retro.mergeCommit && !retro.shippedAt;
+  const shipped = typeof retro.shippedAt === 'string' ? retro.shippedAt.slice(0, 10) : null;
+  if (shipped && ev.date) return ev.date <= shipped;
+  return !mc && !shipped;
 }
 
 // The whole comparison. `epics` (a Set) limits it to those epics, and then only the repos their stories
-// name are read. Returns { repos, unreadEpics, findings }:
-//   repos:  [{ repo, read, why? | ref, sha, note? }]
+// name are read. Returns { repos, unreadEpics, registry, findings }:
+//   repos:     [{ repo, read, why? | ref, sha, note?, partial? }]
+//   registry:  null when it was read; else why it was not (the file does not parse, or an entry is not one)
 //   finding.kind 'merged-no-ship' { epic, story, task, repo, sha, pr, via, fix }   — counted
 //                'looks-shipped'  { epic, story, status, repos }                      — a hint
 //                'possible'       { repo, sha, token, via, stories }                  — check by hand
@@ -147,16 +175,42 @@ export function shipDrift(root, { platform = true, epics = null, runner, env = p
     }
   }
 
-  const registry = readJSON(path.join(root, PROJECT_FILES.reposRegistry), null);
-  const wanted = epics ? new Set(stories.flatMap((s) => s.repos)) : null;
-  const repos = (Array.isArray(registry?.repos) ? registry.repos : []).filter((r) => r && typeof r.name === 'string' && (!wanted || wanted.has(r.name)));
+  // The registry: a file that does not parse is not "no repos" (review 2). Entries that are not repos are
+  // counted too.
+  let registry = null;
+  let entries = [];
+  try {
+    const reg = readJSONStrict(path.join(root, PROJECT_FILES.reposRegistry), { repos: [] });
+    entries = Array.isArray(reg?.repos) ? reg.repos : null;
+    if (!entries) { registry = 'its `repos` is not a list'; entries = []; }
+  } catch { registry = 'it does not parse'; }
+  const usable = entries.filter((r) => r && typeof r === 'object' && typeof r.name === 'string' && r.name);
+  if (!registry && usable.length !== entries.length) registry = `${entries.length - usable.length} entry(ies) are not a repo with a name`;
+
+  const wanted = new Set(stories.flatMap((s) => s.repos));
+  const repos = usable.filter((r) => !epics || wanted.has(r.name));
+  // The same platform repo under two names (monorepo folders share their checkout's `origin`): its merged
+  // branches cannot be told apart by folder, so it is not asked for any of them (review 2).
+  const urlCount = new Map();
+  for (const r of repos) if (r.git_url) urlCount.set(r.git_url, (urlCount.get(r.git_url) || 0) + 1);
   const read = new Map();
   const reposOut = [];
   for (const repo of repos) {
     const m = readRepoMerges(root, repo);
-    const note = m.read && platform ? addPlatformMerges(repo, m, { runner, env, authCache }) : null;
+    let pl = { note: null, partial: false };
+    if (m.read && platform) {
+      pl = m.shared || (repo.git_url && urlCount.get(repo.git_url) > 1)
+        ? { note: 'platform not asked — the repo shares its checkout, so its merged branches cannot be told apart by folder', partial: false }
+        : addPlatformMerges(repo, m, { runner, env, authCache });
+    }
+    const partial = pl.partial || (m.read && m.skipped > 0);
+    const notes = [pl.note, m.read && m.skipped ? `${m.skipped} commit(s) could not be read` : null].filter(Boolean);
     read.set(repo.name, m);
-    reposOut.push({ repo: repo.name, read: m.read, ...(m.read ? { ref: m.ref, sha: m.sha } : { why: m.why }), ...(note ? { note } : {}) });
+    reposOut.push({ repo: repo.name, read: m.read, ...(m.read ? { ref: m.ref, sha: m.sha } : { why: m.why }), ...(notes.length ? { note: notes.join('; ') } : {}), ...(partial ? { partial: true } : {}) });
+  }
+  // A repo a story names that the registry does not hold is not read either — said, not assumed empty.
+  for (const name of [...wanted].sort()) {
+    if (!read.has(name) && !usable.some((r) => r.name === name)) reposOut.push({ repo: name, read: false, why: 'a story names it, but it is not in repos.json' });
   }
 
   const findings = [];
@@ -180,10 +234,10 @@ export function shipDrift(root, { platform = true, epics = null, runner, env = p
         const engineer = 'record the ship as yad-engineer-review does (a command for it is #346)';
         let fix = engineer;
         if (!recorded.length && !suggested && s.sameFile && asArg(repoName) === repoName) {
-          fix = `if ${s.story} predates ledger tracking: yad checkpoint --retro-ship ${s.epic}/${s.story} --repo ${repoName} --task ${t}${ev.sha ? ` --merge-commit ${ev.sha.slice(0, 12)}` : ''} (the story's status must be in-build or shipped first); otherwise ${engineer}`;
+          fix = `if ${s.story} predates ledger tracking: yad checkpoint --retro-ship ${s.epic}/${s.story} --repo ${repoName} --task ${t}${ev.sha && SHA.test(ev.sha) ? ` --merge-commit ${ev.sha.slice(0, 12)}` : ''} (the story's status must be in-build or shipped first); otherwise ${engineer}`;
           suggested = true;
         }
-        findings.push({ kind: 'merged-no-ship', epic: s.epic, story: s.story, task: t, repo: repoName, sha: ev.sha || null, pr: ev.pr ?? null, via: ev.via, fix });
+        findings.push({ kind: 'merged-no-ship', epic: s.epic, story: s.story, task: t, repo: repoName, sha: ev.sha && SHA.test(ev.sha) ? ev.sha : null, pr: Number.isInteger(ev.pr) ? ev.pr : null, via: ev.via, fix });
       }
     }
     if (everyRepoHasWork && s.status !== 'shipped') findings.push({ kind: 'looks-shipped', epic: s.epic, story: s.story, status: s.status || null, repos: s.repos });
@@ -201,5 +255,5 @@ export function shipDrift(root, { platform = true, epics = null, runner, env = p
       if (hit.length) findings.push({ kind: 'possible', repo: repoName, sha: p.sha, token: p.story || p.tag, via: p.via, stories: hit });
     }
   }
-  return { repos: reposOut, unreadEpics, findings };
+  return { repos: reposOut, unreadEpics, registry, findings };
 }

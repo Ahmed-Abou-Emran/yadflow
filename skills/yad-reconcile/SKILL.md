@@ -53,9 +53,11 @@ Run `yad reconcile check` (optionally `--thread EP-<genesis>`). For each thread 
   - a **possible match** to check by hand, for a story not yet shipped or recorded in that repo: a full
     story ID in a commit subject with no task, or a short scope tag such as `feat(s06):`. Never counted. A
     story ID only in a commit body is not evidence.
-  git runs only in a repo `yad repo clone` would accept as present (a committed folder shaped like a bare
-  repo would have git read its config); a folder inside a shared checkout reads only its own history. A
-  repo or ledger that cannot be read says why, and then there is no all-clear. Only SHAs, PR/MR numbers
+  git runs only in a repo `yad repo clone` would accept as present, or the Product itself for `path: "."`
+  (a committed folder shaped like a bare repo would have git read its config), and never fetches; a folder
+  inside a shared checkout reads only its own history and is not asked about on the platform. A repo,
+  ledger or `repos.json` that cannot be read in full — including a repo a story names that is not
+  registered — says why, and then there is no all-clear. Only SHAs, PR/MR numbers
   and IDs are printed, never a commit message or a branch name.
 
 Writes nothing. This is the read-only sweep a human (or CI) runs to see the picture.
