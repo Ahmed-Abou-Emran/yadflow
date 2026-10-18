@@ -35,6 +35,13 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 process.env.YAD_PLATFORM_LOGIN = '0';
 // E70: `yad doctor` reads each repo's branch protection with the same `gh`/`glab` login — off here too.
 process.env.YAD_PLATFORM_READ = '0';
+// Issue #362: `gate ci` asks the platform which branch a PR/MR is on before it moves the pointer — the
+// developer's real `gh`, which may name a real repo (`GH_REPO`). Every test gets a stub that cannot
+// answer (the "used as given" path), unless it passes its own `branchOf`.
+async function loadGateCi() {
+  const { gateCi } = await import('./gate.mjs');
+  return (root, opts = {}) => gateCi(root, { branchOf: () => ({ ok: false, reason: 'not asked in tests' }), ...opts });
+}
 // Strip ambient git identity env: GIT_AUTHOR_*/GIT_COMMITTER_* override repo-level `git config`,
 // and semantic-release exports them during `npm publish` (prepublishOnly runs this suite) — test
 // commits must carry the identity each test sets, not the publisher's.
@@ -6306,7 +6313,7 @@ test('runCommit: the missing-Task warning is stage-aware (Product vs code repo)'
 // default branch at merge. Derives the epic/artifact from the review branch name.
 // ---------------------------------------------------------------------------------------------
 const { parseReviewBranch, artifactFromBase, artifactPaths, upsertProductPr, artifactBase, advanceState, markInReview, discoveryHash, DISCOVERY_FILES, skipStep, unskipStep, deferStep, undeferStep, unblockStep, optionalStepsOf, optionalStepsFor, isSkippableStep, authorStepFor, repairState, canonicalApprovals, canonicalComments, canonicalProductPrs, isPassed, isAuthored } = await import('./epic-state.mjs');
-const { gateCi } = await import('./gate.mjs');
+const gateCi = await loadGateCi();
 
 // issue #163. Sorting is only a fix if the order is TOTAL: `Array#sort` is stable, so records that tie
 // on the sort key keep their input order — which is exactly the rotating order being eliminated. A
@@ -19219,7 +19226,7 @@ function scaffoldLegacyProduct({ verified = true, checks = {}, reviewed = true }
 }
 
 test('gate ci: on a verified Product the gate bot moves the product level to foundation/ — one commit, no backup (E75 follow-up)', async () => {
-  const { gateCi } = await import('./gate.mjs');
+  const gateCi = await loadGateCi();
   const { T, origin, ci } = scaffoldLegacyProduct();
   try {
     await grab(() => gateCi(ci, { today: '2026-09-13' }));
@@ -19243,7 +19250,7 @@ test('gate ci: on a verified Product the gate bot moves the product level to fou
 });
 
 test('gate ci: the product level stays put on stale checks, on a local ledger, and on a review head before merge (E75 follow-up)', async () => {
-  const { gateCi } = await import('./gate.mjs');
+  const gateCi = await loadGateCi();
   const cases = [
     // A guard that knows only epics/: moving the ledger under it would leave foundation/ unguarded.
     ['stale checks', { checks: { 'checks/ledger-guard.sh': '#!/usr/bin/env bash\ncase "$f" in\n  epics/*) ;;\nesac\n' } }, {}, /wired checks predate the Foundation.*yad update/],
@@ -19284,7 +19291,7 @@ test('gate ci: the product level\'s own review merges — the same run advances 
   // The common real-world order on a verified Product: the discovery review is open, so no move yet; its
   // merge event advances it where it is, flips the section's status, and only then does the move run —
   // four stagers on paths that vanish mid-run. Everything must land on the default branch as one commit.
-  const { gateCi } = await import('./gate.mjs');
+  const gateCi = await loadGateCi();
   const { T, origin, ci } = scaffoldLegacyProduct({ reviewed: false });
   const prev = process.exitCode;
   try {
@@ -19317,7 +19324,7 @@ test('gate ci: the product level\'s own review merges — the same run advances 
 });
 
 test('gate ci: a merge of review/EP-discovery/* after the move is read from foundation/, and a merge with no ledger anywhere is red (E75 follow-up)', async () => {
-  const { gateCi } = await import('./gate.mjs');
+  const gateCi = await loadGateCi();
   const { T, ci } = scaffoldLegacyProduct();
   const prev = process.exitCode;
   try {
@@ -28500,7 +28507,8 @@ test('E122: every caller of the default-branch guard hands it the Product root',
 // E124 review: with no platform, `gate sync` / `gate ci` name the settings file that is actually there. Naming
 // product.json on a Product that has only hub.json would have a person create a one-key product.json (E122).
 test('E124: the no-platform warning of gate sync and gate ci names the settings file on disk', async () => {
-  const { gateSync, gateCi } = await import('./gate.mjs');
+  const { gateSync } = await import('./gate.mjs');
+  const gateCi = await loadGateCi();
   for (const [name, want, other] of [['hub.json', /\(\.sdlc\/hub\.json\)/, /product\.json/], ['product.json', /\(\.sdlc\/product\.json\)/, /hub\.json/]]) {
     const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-noplatform-'));
     try {
