@@ -1095,7 +1095,7 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
       }
     }
     if (older && !unread) info(`${job.epic}: PR #${job.pr} is older than #${existing.number}, the review recorded for ${job.artifact}, and ${isPassed(step) ? `the step is already ${stepStatus(step) === 'deferred' ? 'deferred' : stepStatus(step) === 'skipped' ? 'skipped' : 'done'}` : 'does not pass the gate'} — syncing #${existing.number}`);
-    // Before the pointer moves to a number it has never held, ask the platform that the PR/MR is on
+    // Before the pointer moves to a number other than the one it holds, ask the platform that the PR/MR is on
     // this review branch: a mistyped `--pr` on the manual recovery would otherwise become the pointer,
     // and with numbers that only grow it could stay there (issue #362 review). A platform that cannot
     // answer is not evidence against it — the same rule `gate sync --pr` follows.

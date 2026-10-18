@@ -125,7 +125,7 @@ repository access decides who may approve. A review with no login is not counted
   order, so on a step that is still open the older review is first read in a dry run: if it passes the
   gate, the pointer moves back to it once and the step advances (a held newer review cannot block an
   approved older one, and the manual recovery still works). A pointer from another platform never
-  counts as newer, and before the pointer moves to a number it has never held, `gate ci` asks the
+  counts as newer, and before the pointer moves to a number other than the one it holds, `gate ci` asks the
   platform that the PR/MR is on the review branch — a mistyped `--pr` the platform places on another
   branch is refused, not recorded (one the platform cannot place is used as given, with a warning). A
   pointer moved to a new number starts with no URL, nudges or sync date of the old review's. The dry run prints nothing; if its platform read fails, the run
