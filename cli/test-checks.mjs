@@ -613,9 +613,9 @@ const SURFACE_LINES = [
 ];
 const surfaceHash = (lines) => createHash('sha256').update(lines.join('\n') + '\n').digest('hex');
 const contractMd = (lines) => ['# Contract', '', '<!-- CONTRACT-SURFACE:BEGIN -->', ...lines, '<!-- CONTRACT-SURFACE:END -->', ''].join('\n');
-// What yad-spec writes: one `# ` title, then the quote block(s); nothing else outside them (review 1).
+// What yad-spec writes: the fixed title, then ONE quote block; nothing else outside it (reviews 1 and 2).
 const quoteBlock = (lines) => ['<!-- CONTRACT-QUOTE:BEGIN -->', ...lines, '<!-- CONTRACT-QUOTE:END -->'].join('\n');
-const quoteSlice = (lines, extra = '') => ['# Contract slice', '', quoteBlock(lines), '', extra].join('\n');
+const quoteSlice = (lines, extra = '', story = 'EP-demo-S01') => [`# Contract slice — ${story}`, '', quoteBlock(lines), '', extra].join('\n');
 // A Product at <repo>/product holding the locked contract.md and its lock. `lockLines` lets a test lock
 // one surface and leave contract.md saying another (a drifted contract).
 function seedLockedContract(T, epic = 'EP-demo', { lines = SURFACE_LINES, lockLines = lines } = {}) {
@@ -742,20 +742,68 @@ test('contract-check gate: DELETING a quoted slice file still needs the trailer 
   fs.rmSync(T, { recursive: true, force: true });
 });
 
-test('contract-check gate: two quote blocks, each an unbroken run, pass; a nested one fails (issue #344)', () => {
+// Review 2: two blocks, each a run on its own, were stitched into a meaning the lock never had (the
+// first endpoint's heading over another's `auth: none`). One block per file; two parts, two files.
+test('contract-check gate: one quote block per file — two fail, two files pass, a nested one fails (issue #344 review 2)', () => {
   const T = scaffoldRepo();
   const hash = seedLockedContract(T);
-  commit(T, 'docs(spec): quote two runs', {
-    'specs/EP-demo-S01/contracts/orders.md': ['# Contract slice', '', quoteBlock(SURFACE_LINES.slice(2, 5)), '', quoteBlock(SURFACE_LINES.slice(5, 7)), ''].join('\n'),
+  commit(T, 'docs(spec): two blocks in one file', {
+    'specs/EP-demo-S01/contracts/orders.md': ['# Contract slice — EP-demo-S01', '', quoteBlock(SURFACE_LINES.slice(5, 6)), '', quoteBlock(SURFACE_LINES.slice(4, 5)), ''].join('\n'),
     'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
   });
-  assert.equal(runGate(CONTRACT, T).code, 0, 'two runs, two blocks');
+  const two = runGate(CONTRACT, T);
+  assert.equal(two.code, 1, two.out);
+  assert.match(two.out, /holds more than one CONTRACT-QUOTE block — one block per file/);
+  commit(T, 'docs(spec): two parts, two files', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/contracts/read.md': quoteSlice(SURFACE_LINES.slice(5, 7)),
+  });
+  assert.equal(runGate(CONTRACT, T).code, 0, 'two runs, two files');
   commit(T, 'docs(spec): a block inside a block', {
-    'specs/EP-demo-S01/contracts/orders.md': ['# Contract slice', '', '<!-- CONTRACT-QUOTE:BEGIN -->', quoteBlock(SURFACE_LINES.slice(2, 3)), '<!-- CONTRACT-QUOTE:END -->', ''].join('\n'),
+    'specs/EP-demo-S01/contracts/orders.md': ['# Contract slice — EP-demo-S01', '', '<!-- CONTRACT-QUOTE:BEGIN -->', quoteBlock(SURFACE_LINES.slice(2, 3)), '<!-- CONTRACT-QUOTE:END -->', ''].join('\n'),
   });
   const r = runGate(CONTRACT, T);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /every CONTRACT-QUOTE block must be closed, BEGIN before END, none inside another/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 2: the one free `# ` line could say anything ("# GET /admin/users is public"), anywhere.
+test('contract-check gate: the title is fixed text and comes first (issue #344 review 2)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): a title that says something', {
+    'specs/EP-demo-S01/contracts/orders.md': ['# GET /orders is public', '', quoteBlock(SURFACE_LINES.slice(2, 5)), ''].join('\n'),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /this line sits outside the CONTRACT-QUOTE block: # GET \/orders is public/);
+  // The right title, but after the block.
+  commit(T, 'docs(spec): the title last', {
+    'specs/EP-demo-S01/contracts/orders.md': [quoteBlock(SURFACE_LINES.slice(2, 5)), '', '# Contract slice — EP-demo-S01', ''].join('\n'),
+  });
+  assert.equal(runGate(CONTRACT, T).code, 1, 'the title only comes first');
+  // No title at all is fine; so is the right one behind a BOM.
+  commit(T, 'docs(spec): no title', { 'specs/EP-demo-S01/contracts/orders.md': `${quoteBlock(SURFACE_LINES.slice(2, 5))}\n` });
+  assert.equal(runGate(CONTRACT, T).code, 0, 'the title is optional');
+  commit(T, 'docs(spec): a BOM', { 'specs/EP-demo-S01/contracts/orders.md': `\ufeff${quoteSlice(SURFACE_LINES.slice(2, 5))}` });
+  const bom = runGate(CONTRACT, T);
+  assert.equal(bom.code, 0, bom.out);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 2: macOS awk ends a line at a zero byte, so text after it was never compared.
+test('contract-check gate: a slice holding a zero byte is refused (issue #344 review 2)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): a hidden tail', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice([SURFACE_LINES[2] + '\u0000 and DELETE /orders/{id} with auth: none', ...SURFACE_LINES.slice(3, 5)]),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /orders\.md: holds a zero byte/);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -769,7 +817,7 @@ test('contract-check gate: a line outside the quote block fails, naming it (issu
   });
   const r = runGate(CONTRACT, T);
   assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /this line sits outside the CONTRACT-QUOTE blocks: ### DELETE \/admin\/users\/\{id\}/);
+  assert.match(r.out, /this line sits outside the CONTRACT-QUOTE block: ### DELETE \/admin\/users\/\{id\}/);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -833,7 +881,7 @@ test('contract-check gate: a change-epic\'s pointer lock reads the owner\'s cont
     hash: `sha256:${hash}`, inheritedFrom: 'EP-demo', ref: '../../EP-demo/.sdlc/contract-lock.json',
   }));
   commit(T, 'docs(spec): quote the inherited slice', {
-    'specs/EP-fix-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-fix-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5), '', 'EP-fix-S01'),
     'specs/EP-fix-S01/link.md': quoteLink('EP-fix-S01', hash),
   });
   const r = runGate(CONTRACT, T);
@@ -843,11 +891,31 @@ test('contract-check gate: a change-epic\'s pointer lock reads the owner\'s cont
   const r2 = runGate(CONTRACT, T);
   assert.equal(r2.code, 1, r2.out);
   assert.match(r2.out, /pointer lock copies .*but its owner now locks another surface/);
-  // A ref that leaves epics/ is refused.
+  fs.writeFileSync(path.join(T, 'product/epics/EP-demo/.sdlc/contract-lock.json'), JSON.stringify({ hash: `sha256:${hash}` }));
+  // `inheritedFrom` alone names the owner too.
+  fs.writeFileSync(path.join(child, 'contract-lock.json'), JSON.stringify({ hash: `sha256:${hash}`, inheritedFrom: 'EP-demo' }));
+  assert.equal(runGate(CONTRACT, T).code, 0, 'inheritedFrom alone');
+  // A ref that leaves epics/ is refused — even to a real lock and contract that agree (review 2: the old
+  // case pointed at nothing, so it never tested the boundary).
+  const outside = path.join(T, 'x');
+  fs.mkdirSync(path.join(outside, '.sdlc'), { recursive: true });
+  fs.writeFileSync(path.join(outside, 'contract.md'), contractMd(SURFACE_LINES));
+  fs.writeFileSync(path.join(outside, '.sdlc/contract-lock.json'), JSON.stringify({ hash: `sha256:${hash}` }));
   fs.writeFileSync(path.join(child, 'contract-lock.json'), JSON.stringify({ hash: `sha256:${hash}`, ref: '../../../../x/.sdlc/contract-lock.json' }));
   const r3 = runGate(CONTRACT, T);
   assert.equal(r3.code, 1, r3.out);
   assert.match(r3.out, /is not another epic's lock in this Product/);
+  // An epic WITH its own contract.md that kept the pointer fields reads its own surface, as doctor does.
+  const own = ['## API', '', '- `POST /fix` — the change-epic\'s own endpoint.'];
+  const ownHash = surfaceHash(own);
+  fs.writeFileSync(path.join(T, 'product/epics/EP-fix/contract.md'), contractMd(own));
+  fs.writeFileSync(path.join(child, 'contract-lock.json'), JSON.stringify({ hash: `sha256:${ownHash}`, inheritedFrom: 'EP-demo' }));
+  commit(T, 'docs(spec): quote the re-authored surface', {
+    'specs/EP-fix-S01/contracts/orders.md': quoteSlice(own.slice(2), '', 'EP-fix-S01'),
+    'specs/EP-fix-S01/link.md': quoteLink('EP-fix-S01', ownHash),
+  });
+  const r4 = runGate(CONTRACT, T);
+  assert.equal(r4.code, 0, r4.out);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -1319,7 +1387,15 @@ test('contract-check and backfill-check list every change by both paths, byte-wi
       // A newline inside a path becomes `?` (E121): split on newlines alone, one odd name made a path.
       // The quote pass (issue #344 review 1) keeps the names NUL-separated in a file and reads them NUL
       // by NUL (`read -d ''`), so a newline in a name is refused by name instead of folded into another.
-      else if (/ -z .* > "\$_yad_tmp\/q-(files|gone)"/.test(l)) assert.match(src, /read -r -d '' _f; do[\s\S]*done < "\$_yad_tmp\/q-files"/, `${rel}: q-files is read NUL by NUL`);
+      else if (/ -z .* > "\$_yad_tmp\/q-(files|gone)"/.test(l)) {
+        // Each list has exactly one reader, and it splits on NUL (review 2: a second reader that split on
+        // newlines would have slipped past a looser pin).
+        const code = src.split('\n').filter((c) => !/^\s*#/.test(c));
+        const readers = (f) => code.filter((c) => c.includes(`"$_yad_tmp/${f}"`) && !/ -z .* > /.test(c) && !/\[ (!\s)?-s /.test(c));
+        assert.deepEqual(readers('q-files').map((c) => c.trim()), ['done < "$_yad_tmp/q-files"'], `${rel}: q-files has one reader`);
+        assert.ok(src.includes(`while IFS= read -r -d '' _f; do`), `${rel}: q-files is read NUL by NUL`);
+        assert.deepEqual(readers('q-gone').map((c) => c.trim()), [`tr '\\n\\0' '?\\n' < "$_yad_tmp/q-gone" | while IFS= read -r _f; do echo "  \${_f}: this removes slice file(s) — a deletion changes the surface."; done`], `${rel}: q-gone is folded before it is printed`);
+      }
       else assert.match(l, / -z .*\| tr '\\n\\0' '\?\\n'/, `${rel}: ${l.trim()}`);
       // Measured from the merge base (issue #363): two dots compared with the base's tip.
       assert.match(l, /"\$\{?DIFF_RANGE\}?"|\.\.\.HEAD/, `${rel}: ${l.trim()}`);

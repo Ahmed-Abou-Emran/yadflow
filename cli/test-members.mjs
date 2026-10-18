@@ -496,6 +496,27 @@ const IDS = { alice: 1, bob: 2, mallory: 3 };
 const rec = (login, emails) => ({ accounts: [{ platform: 'github', host: 'github.com', login, id: IDS[login] }], emails: emails.map(M.hashEmail).sort() });
 const as = (login) => ({ PR_AUTHOR: login, PR_AUTHOR_ID: String(IDS[login.toLowerCase()] ?? '') });
 
+// #363 review 2: `base...HEAD` reads from ONE merge base; with two, a hand-resolved merge could bring in a
+// member file the diff never lists. The gate fails closed.
+test('member-check: more than one merge base fails closed (#363 review 2)', () => {
+  const g = gateRepo();
+  try {
+    const run = (...a) => execFileSync('git', a, { cwd: g.T, stdio: 'pipe' });
+    run('checkout', '-q', '-b', 'a1', 'main');
+    g.commitAs('x@y.z', { 'a1.txt': 'a' }, 'chore: side a');
+    run('checkout', '-q', '-b', 'b1', 'main');
+    g.commitAs('x@y.z', { 'b1.txt': 'b' }, 'chore: side b');
+    run('checkout', '-q', 'main');
+    run('-c', 'user.email=x@y.z', 'merge', '-q', '--no-ff', '-m', 'merge a1', 'a1');
+    run('-c', 'user.email=x@y.z', 'merge', '-q', '--no-ff', '-m', 'merge b1', 'b1');
+    run('checkout', '-q', '-B', 'pr', 'a1');
+    run('-c', 'user.email=x@y.z', 'merge', '-q', '--no-ff', '-m', 'merge b1 into the branch', 'b1');
+    const r = g.check(as('alice'));
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /FAIL \[member-check\]: main and HEAD have more than one merge base/);
+  } finally { fs.rmSync(g.T, { recursive: true, force: true }); }
+});
+
 test('E131 member-check: no member file changed is a pass', () => {
   const g = gateRepo();
   try {

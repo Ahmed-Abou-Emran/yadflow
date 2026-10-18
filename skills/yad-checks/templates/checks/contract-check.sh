@@ -594,10 +594,12 @@ phys_dir() { (cd "$1" 2>/dev/null && pwd -P) || true; }
 # Issue #344: is story $1's changed slice an exact quote of its locked contract? Says why not, one line
 # per reason, and returns 1. Sets `current` (the lock's hash) for the caller's note.
 #
-# A slice file is a quote when it is Markdown, holds one or more `<!-- CONTRACT-QUOTE:BEGIN -->` …
-# `<!-- CONTRACT-QUOTE:END -->` blocks, each of whose non-blank lines is one UNBROKEN, IN-ORDER run of
-# the locked surface's non-blank lines, and holds nothing else but blank lines and at most one `# `
-# title (review 1: notes outside a block were never read, so a new endpoint written there passed; and
+# A slice file is a quote when it is Markdown, holds exactly ONE `<!-- CONTRACT-QUOTE:BEGIN -->` …
+# `<!-- CONTRACT-QUOTE:END -->` block whose non-blank lines are one UNBROKEN, IN-ORDER run of the locked
+# surface's non-blank lines, and holds nothing else but blank lines and, as its first non-blank line, the
+# optional title `# Contract slice — <story ID>` (review 2: two blocks, each a run, could be stitched
+# into a meaning the lock never had, and a free title could say anything; review 1: notes outside a
+# block were never read, so a new endpoint written there passed; and
 # lines checked one by one could be reordered into a different meaning). Its content is read from the
 # commit by its exact name (review 1: a newline in a name, written as `?` in the list, opened a
 # different file on disk), so a name holding a newline is refused.
@@ -610,6 +612,10 @@ quote_story() {
   yad_tmp
   git diff --no-renames --diff-filter=D --name-only -z "$DIFF_RANGE" -- "$_qp" > "$_yad_tmp/q-gone" || { echo "  ${_qs}: git could not list the slice's deletions."; return 1; }
   git diff --no-renames --diff-filter=d --name-only -z "$DIFF_RANGE" -- "$_qp" > "$_yad_tmp/q-files" || { echo "  ${_qs}: git could not list the slice's changes."; return 1; }
+  # Never a PASS by an empty list: the surface named this story, so its slice has changed files.
+  if [ ! -s "$_yad_tmp/q-files" ] && [ ! -s "$_yad_tmp/q-gone" ]; then
+    echo "  ${_qs}: git listed no changed slice file for this story — the quote cannot be checked."; return 1
+  fi
   if [ -s "$_yad_tmp/q-gone" ]; then
     tr '\n\0' '?\n' < "$_yad_tmp/q-gone" | while IFS= read -r _f; do echo "  ${_f}: this removes slice file(s) — a deletion changes the surface."; done
     return 1
@@ -639,11 +645,12 @@ quote_story() {
   # Where the locked text lives. A change-epic that inherits its architecture carries a POINTER lock
   # (`inheritedFrom` / `ref`, yad-change) and no contract.md of its own: the surface is the owner's. Read
   # it there, as `yad doctor` does — only inside this Product's epics/, and only when the owner's lock
-  # still holds the hash this one copied.
+  # still holds the hash this one copied. An epic WITH its own contract.md re-authored its architecture
+  # and left the pointer fields behind: its own surface is read, as doctor reads it (review 2).
   _qc="${prod}/epics/${_qepic}/contract.md"
   _qref="$(lock_str "$_qlock" ref)"
   _qfrom="$(lock_str "$_qlock" inheritedFrom)"
-  if [ -n "$_qref" ] || [ -n "$_qfrom" ]; then
+  if [ ! -f "$_qc" ] && { [ -n "$_qref" ] || [ -n "$_qfrom" ]; }; then
     [ -n "$_qref" ] || _qref="../../${_qfrom}/.sdlc/contract-lock.json"
     _qepics="$(phys_dir "${prod}/epics")"
     case "$_qref" in /*) _qrefp="$_qref" ;; *) _qrefp="${prod}/epics/${_qepic}/.sdlc/${_qref}" ;; esac
@@ -680,13 +687,17 @@ quote_story() {
     esac
     # The committed content, by its exact name — never a file on disk that a folded name might point at.
     if ! git cat-file blob "HEAD:${_f}" > "$_yad_tmp/q-file" 2>/dev/null; then
-      echo "  ${_f} could not be read from HEAD."; _qbad=1; continue
+      echo "  ${_f}: could not be read from HEAD."; _qbad=1; continue
     fi
-    _qv="$(awk '
+    # A zero byte ends a line for some awks (macOS), so text after it was never compared (review 2).
+    if ! tr -d '\000' < "$_yad_tmp/q-file" | cmp -s - "$_yad_tmp/q-file"; then
+      echo "  ${_f}: holds a zero byte — a slice is text; it is not read."; _qbad=1; continue
+    fi
+    _qv="$(awk -v title="# Contract slice — ${_qs}" -v bom="$(printf '\357\273\277')" '
       function norm(x) { sub(/\r$/, "", x); sub(/[ \t]+$/, "", x); return x }
       FILENAME == ARGV[1] { $0 = norm($0); if ($0 != "") { surf = surf "\n" $0; s[$0] = 1 } next }
-      { $0 = norm($0) }
-      $0 == "<!-- CONTRACT-QUOTE:BEGIN -->" { if (inb) bad = "nested"; inb = 1; blocks++; q = ""; qfirst = ""; next }
+      { if (FNR == 1 && index($0, bom) == 1) $0 = substr($0, length(bom) + 1); $0 = norm($0) }
+      $0 == "<!-- CONTRACT-QUOTE:BEGIN -->" { if (inb) bad = "nested"; inb = 1; blocks++; seen = 1; q = ""; qfirst = ""; next }
       $0 == "<!-- CONTRACT-QUOTE:END -->" {
         if (!inb) { bad = "order"; next }
         inb = 0
@@ -702,11 +713,13 @@ quote_story() {
         next
       }
       $0 == "" { next }
-      /^# / && !titled { titled = 1; next }
+      $0 == title && !seen { seen = 1; next }
+      { seen = 1 }
       outside == "" { outside = $0 }
       END {
         if (bad != "" || inb) { print "count"; exit }
         if (blocks == 0) { print "none"; exit }
+        if (blocks > 1) { print "many"; exit }
         if (outside != "") { print "outside " outside; exit }
         if (miss != "") { print "miss " miss; exit }
         if (res != "") { print res; exit }
@@ -716,11 +729,12 @@ quote_story() {
       ok) ;;
       none) echo "  ${_f} has no CONTRACT-QUOTE block, so it cannot be told from a change."; _qbad=1 ;;
       count) echo "  ${_f}: every CONTRACT-QUOTE block must be closed, BEGIN before END, none inside another."; _qbad=1 ;;
+      many) echo "  ${_f}: holds more than one CONTRACT-QUOTE block — one block per file; quote another part of the surface in another file."; _qbad=1 ;;
       empty) echo "  ${_f}: a CONTRACT-QUOTE block quotes nothing."; _qbad=1 ;;
-      outside*) echo "  ${_f}: this line sits outside the CONTRACT-QUOTE blocks: ${_qv#outside?} — only blank lines and one '# ' title may; notes go in spec.md or plan.md."; _qbad=1 ;;
+      outside*) echo "  ${_f}: this line sits outside the CONTRACT-QUOTE block: ${_qv#outside?} — only blank lines and, first, the title '# Contract slice — ${_qs}' may; notes go in spec.md or plan.md."; _qbad=1 ;;
       miss*) echo "  ${_f}: this line is not in the locked surface: ${_qv#miss?}"; _qbad=1 ;;
-      run*) echo "  ${_f}: the block starting '${_qv#run?}' is not one unbroken run of the locked surface, in its order — quote whole consecutive lines, one block per run."; _qbad=1 ;;
-      *) echo "  ${_f} could not be read."; _qbad=1 ;;
+      run*) echo "  ${_f}: the block starting '${_qv#run?}' is not one unbroken run of the locked surface, in its order — quote whole consecutive lines."; _qbad=1 ;;
+      *) echo "  ${_f}: could not be read."; _qbad=1 ;;
     esac
   done < "$_yad_tmp/q-files"
   return "$_qbad"
@@ -740,12 +754,9 @@ rc=0
 
 # --- issue #344: with no trailer, pass only a slice that is an exact quote of its locked contract ---
 # yad-spec writes the lines it copies from the locked CONTRACT-SURFACE block between
-# `<!-- CONTRACT-QUOTE:BEGIN -->` and `<!-- CONTRACT-QUOTE:END -->`; notes outside the markers are free
-# text. A story's slice is a quote only when every one of these holds, else the trailer is still needed:
-# the Product is reached and its lock is readable; link.md pins that lock; the Product's contract.md
-# still hashes to it (so the lines are compared with the LOCKED text, not a later edit); no slice file
-# is deleted (a deletion changes the surface); and every changed slice file holds exactly one quote
-# block, not empty, each non-blank line of which is a line of the locked surface.
+# `<!-- CONTRACT-QUOTE:BEGIN -->` and `<!-- CONTRACT-QUOTE:END -->`. What makes a slice a quote — and
+# every rule reviews 1 and 2 added to keep a changed surface from passing as one — is said once, above
+# `quote_story`. Anything it cannot prove is the trailer's FAIL, as before #344.
 if [ -n "$no_trailer" ]; then
   quote_ok=1
   while IFS= read -r story; do
@@ -763,9 +774,9 @@ QSTORIES
     exit 0
   fi
   echo "FAIL [contract-check]: contract surface changed without a 'Contract-Change: yes' trailer."
-  echo "  -> If the slice only QUOTES the locked contract, put the copied lines in one"
-  echo "     <!-- CONTRACT-QUOTE:BEGIN --> … <!-- CONTRACT-QUOTE:END --> block per file (re-run yad-spec),"
-  echo "     and fix what is listed above."
+  echo "  -> If the slice only QUOTES the locked contract: one Markdown file per unbroken run of the surface,"
+  echo "     holding one <!-- CONTRACT-QUOTE:BEGIN --> … <!-- CONTRACT-QUOTE:END --> block and nothing else but"
+  echo "     blank lines and the title '# Contract slice — <story ID>' (re-run yad-spec); fix what is listed above."
   echo "  -> If it changes the surface: Route back to the architecture gate — update + re-lock contract.md"
   echo "     in the product repo, or, if this epic is on a short lane (chore/spike) and has no architecture"
   echo "     gate, move the surface change to a new epic on the classic route,"

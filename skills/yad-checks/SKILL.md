@@ -15,10 +15,10 @@ in CI on every PR/MR and must pass before merge (build plan §C). Each is a smal
    `specs/<story>/contracts/`) without a `Contract-Change: yes` trailer **and** an updated, re-locked
    contract upstream, it **FAILS and routes back to the architecture gate**. The shared surface is
    never widened from inside a code repo (Phase 2 contract representation: delimited block + SHA-256 lock).
-   **A quote is not a change (issue #344):** a slice whose every changed file is Markdown holding only
-   `<!-- CONTRACT-QUOTE:BEGIN -->` … `<!-- CONTRACT-QUOTE:END -->` blocks (plus blank lines and one `# `
-   title), each block an unbroken, in-order run of the locked `CONTRACT-SURFACE` lines, passes with **no**
-   trailer — when the Product is reached, `link.md` pins the current lock, and the locked `contract.md`
+   **A quote is not a change (issue #344):** a slice whose every changed file is Markdown holding exactly
+   one `<!-- CONTRACT-QUOTE:BEGIN -->` … `<!-- CONTRACT-QUOTE:END -->` block (plus blank lines and, first,
+   the optional title `# Contract slice — <story ID>`), the block an unbroken, in-order run of the locked
+   `CONTRACT-SURFACE` lines, passes with **no** trailer — when the Product is reached, `link.md` pins the current lock, and the locked `contract.md`
    (the owner's, for a change-epic's pointer lock) still hashes to it. Anything it cannot prove still
    needs the trailer. **The change is measured from the merge base** (`<base>...HEAD`, issue #363), so a
    slice that changed on the target after the branch split off is not this branch's; a branch with more

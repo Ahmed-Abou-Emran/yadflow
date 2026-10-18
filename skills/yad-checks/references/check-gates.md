@@ -150,13 +150,19 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
       still holds the copied hash (as `yad doctor` checks it);
     - no slice file is deleted (a deletion changes the surface);
     - every changed slice file is **Markdown** (`.md`; any other file under `contracts/` needs the
-      trailer), read from the commit by its exact name (a name holding a newline is refused), and holds
-      one or more `<!-- CONTRACT-QUOTE:BEGIN -->` … `<!-- CONTRACT-QUOTE:END -->` blocks, none empty or
-      inside another. The non-blank lines of each block (trailing spaces and a CR ignored) are **one
-      unbroken run of the locked surface's non-blank lines, in its order** — lines checked one by one
-      could be reordered into a different meaning (review 1). Outside the blocks the file holds only blank
-      lines and at most one `# ` title: a note there was never read, so a new endpoint written in it passed
-      (review 1). Notes go in `spec.md` or `plan.md`.
+      trailer), read from the commit by its exact name (a name holding a newline, or content holding a
+      zero byte, is refused), and holds **exactly one** `<!-- CONTRACT-QUOTE:BEGIN -->` …
+      `<!-- CONTRACT-QUOTE:END -->` block, not empty. Its non-blank lines (trailing spaces and a CR
+      ignored) are **one unbroken run of the locked surface's non-blank lines, in its order** — lines
+      checked one by one could be reordered into a different meaning (review 1), and two blocks, each a
+      run, could be stitched into one (review 2); to quote two parts, use two files. Outside the block the
+      file holds only blank lines and, as its first non-blank line, the optional title
+      `# Contract slice — <story ID>` (exactly that text; a leading BOM is ignored): a note there was never
+      read, so a new endpoint written in it passed (review 1), and a free title could say anything
+      (review 2). Notes go in `spec.md` or `plan.md`.
+    - A change-epic's pointer lock is followed only when the epic has **no** `contract.md` of its own; one
+      that re-authored its architecture and kept the pointer fields is read from its own surface, as
+      `yad doctor` reads it.
     A prose slice from before this rule has no block, so it still needs the trailer until `yad-spec`
     rewrites it.
   - Best-effort fidelity: when the product repo is reachable (via `link.md`'s `product-repo` path),
