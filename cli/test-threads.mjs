@@ -2384,3 +2384,63 @@ test('#365 review 3: path "." with no .git of its own is not read; a full-ID shi
     assert.deepEqual(shipDrift(T, { platform: false }).repos[0], { repo: 'backend', read: false, why: 'the Product folder is not a git checkout of its own' });
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
+
+// A monorepo Product with apps/api and apps/web registered as two repos, for the review-4 merge cases.
+function monoProduct() {
+  const T = productConfig();
+  writeEpic(T, 'EP-shop', { kind: 'feature', thread: 'EP-shop' }, { stories: ['in-build', 'in-build'] });
+  fs.mkdirSync(path.join(T, '.sdlc'), { recursive: true });
+  const g = (...a) => execFileSync('git', a, { cwd: T, stdio: 'pipe' }).toString().trim();
+  const put = (rel, text) => { fs.mkdirSync(path.dirname(path.join(T, rel)), { recursive: true }); fs.writeFileSync(path.join(T, rel), text); };
+  const commit = (msg, files) => { for (const [rel, text] of Object.entries(files)) put(rel, text); g('add', '-A'); g('commit', '-q', '-m', msg); };
+  g('init', '-q', '-b', 'main');
+  g('config', 'user.email', 'dev@shop.io');
+  g('config', 'user.name', 'dev');
+  commit('init', { 'apps/web/f.txt': 'w0', 'apps/api/f.txt': 'a0' });
+  fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'api', path: 'apps/api', default_branch: 'main' }, { name: 'web', path: 'apps/web', default_branch: 'main' }] }));
+  for (const f of ['EP-shop-S01', 'EP-shop-S02']) {
+    const story = path.join(T, `epics/EP-shop/stories/${f}.md`);
+    fs.writeFileSync(story, fs.readFileSync(story, 'utf8').replace('repos: [backend]', 'repos: [api, web]'));
+  }
+  return { T, g, commit };
+}
+
+test('#365 review 4: a monorepo merge that reached main through another branch still counts', () => {
+  const { T, g, commit } = monoProduct();
+  try {
+    g('checkout', '-q', '-b', 'release');
+    g('checkout', '-q', '-b', 'feat/EP-shop-S01-T01-api');
+    commit('feat: api work', { 'apps/api/f.txt': 'a1' });
+    g('checkout', '-q', 'release');
+    g('merge', '-q', '--no-ff', '-m', "Merge branch 'feat/EP-shop-S01-T01-api' into 'release'", 'feat/EP-shop-S01-T01-api');
+    g('checkout', '-q', 'main');
+    g('merge', '-q', '--no-ff', '-m', "Merge branch 'release' into 'main'", 'release');
+    assert.deepEqual(kinds(shipDrift(T, { platform: false }), 'merged-no-ship').map((f) => [f.repo, f.task]), [['api', 'T01']]);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 4: a monorepo commit whose subject only starts with "Merge" is read', () => {
+  const { T, commit } = monoProduct();
+  try {
+    commit('Merge the checkout forms\n\nTask: EP-shop-S02-T01', { 'apps/web/f.txt': 'w1' });
+    assert.deepEqual(kinds(shipDrift(T, { platform: false }), 'merged-no-ship').map((f) => [f.repo, f.task]), [['web', 'T01']]);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#365 review 4: an unreadable ledger is unknown, never "no such story"; a typo in id: falls back to the file name', () => {
+  const { T } = shipProduct({ commits: ['feat: x\n\nTask: EP-shop-S01-T01'] });
+  try {
+    fs.writeFileSync(path.join(T, 'epics/EP-shop/.sdlc/build-log.json'), '{broken');
+    const r = shipDrift(T, { platform: false });
+    assert.deepEqual(r.unreadEpics, ['EP-shop']);
+    assert.deepEqual(kinds(r, 'no-story'), []);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+  const { T: T2 } = shipProduct({ commits: ['feat: x\n\nTask: EP-shop-S01-T01'] });
+  try {
+    const story = path.join(T2, 'epics/EP-shop/stories/EP-shop-S01.md');
+    fs.writeFileSync(story, fs.readFileSync(story, 'utf8').replace('id: EP-shop-S01', 'id: EP-Shop-S01'));
+    const r = shipDrift(T2, { platform: false });
+    assert.deepEqual(kinds(r, 'no-story'), []);
+    assert.deepEqual(kinds(r, 'merged-no-ship').map((f) => f.story), ['EP-shop-S01']);
+  } finally { fs.rmSync(T2, { recursive: true, force: true }); }
+});

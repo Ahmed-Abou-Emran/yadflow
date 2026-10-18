@@ -215,7 +215,7 @@ export async function runReconcile(root, { action = 'check', thread = null, runn
           warn(`${f.story}-${f.task} merged in ${forTerminal(f.repo)} (${where || 'no commit named'}, by ${f.via}) — no ship record`);
           hand(forTerminal(f.fix));
         } else if (f.kind === 'looks-shipped') {
-          info(`${f.story}: every repo it names (${f.repos.map(forTerminal).join(', ')}) has merged work, but its status is ${forTerminal(f.status || 'unset')} — if no task is left, set \`status: shipped\` (\`yad checkpoint\` commits it with the ledger)`);
+          info(`${f.story}: ${f.fallback ? `the one registered repo (${f.repos.map(forTerminal).join(', ')}), which it names by default,` : `every repo it names (${f.repos.map(forTerminal).join(', ')})`} has merged work, but its status is ${forTerminal(f.status || 'unset')} — if no task is left, set \`status: shipped\` (\`yad checkpoint\` commits it with the ledger)`);
         } else if (f.kind === 'no-story') {
           warn(`${f.task} merged in ${forTerminal(f.repo)} (${short(f.sha) || 'no commit named'}) — ${f.epic} has no story ${f.task.replace(/-T\d+$/, '')}; a typo in its Task trailer, or a story file missing`);
         } else {
