@@ -125,18 +125,24 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
   `yad-spec` writes real files, so nothing legitimate lives there as a link. Removing a link under
   `contracts/` is a change to the surface and needs `Contract-Change: yes`; on a lockless epic it takes
   the removal hatch below. `yad doctor` warns `checks:symlink-blind` for an older copy without this check.
-- Computes the changed files from the merge base, `<base>...HEAD` (issue #363). A two-dot diff compared
-  with the target's tip, so a slice that landed on the target after the branch split off failed a
-  branch that never touched it. The trailer is still read from `git log <base>..HEAD` (this branch's own
-  commits). A base that shares no history with HEAD (a shallow clone) **FAILS** closed and says so.
-  With **more than one** merge base (a hotfix merged into both, stacked branches, a criss-cross merge),
-  the three-dot diff reads from one of them, and a hand-resolved merge could undo what the other side
-  brought in (review 1); a diff from each one would instead blame the branch for what the target already
-  holds (review 3). So the change is read as **the merge into the target** would make it:
-  `git merge-tree --write-tree <base> HEAD` (git 2.38+) builds that result without touching anything,
-  and the diff runs from the target to it — what GitHub's merge checkout gives. The quote pass reads the
-  slice's content from that result too. If the merge conflicts, or git is older than 2.38, the gate
-  **FAILS** closed: merge the target into the branch.
+- Computes the changed files as **what merging the branch into the target would change** (issue #363):
+  `git merge-tree --write-tree <base> HEAD` (git 2.38+) builds that merge without touching anything, and
+  the diff runs from the target to it — what GitHub's own merge checkout gives. The quote pass reads the
+  slice's content, and the "whole slice removed" check its tree, from that result too. Why the merge and
+  not a simpler range:
+  - a two-dot diff compared with the target's tip, so a slice that landed on the target after the branch
+    split off failed a branch that never touched it;
+  - a diff from the merge base reads from ONE merge base when there are several (a hotfix merged into
+    both, stacked branches, a criss-cross merge), so a hand-resolved merge could undo what the other
+    side brought in (review 1);
+  - and it misses a **rename** on the target: the real merge follows it, so an edit to a file the target
+    moved into a slice (or a backfilled feature) lands there unseen (review 4).
+
+  The trailer is still read from `git log <base>..HEAD` (this branch's own commits). A branch that does
+  not merge cleanly **FAILS** closed (the platform cannot merge it either): merge the target into it.
+  A base that shares no history with HEAD (a shallow clone) **FAILS** closed. **Older git** (before
+  2.38) falls back to the merge base, `<base>...HEAD`, and fails closed when there is more than one, or
+  when the target renamed a file the branch changes.
 - The surface is `specs/<story>/contracts` **and** everything under it: a path that IS
   `specs/<story>/contracts` (a link being removed) counts too.
 - If **nothing** under `specs/*/contracts/**` changed → **PASS** (normal implementation only *consumes*

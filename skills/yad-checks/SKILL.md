@@ -20,10 +20,11 @@ in CI on every PR/MR and must pass before merge (build plan §C). Each is a smal
    the optional title `# Contract slice — <story ID>`), the block an unbroken, in-order run of the locked
    `CONTRACT-SURFACE` lines, passes with **no** trailer — when the Product is reached, `link.md` pins the current lock, and the locked `contract.md`
    (the owner's, for a change-epic's pointer lock) still hashes to it. Anything it cannot prove still
-   needs the trailer. **The change is measured from the merge base** (`<base>...HEAD`, issue #363), so a
-   slice that changed on the target after the branch split off is not this branch's. With more than one
-   merge base, the change is what merging the branch into the target would change (git 2.38+; a conflict
-   or an older git fails closed — merge the target into the branch).
+   needs the trailer. **The change is what merging the branch into the target would change** (issue
+   #363; `git merge-tree`, git 2.38+), so a slice that changed on the target after the branch split off is
+   not this branch's, and a rename on the target cannot carry an edit into a slice unseen. A branch that
+   does not merge cleanly fails closed; an older git reads from the merge base and fails closed on
+   several merge bases or a target-side rename of a file the branch changes.
    Every story whose slice the diff touches is checked, not just the first — see `references/check-gates.md`.
    A claimed `Contract-Change` against an epic that has **no lock at all** fails too: an epic on a short
    lane (`chore`/`spike`) has no architecture step and never locks a surface, so it may consume the

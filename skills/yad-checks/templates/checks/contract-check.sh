@@ -73,31 +73,42 @@ fi
 # left the base — its merge base(s) — not from the base's TIP: a two-dot diff blamed a branch for a
 # slice that changed on the base after the branch split off.
 RANGE="${BASE}..HEAD"
-# Every merge base, not one (review 3). `git diff BASE...HEAD` reads from ONE when there are several, so a
-# hand-resolved merge could undo what the other side brought in, unseen (review 1). Several are common on
-# a branch tip (a hotfix merged into both; stacked branches), so they are not a reason to block — and a
-# diff from each merge base would blame the branch for what the base already holds (review 3). So with
-# several, the change is what MERGING the branch into BASE would change: `git merge-tree --write-tree`
-# builds that result without touching anything (git 2.38+), and the diff runs from BASE to it — what
-# GitHub's own merge checkout gives. A conflict, or an older git, fails closed. No merge base at all (a
-# shallow clone, unrelated history) fails closed too: it is never "no change".
+# What this branch changes is what MERGING it into BASE would change (#363 reviews 1, 3 and 4). A diff
+# from the base's TIP (two dots) blamed the branch for what the base did after it split off. A diff from
+# the merge base missed two things the real merge does: with several merge bases it reads from ONE, so a
+# hand-resolved merge could undo what the other side brought in (review 1); and the merge follows a
+# RENAME on the base, so an edit to a file the base moved into a protected path lands there unseen
+# (review 4). `git merge-tree --write-tree` (git 2.38+) builds the merge without touching anything, and
+# the diff runs from BASE to it — what GitHub's own merge checkout gives. A branch that does not merge
+# cleanly fails closed: the platform cannot merge it either. An older git falls back to the merge base,
+# with one merge base only and no base-side rename of a file the branch changes; otherwise it fails
+# closed. No merge base at all (a shallow clone, unrelated history) fails closed too.
 _mbs="$(git merge-base --all "$BASE" HEAD 2>/dev/null)" || _mbs=""
 if [ -z "$_mbs" ]; then
   echo "FAIL [contract-check]: '${BASE}' and HEAD share no history — fetch full history (a shallow clone has no merge base) or check the base branch."
   exit 1
 fi
 _mb_count="$(printf '%s\n' "$_mbs" | wc -l | tr -d ' ')"
-if [ "$_mb_count" = 1 ]; then
-  DIFF_FROM="$_mbs"; DIFF_TO="HEAD"
-else
+DIFF_TO="$(git merge-tree --write-tree --no-messages "$BASE" HEAD 2>/dev/null | head -1)" || DIFF_TO=""
+if [ -n "$DIFF_TO" ] && git rev-parse --verify --quiet "${DIFF_TO}^{tree}" >/dev/null 2>&1; then
   DIFF_FROM="$(git rev-parse --verify --quiet "${BASE}^{commit}")"
-  DIFF_TO="$(git merge-tree --write-tree --no-messages "$BASE" HEAD 2>/dev/null | head -1)" || DIFF_TO=""
-  if [ -z "$DIFF_TO" ] || ! git rev-parse --verify --quiet "${DIFF_TO}^{tree}" >/dev/null 2>&1; then
-    echo "FAIL [contract-check]: '${BASE}' and HEAD have ${_mb_count} merge bases, and the merge of this branch into ${BASE} could not be built here"
-    echo "  (it conflicts, or this git is older than 2.38). Merge ${BASE} into the branch, then push again."
+  [ "$_mb_count" = 1 ] || echo "note [contract-check]: '${BASE}' and HEAD have ${_mb_count} merge bases — the change is read as the merge into ${BASE} makes it."
+elif git merge-tree --write-tree --no-messages HEAD HEAD >/dev/null 2>&1; then
+  echo "FAIL [contract-check]: this branch does not merge cleanly into ${BASE}, so what it changes there cannot be read. Merge ${BASE} into the branch, resolve the conflicts, then push again."
+  exit 1
+elif [ "$_mb_count" != 1 ]; then
+  echo "FAIL [contract-check]: '${BASE}' and HEAD have ${_mb_count} merge bases, and this git (older than 2.38) cannot build the merge into ${BASE}. Merge ${BASE} into the branch, then push again."
+  exit 1
+else
+  DIFF_FROM="$_mbs"; DIFF_TO="HEAD"
+  # The fallback reads the branch's own diff, so a file the base renamed since the split, and the branch
+  # changes at its old path, would land at the new path unseen. Refuse that one case.
+  _moved="$(git diff -M --diff-filter=R --name-status -z "$_mbs" "$BASE" | tr '\n\0' '?\n' | awk 'NR % 3 == 2')" || _moved=""
+  _mine="$(git diff --no-renames --name-status -z "$_mbs" HEAD | tr '\n\0' '?\n' | awk 'NR % 2 == 0')" || _mine=""
+  if [ -n "$_moved" ] && [ -n "$_mine" ] && printf '%s\n' "$_moved" | grep -Fxq -f <(printf '%s\n' "$_mine"); then
+    echo "FAIL [contract-check]: ${BASE} renamed a file this branch changes, and this git (older than 2.38) cannot follow it into the merge. Merge ${BASE} into the branch, then push again."
     exit 1
   fi
-  echo "note [contract-check]: '${BASE}' and HEAD have ${_mb_count} merge bases — the change is read as the merge into ${BASE} would make it."
 fi
 
 # No symlink and no submodule anywhere under specs/ (E115). The gate reads PATHS: a link lets the
@@ -812,7 +823,9 @@ while IFS= read -r story; do
   only_removes=""
   [ -n "$story_surface" ] && [ "$story_surface" = "$story_deleted" ] && only_removes=1
   slice_gone=""
-  if [ -n "$only_removes" ] && ! git cat-file -e "HEAD:specs/${story}/contracts" 2>/dev/null; then slice_gone=1; fi
+  # Gone from what LANDS (the merge into the base, review 4): a file the base adds beside the deletion
+  # would otherwise be a slice left with no link.md.
+  if [ -n "$only_removes" ] && ! git cat-file -e "${DIFF_TO}:specs/${story}/contracts" 2>/dev/null; then slice_gone=1; fi
   link="specs/${story}/link.md"
   if ! story_ok "$story"; then
     if [ -n "$only_removes" ]; then

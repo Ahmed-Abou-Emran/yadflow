@@ -935,7 +935,7 @@ const MERGE_TREE = (() => {
   const m = execFileSync('git', ['--version']).toString().match(/(\d+)\.(\d+)/);
   return !!m && (Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 38));
 })();
-const OLD_GIT = /merge of this branch into main could not be built here/;
+const OLD_GIT = /this git \(older than 2\.38\) cannot build the merge into main/;
 function crissCross(T, file, before, after) {
   git(T, 'checkout', '-q', 'main');
   commit(T, 'chore: the root holds it\n\nContract-Change: yes', { [file]: before });
@@ -959,7 +959,7 @@ test('contract-check gate: with two merge bases, a hand-resolved merge that undo
   const r = runGate(CONTRACT, T);
   assert.equal(r.code, 1, r.out);
   if (!MERGE_TREE) { assert.match(r.out, OLD_GIT); fs.rmSync(T, { recursive: true, force: true }); return; }
-  assert.match(r.out, /2 merge bases — the change is read as the merge into main would make it/);
+  assert.match(r.out, /2 merge bases — the change is read as the merge into main makes it/);
   assert.match(r.out, /^ {2}specs\/EP-demo-S01\/contracts\/api\.md$/m, 'the undone slice is on the surface');
   assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
   fs.rmSync(T, { recursive: true, force: true });
@@ -976,8 +976,62 @@ test('backfill gate: with two merge bases, a hand-resolved merge that undoes a f
   const r = runGate(BACKFILL, T);
   assert.equal(r.code, 1, r.out);
   if (!MERGE_TREE) { assert.match(r.out, OLD_GIT); fs.rmSync(T, { recursive: true, force: true }); return; }
-  assert.match(r.out, /2 merge bases — the change is read as the merge into main would make it/);
+  assert.match(r.out, /2 merge bases — the change is read as the merge into main makes it/);
   assert.match(r.out, /FAIL \[backfill\]: billing is being backfilled/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 4: with ONE merge base, the branch's own diff misses a RENAME on the base — the real merge follows
+// it, so an edit to a file the base moved into a protected path lands there unseen. Read as the merge
+// (git 2.38+), or refused by the fallback's rename guard (older git).
+const thirty = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+test('contract-check gate: an edit to a file the base renamed into a slice is caught (issue #363 review 4)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs: notes', { 'docs/notes.md': thirty });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  fs.mkdirSync(path.join(T, 'specs/EP-demo-S01/contracts'), { recursive: true });
+  git(T, 'mv', 'docs/notes.md', 'specs/EP-demo-S01/contracts/notes.md');
+  git(T, 'commit', '-q', '-m', 'chore: the notes become a slice\n\nContract-Change: yes');
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'docs: edit the notes', { 'docs/notes.md': thirty.replace('line 7', 'line 7 — a new endpoint') });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  if (MERGE_TREE) assert.match(r.out, /^ {2}specs\/EP-demo-S01\/contracts\/notes\.md$/m, 'the edit lands in the slice');
+  else assert.match(r.out, /main renamed a file this branch changes/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('backfill gate: an edit to a file the base renamed into a backfilled feature is caught (issue #363 review 4)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs: billing is being backfilled', { 'specs/backfill/billing/spec.md': backfillSpec(false), 'lib/pay.js': thirty });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  fs.mkdirSync(path.join(T, 'src/billing'), { recursive: true });
+  git(T, 'mv', 'lib/pay.js', 'src/billing/pay.js');
+  git(T, 'commit', '-q', '-m', 'refactor: pay moves into billing');
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'feat: tweak pay', { 'lib/pay.js': thirty.replace('line 7', 'line 7 changed') });
+  const r = runGate(BACKFILL, T);
+  assert.equal(r.code, 1, r.out);
+  if (MERGE_TREE) assert.match(r.out, /FAIL \[backfill\]: billing is being backfilled/);
+  else assert.match(r.out, /main renamed a file this branch changes/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// A branch that does not merge cleanly cannot be read as its merge — fail closed (the platform cannot
+// merge it either). Only where git can build merges; an older git reads the merge base as before.
+test('contract-check gate: a branch that conflicts with its base fails closed (issue #363 review 4)', { skip: !MERGE_TREE && 'git older than 2.38' }, () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: main edits a', { 'a.txt': 'main' });
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'chore: the branch edits a\n\nTask: EP-demo-S01-T01', { 'a.txt': 'feature' });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /this branch does not merge cleanly into main/);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
