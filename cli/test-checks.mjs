@@ -7,6 +7,7 @@ import './fixtures/git-quiet.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -554,6 +555,649 @@ const storySlice = (story, lock) => ({
   }),
 });
 
+// ---------- issue #363: the diff is measured from where the branch left its base ----------
+// A two-dot `git diff BASE..HEAD` compares with the base's TIP, so a slice that changed on the base
+// AFTER this branch split off was blamed on the branch, which never touched it.
+
+test('contract-check gate: a slice that changed on the base after the branch split is not this branch\'s change (issue #363)', () => {
+  const T = scaffoldRepo();
+  // The base moves on: someone else's merged PR changes a slice.
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'feat: a re-locked slice, merged on main\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/api.md': 'v2\n' });
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'feat: implement endpoint\n\nTask: EP-demo-S01-T01', { 'src/api.js': 'x' });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /does not touch the contract surface/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a branch behind its base that DOES change a slice still fails (issue #363)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: unrelated work on main', { 'b.txt': '2' });
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'feat: widen the API quietly', { 'specs/EP-demo-S01/contracts/api.md': 'new endpoint\n' });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check and backfill-check fail closed when the base shares no history with HEAD (issue #363)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', '--orphan', 'island');
+  git(T, 'rm', '-rq', '--cached', '.');
+  commit(T, 'chore: an unrelated root', { 'z.txt': 'z' });
+  git(T, 'checkout', '-q', '-f', 'feature');
+  commit(T, 'feat: implement endpoint\n\nTask: EP-demo-S01-T01', { 'src/api.js': 'x' });
+  for (const [gate, tag] of [[CONTRACT, 'contract-check'], [BACKFILL, 'backfill']]) {
+    const r = runGate(gate, T, ['island']);
+    assert.equal(r.code, 1, `${tag}: ${r.out}`);
+    assert.match(r.out, new RegExp(`FAIL \\[${tag}\\]: 'island' and HEAD share no history`), `${tag}: ${r.out}`);
+  }
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// ---------- issue #344: an exact quote of the locked contract is not a change ----------
+// The locked surface, its hash by the recipe every yadflow lock uses (contractSurfaceHash): the lines
+// between the markers, CRs dropped, with the trailing newline.
+const SURFACE_LINES = [
+  '## API',
+  '',
+  '- `POST /orders` — place an order from the cart.',
+  '  - request: `{ items: { sku: string, qty: number }[] }`',
+  '  - response: `{ id: string, status: "placed" }`',
+  '- `GET /orders/{id}` — read one order.',
+  '  - response: `Order`',
+];
+const surfaceHash = (lines) => createHash('sha256').update(lines.join('\n') + '\n').digest('hex');
+const contractMd = (lines) => ['# Contract', '', '<!-- CONTRACT-SURFACE:BEGIN -->', ...lines, '<!-- CONTRACT-SURFACE:END -->', ''].join('\n');
+// What yad-spec writes: the fixed title, then ONE quote block; nothing else outside it (reviews 1 and 2).
+const quoteBlock = (lines) => ['<!-- CONTRACT-QUOTE:BEGIN -->', ...lines, '<!-- CONTRACT-QUOTE:END -->'].join('\n');
+const quoteSlice = (lines, extra = '', story = 'EP-demo-S01') => [`# Contract slice — ${story}`, '', quoteBlock(lines), '', extra].join('\n');
+// A Product at <repo>/product holding the locked contract.md and its lock. `lockLines` lets a test lock
+// one surface and leave contract.md saying another (a drifted contract).
+function seedLockedContract(T, epic = 'EP-demo', { lines = SURFACE_LINES, lockLines = lines } = {}) {
+  const dir = path.join(T, 'product', 'epics', epic);
+  fs.mkdirSync(path.join(dir, '.sdlc'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'contract.md'), contractMd(lines));
+  const hash = surfaceHash(lockLines);
+  fs.writeFileSync(path.join(dir, '.sdlc/contract-lock.json'), JSON.stringify({ hash: `sha256:${hash}` }));
+  return hash;
+}
+const quoteLink = (story, hash, product = '../../product') =>
+  linkMd({ story, 'product-repo': product, 'contract-lock': `sha256:${hash}` });
+
+test('contract-check gate: a slice that is an exact quote of the locked surface passes with no trailer (issue #344)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): quote the S01 slice\n\nTask: EP-demo-S01-T01', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /PASS \[contract-check\]: every changed slice is an exact quote of its locked contract/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a quote holding a line the lock does not have fails, naming it (issue #344)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): quote the S01 slice', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice([...SURFACE_LINES.slice(2, 5), '- `DELETE /orders/{id}` — cancel an order.']),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /specs\/EP-demo-S01\/contracts\/orders\.md: this line is not in the locked surface: - `DELETE \/orders\/\{id\}` — cancel an order\./);
+  assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a prose slice with no quote block still needs the trailer (issue #344)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): describe the S01 slice', {
+    'specs/EP-demo-S01/contracts/orders.md': 'POST /orders places an order.\n',
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /orders\.md: has no CONTRACT-QUOTE block/);
+  assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a quote cannot be proven when the Product is not reached (issue #344)', () => {
+  const T = scaffoldRepo();
+  commit(T, 'docs(spec): quote the S01 slice', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', 'a'.repeat(64), '../../nowhere'),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /cannot check EP-demo-S01's slice against its lock/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a contract.md that drifted from its lock proves no quote (issue #344)', () => {
+  const T = scaffoldRepo();
+  // contract.md now holds a line the LOCK never had; quoting that line must not pass.
+  const drifted = [...SURFACE_LINES, '- `DELETE /orders/{id}` — cancel an order.'];
+  const hash = seedLockedContract(T, 'EP-demo', { lines: drifted, lockLines: SURFACE_LINES });
+  commit(T, 'docs(spec): quote the S01 slice', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(['- `DELETE /orders/{id}` — cancel an order.']),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /contract\.md no longer matches its lock/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: a quote whose link.md pins an older lock still needs the trailer (issue #344)', () => {
+  const T = scaffoldRepo();
+  seedLockedContract(T);
+  commit(T, 'docs(spec): quote the S01 slice', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', 'b'.repeat(64)),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /pins bbbbbbbbbbbb…, not the current lock/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: one story quoting and one changing fails for the change only (issue #344)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): two slices', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+    'specs/EP-demo-S02/contracts/orders.md': 'a brand new endpoint\n',
+    'specs/EP-demo-S02/link.md': quoteLink('EP-demo-S02', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /note \[contract-check\]: EP-demo-S01's slice is an exact quote of the locked contract/);
+  assert.match(r.out, /EP-demo-S02.*no CONTRACT-QUOTE block/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check gate: DELETING a quoted slice file still needs the trailer where a lock exists (issue #344)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): quote the S01 slice\n\nContract-Change: yes', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const base = git(T, 'rev-parse', 'HEAD').toString().trim();
+  git(T, 'rm', '-q', 'specs/EP-demo-S01/contracts/orders.md');
+  git(T, 'commit', '-q', '-m', 'docs(spec): drop the slice');
+  const r = runGate(CONTRACT, T, [base]);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /removes slice file/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 2: two blocks, each a run on its own, were stitched into a meaning the lock never had (the
+// first endpoint's heading over another's `auth: none`). One block per file; two parts, two files.
+test('contract-check gate: one quote block per file — two fail, two files pass, a nested one fails (issue #344 review 2)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): two blocks in one file', {
+    'specs/EP-demo-S01/contracts/orders.md': ['# Contract slice — EP-demo-S01', '', quoteBlock(SURFACE_LINES.slice(5, 6)), '', quoteBlock(SURFACE_LINES.slice(4, 5)), ''].join('\n'),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const two = runGate(CONTRACT, T);
+  assert.equal(two.code, 1, two.out);
+  assert.match(two.out, /holds more than one CONTRACT-QUOTE block — one block per file/);
+  commit(T, 'docs(spec): two parts, two files', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/contracts/read.md': quoteSlice(SURFACE_LINES.slice(5, 7)),
+  });
+  assert.equal(runGate(CONTRACT, T).code, 0, 'two runs, two files');
+  commit(T, 'docs(spec): a block inside a block', {
+    'specs/EP-demo-S01/contracts/orders.md': ['# Contract slice — EP-demo-S01', '', '<!-- CONTRACT-QUOTE:BEGIN -->', quoteBlock(SURFACE_LINES.slice(2, 3)), '<!-- CONTRACT-QUOTE:END -->', ''].join('\n'),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /every CONTRACT-QUOTE block must be closed, BEGIN before END, none inside another/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 2: the one free `# ` line could say anything ("# GET /admin/users is public"), anywhere.
+test('contract-check gate: the title is fixed text and comes first (issue #344 review 2)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): a title that says something', {
+    'specs/EP-demo-S01/contracts/orders.md': ['# GET /orders is public', '', quoteBlock(SURFACE_LINES.slice(2, 5)), ''].join('\n'),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /this line sits outside the CONTRACT-QUOTE block: # GET \/orders is public/);
+  // The right title, but after the block.
+  commit(T, 'docs(spec): the title last', {
+    'specs/EP-demo-S01/contracts/orders.md': [quoteBlock(SURFACE_LINES.slice(2, 5)), '', '# Contract slice — EP-demo-S01', ''].join('\n'),
+  });
+  assert.equal(runGate(CONTRACT, T).code, 1, 'the title only comes first');
+  // The right title twice: the second is a line outside the block.
+  commit(T, 'docs(spec): the title twice', {
+    'specs/EP-demo-S01/contracts/orders.md': ['# Contract slice — EP-demo-S01', '# Contract slice — EP-demo-S01', '', quoteBlock(SURFACE_LINES.slice(2, 5)), ''].join('\n'),
+  });
+  assert.equal(runGate(CONTRACT, T).code, 1, 'one title only');
+  // No title at all is fine; so is the right one behind a BOM.
+  commit(T, 'docs(spec): no title', { 'specs/EP-demo-S01/contracts/orders.md': `${quoteBlock(SURFACE_LINES.slice(2, 5))}\n` });
+  assert.equal(runGate(CONTRACT, T).code, 0, 'the title is optional');
+  commit(T, 'docs(spec): a BOM', { 'specs/EP-demo-S01/contracts/orders.md': `\ufeff${quoteSlice(SURFACE_LINES.slice(2, 5))}` });
+  const bom = runGate(CONTRACT, T);
+  assert.equal(bom.code, 0, bom.out);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 2: macOS awk ends a line at a zero byte, so text after it was never compared.
+test('contract-check gate: a slice holding a zero byte is refused (issue #344 review 2)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): a hidden tail', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice([SURFACE_LINES[2] + '\u0000 and DELETE /orders/{id} with auth: none', ...SURFACE_LINES.slice(3, 5)]),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /orders\.md: holds a zero byte/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 1, hole A: a line outside the block was never read, so a new endpoint written there passed.
+test('contract-check gate: a line outside the quote block fails, naming it (issue #344 review 1)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): quote the S01 slice', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5), '### DELETE /admin/users/{id}\n- auth: none\n'),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /this line sits outside the CONTRACT-QUOTE block: ### DELETE \/admin\/users\/\{id\}/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 1, hole A: any other file type could hide a schema around a token quote.
+test('contract-check gate: only a Markdown slice can pass as a quote (issue #344 review 1)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): an api file', {
+    'specs/EP-demo-S01/contracts/openapi.yaml': `x-quote: "\n${quoteBlock(SURFACE_LINES.slice(2, 3))}\n"\n`,
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /openapi\.yaml: only a Markdown slice can pass as a quote/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 1, hole B: lines checked one by one could be put back together into a different meaning.
+test('contract-check gate: quoted lines must be one unbroken run of the surface, in its order (issue #344 review 1)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  // Each line IS in the lock — the GET line, then the POST response, then the GET response.
+  commit(T, 'docs(spec): a reordered quote', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice([SURFACE_LINES[5], SURFACE_LINES[4], SURFACE_LINES[6]]),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /is not one unbroken run of the locked surface, in its order/);
+  // Leaving a line out of the middle is not a run either.
+  commit(T, 'docs(spec): a quote with a gap', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice([SURFACE_LINES[2], SURFACE_LINES[4]]),
+  });
+  assert.equal(runGate(CONTRACT, T).code, 1, 'a gap is not a run');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 1, hole C: a newline in a name is written `?` in the list, which opened a different file.
+test('contract-check gate: a slice name holding a newline is refused, never read as another file (issue #344 review 1)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): a real quote', {
+    'specs/EP-demo-S01/contracts/a?b.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const base = git(T, 'rev-parse', 'HEAD').toString().trim();
+  commit(T, 'docs(spec): a twin by name', { 'specs/EP-demo-S01/contracts/a\nb.md': 'a brand new endpoint\n' });
+  const r = runGate(CONTRACT, T, [base]);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /a slice file name holding a newline is not read/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 1: a change-epic that inherits its architecture carries a POINTER lock and no contract.md.
+test('contract-check gate: a change-epic\'s pointer lock reads the owner\'s contract (issue #344 review 1)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T, 'EP-demo');
+  const child = path.join(T, 'product', 'epics', 'EP-fix', '.sdlc');
+  fs.mkdirSync(child, { recursive: true });
+  fs.writeFileSync(path.join(child, 'contract-lock.json'), JSON.stringify({
+    hash: `sha256:${hash}`, inheritedFrom: 'EP-demo', ref: '../../EP-demo/.sdlc/contract-lock.json',
+  }));
+  commit(T, 'docs(spec): quote the inherited slice', {
+    'specs/EP-fix-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5), '', 'EP-fix-S01'),
+    'specs/EP-fix-S01/link.md': quoteLink('EP-fix-S01', hash),
+  });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 0, r.out);
+  // The owner re-locked: the copied hash no longer holds, so the quote cannot be proven.
+  fs.writeFileSync(path.join(T, 'product/epics/EP-demo/.sdlc/contract-lock.json'), JSON.stringify({ hash: `sha256:${'d'.repeat(64)}` }));
+  const r2 = runGate(CONTRACT, T);
+  assert.equal(r2.code, 1, r2.out);
+  assert.match(r2.out, /pointer lock copies .*but its owner now locks another surface/);
+  fs.writeFileSync(path.join(T, 'product/epics/EP-demo/.sdlc/contract-lock.json'), JSON.stringify({ hash: `sha256:${hash}` }));
+  // `inheritedFrom` alone names the owner too.
+  fs.writeFileSync(path.join(child, 'contract-lock.json'), JSON.stringify({ hash: `sha256:${hash}`, inheritedFrom: 'EP-demo' }));
+  assert.equal(runGate(CONTRACT, T).code, 0, 'inheritedFrom alone');
+  // A ref that leaves epics/ is refused — even to a real lock and contract that agree (review 2: the old
+  // case pointed at nothing, so it never tested the boundary).
+  const outside = path.join(T, 'x');
+  fs.mkdirSync(path.join(outside, '.sdlc'), { recursive: true });
+  fs.writeFileSync(path.join(outside, 'contract.md'), contractMd(SURFACE_LINES));
+  fs.writeFileSync(path.join(outside, '.sdlc/contract-lock.json'), JSON.stringify({ hash: `sha256:${hash}` }));
+  fs.writeFileSync(path.join(child, 'contract-lock.json'), JSON.stringify({ hash: `sha256:${hash}`, ref: '../../../../x/.sdlc/contract-lock.json' }));
+  const r3 = runGate(CONTRACT, T);
+  assert.equal(r3.code, 1, r3.out);
+  assert.match(r3.out, /is not another epic's lock in this Product/);
+  // An epic WITH its own contract.md that kept the pointer fields reads its own surface, as doctor does.
+  const own = ['## API', '', '- `POST /fix` — the change-epic\'s own endpoint.'];
+  const ownHash = surfaceHash(own);
+  fs.writeFileSync(path.join(T, 'product/epics/EP-fix/contract.md'), contractMd(own));
+  fs.writeFileSync(path.join(child, 'contract-lock.json'), JSON.stringify({ hash: `sha256:${ownHash}`, inheritedFrom: 'EP-demo' }));
+  commit(T, 'docs(spec): quote the re-authored surface', {
+    'specs/EP-fix-S01/contracts/orders.md': quoteSlice(own.slice(2), '', 'EP-fix-S01'),
+    'specs/EP-fix-S01/link.md': quoteLink('EP-fix-S01', ownHash),
+  });
+  const r4 = runGate(CONTRACT, T);
+  assert.equal(r4.code, 0, r4.out);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 1, hole D: with two merge bases, `git diff BASE...HEAD` reads from ONE, and a hand-resolved merge
+// can undo what the other side brought in. Review 3: two merge bases are common on a branch tip (a hotfix
+// merged into both; stacked branches), so the gates read from EVERY merge base instead of blocking.
+// Two sides off one root: a1 changes nothing that matters, b1 changes `file`. main merges both; the branch
+// starts from a1 and merges b1 with `-s ours` — a hand resolution that keeps a1's tree, undoing b1's change.
+// `git merge-tree --write-tree` (git 2.38+) builds the merge the gates read with several merge bases; an
+// older git cannot, and the gates fail closed — each test below checks whichever this machine has.
+const MERGE_TREE = (() => {
+  const m = execFileSync('git', ['--version']).toString().match(/(\d+)\.(\d+)/);
+  return !!m && (Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 38));
+})();
+const OLD_GIT = /this git \(older than 2\.38\) cannot build the merge into main/;
+function crissCross(T, file, before, after) {
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: the root holds it\n\nContract-Change: yes', { [file]: before });
+  git(T, 'checkout', '-q', '-b', 'a1');
+  commit(T, 'chore: side a', { 'a1.txt': 'a' });
+  git(T, 'checkout', '-q', 'main');
+  git(T, 'checkout', '-q', '-b', 'b1');
+  commit(T, 'chore: side b changes it\n\nContract-Change: yes', { [file]: after });
+  git(T, 'checkout', '-q', 'main');
+  git(T, 'merge', '-q', '--no-ff', '-m', 'merge a1', 'a1');
+  git(T, 'merge', '-q', '--no-ff', '-m', 'merge b1', 'b1');
+  git(T, 'checkout', '-q', '-B', 'feature', 'a1');
+  return () => assert.equal(git(T, 'merge-base', '--all', 'main', 'HEAD').toString().trim().split('\n').length, 2, 'two merge bases');
+}
+
+test('contract-check gate: with two merge bases, a hand-resolved merge that undoes a slice change is caught (issue #363 review 3)', () => {
+  const T = scaffoldRepo();
+  const twoBases = crissCross(T, 'specs/EP-demo-S01/contracts/api.md', 'v1\n', 'v2 re-locked\n');
+  git(T, 'merge', '-q', '-s', 'ours', '-m', 'merge b1, keeping our slice', 'b1');
+  twoBases();
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  if (!MERGE_TREE) { assert.match(r.out, OLD_GIT); fs.rmSync(T, { recursive: true, force: true }); return; }
+  assert.match(r.out, /2 merge bases — the change is read as the merge into main makes it/);
+  assert.match(r.out, /^ {2}specs\/EP-demo-S01\/contracts\/api\.md$/m, 'the undone slice is on the surface');
+  assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('backfill gate: with two merge bases, a hand-resolved merge that undoes a feature change is caught (issue #363 review 3)', () => {
+  const T = scaffoldRepo();
+  commit(T, 'docs: billing is being backfilled', { 'specs/backfill/billing/spec.md': backfillSpec(false) });
+  git(T, 'checkout', '-q', 'main');
+  git(T, 'merge', '-q', '--ff-only', 'feature');
+  const twoBases = crissCross(T, 'src/billing/pay.js', 'pay()\n', 'pay(2)\n');
+  git(T, 'merge', '-q', '-s', 'ours', '-m', 'merge b1, keeping our billing', 'b1');
+  twoBases();
+  const r = runGate(BACKFILL, T);
+  assert.equal(r.code, 1, r.out);
+  if (!MERGE_TREE) { assert.match(r.out, OLD_GIT); fs.rmSync(T, { recursive: true, force: true }); return; }
+  assert.match(r.out, /2 merge bases — the change is read as the merge into main makes it/);
+  assert.match(r.out, /FAIL \[backfill\]: billing is being backfilled/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 4: with ONE merge base, the branch's own diff misses a RENAME on the base — the real merge follows
+// it, so an edit to a file the base moved into a protected path lands there unseen. Read as the merge
+// (git 2.38+), or refused by the fallback's rename guard (older git).
+const thirty = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+test('contract-check gate: an edit to a file the base renamed into a slice is caught (issue #363 review 4)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs: notes', { 'docs/notes.md': thirty });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  fs.mkdirSync(path.join(T, 'specs/EP-demo-S01/contracts'), { recursive: true });
+  git(T, 'mv', 'docs/notes.md', 'specs/EP-demo-S01/contracts/notes.md');
+  git(T, 'commit', '-q', '-m', 'chore: the notes become a slice\n\nContract-Change: yes');
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'docs: edit the notes', { 'docs/notes.md': thirty.replace('line 7', 'line 7 — a new endpoint') });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  if (MERGE_TREE) assert.match(r.out, /^ {2}specs\/EP-demo-S01\/contracts\/notes\.md$/m, 'the edit lands in the slice');
+  else assert.match(r.out, /main removed or moved a file this branch changes/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('backfill gate: an edit to a file the base renamed into a backfilled feature is caught (issue #363 review 4)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs: billing is being backfilled', { 'specs/backfill/billing/spec.md': backfillSpec(false), 'lib/pay.js': thirty });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  fs.mkdirSync(path.join(T, 'src/billing'), { recursive: true });
+  git(T, 'mv', 'lib/pay.js', 'src/billing/pay.js');
+  git(T, 'commit', '-q', '-m', 'refactor: pay moves into billing');
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'feat: tweak pay', { 'lib/pay.js': thirty.replace('line 7', 'line 7 changed') });
+  const r = runGate(BACKFILL, T);
+  assert.equal(r.code, 1, r.out);
+  if (MERGE_TREE) assert.match(r.out, /FAIL \[backfill\]: billing is being backfilled/);
+  else assert.match(r.out, /main removed or moved a file this branch changes/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 5: a "Rebase and merge" replays each commit. A branch commit that mirrors the base's re-lock and a
+// later one that undoes it net to nothing in the merge — and land the undo in a rebase. The branch's own
+// commits that touch a slice count, so the trailer (or the quote proof) is needed.
+test('contract-check gate: slice edits that net to nothing in the merge still need the trailer (issue #344 review 5)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: the slice\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/api.md': 'v1\n' });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: re-lock\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/api.md': 'v2\n' });
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'chore: mirror the re-lock\n\nTask: EP-demo-S01-T01', { 'specs/EP-demo-S01/contracts/api.md': 'v2\n' });
+  commit(T, 'chore: and undo it\n\nTask: EP-demo-S01-T01', { 'specs/EP-demo-S01/contracts/api.md': 'v1\n' });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /^ {2}specs\/EP-demo-S01\/contracts\/api\.md$/m, 'the slice the own commits touched is on the surface');
+  assert.match(r.out, /without a 'Contract-Change: yes' trailer/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 5: the old-git guard no longer relies on rename detection (its limit differs from the merge's).
+// A path the base removed that the branch modifies fails; both deleting it merges cleanly and passes.
+test('contract-check gate: a file the base removed and the branch modifies is refused; both deleting it passes (issue #363 review 5)', () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs: notes', { 'docs/notes.md': thirty, 'docs/old.md': thirty });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  git(T, 'rm', '-q', 'docs/notes.md', 'docs/old.md');
+  git(T, 'commit', '-q', '-m', 'docs: drop them');
+  git(T, 'checkout', '-q', 'feature');
+  git(T, 'rm', '-q', 'docs/old.md');
+  git(T, 'commit', '-q', '-m', 'docs: drop old too');
+  const both = runGate(CONTRACT, T);
+  assert.equal(both.code, 0, `both deleting it is a clean merge:\n${both.out}`);
+  commit(T, 'docs: edit the notes', { 'docs/notes.md': thirty.replace('line 7', 'line 7 edited') });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  if (MERGE_TREE) assert.match(r.out, /this branch does not merge cleanly into main/);
+  else assert.match(r.out, /main removed or moved a file this branch changes/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 5: the link.md that LANDS is read — the base may have re-pinned it since the branch split off.
+test('contract-check gate: a quote is checked against the link.md that lands (issue #344 review 5)', { skip: !MERGE_TREE && 'git older than 2.38 reads the branch tip' }, () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs(spec): an old pin', { 'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', '0'.repeat(64)) });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs(spec): re-pinned', { 'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash) });
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'docs(spec): quote the slice', { 'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)) });
+  // Behind the base, a "Rebase and merge" would replay the branch's own slice commits onto it (review 6):
+  // the quote proof needs a branch rebased onto the base.
+  const behind = runGate(CONTRACT, T);
+  assert.equal(behind.code, 1, behind.out);
+  assert.match(behind.out, /not rebased onto main .* Rebase it, then push again/);
+  git(T, 'rebase', '-q', 'main');
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 0, `rebased, the link.md that lands pins the lock:\n${r.out}`);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 5: "the whole slice is gone" reads what lands. The branch removes its slice and link.md; the base
+// adds a file to that slice afterwards — the merge leaves a slice with no link.md, which is not a clean-up.
+test('contract-check gate: a slice the base adds to is not gone, though the branch removed its part (issue #344 review 5)', { skip: !MERGE_TREE && 'git older than 2.38 reads the branch tip' }, () => {
+  const T = scaffoldRepo();
+  fs.mkdirSync(path.join(T, 'product', 'epics', 'EP-demo', '.sdlc'), { recursive: true });
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: a slice\n\nContract-Change: yes', {
+    'specs/EP-demo-S01/contracts/api.md': 'v1\n',
+    'specs/EP-demo-S01/link.md': linkMd({ story: 'EP-demo-S01', 'product-repo': '../../product', 'contract-lock': 'none' }),
+  });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: another slice file\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/more.md': 'm\n' });
+  git(T, 'checkout', '-q', 'feature');
+  git(T, 'rm', '-rq', 'specs/EP-demo-S01');
+  git(T, 'commit', '-q', '-m', 'chore: drop the slice\n\nContract-Change: yes');
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /slice changes, but specs\/EP-demo-S01\/link\.md is not there/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 6: `git log -- <path>` simplifies history, so a slice edit on a merged side whose merge result
+// matches the other parent was dropped from the branch's own commits — and a rebase replays it.
+test('contract-check gate: a slice edit hidden behind a merge still counts as the branch\'s own (issue #344 review 6)', () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  commit(T, 'docs(spec): quote the slice\n\nContract-Change: yes', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  const base = git(T, 'rev-parse', 'HEAD').toString().trim();
+  git(T, 'checkout', '-q', '-b', 'side');
+  commit(T, 'docs(spec): widen it', { 'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5), '- `DELETE /orders/{id}` — EVIL\n') });
+  git(T, 'checkout', '-q', 'feature');
+  git(T, 'merge', '-q', '-s', 'ours', '-m', 'merge side, keeping our slice', 'side');
+  const r = runGate(CONTRACT, T, [base]);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /^ {2}specs\/EP-demo-S01\/contracts\/orders\.md$/m, 'the side commit\'s slice edit is on the surface');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 6, the twin of the quote pass: the trailer path reads the link.md that LANDS. The base removing
+// it after the split leaves a slice with nothing pinning it.
+test('contract-check gate: with the trailer, the link.md that lands is read (issue #344 review 6)', { skip: !MERGE_TREE && 'git older than 2.38 reads the branch tip' }, () => {
+  const T = scaffoldRepo();
+  const hash = seedLockedContract(T);
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'docs(spec): a slice\n\nContract-Change: yes', {
+    'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)),
+    'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash),
+  });
+  git(T, 'checkout', '-q', '-B', 'feature');
+  git(T, 'checkout', '-q', 'main');
+  git(T, 'rm', '-q', 'specs/EP-demo-S01/link.md');
+  git(T, 'commit', '-q', '-m', 'chore: drop the link');
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'feat: widen\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/new.md': 'a new endpoint\n' });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /slice changes, but specs\/EP-demo-S01\/link\.md is not there/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// Review 6: "only removes" is read from what lands. A file the branch added and removed again is in the
+// surface and in no delete list; the clean-up still passes.
+test('contract-check gate: a lockless clean-up with a file added and removed again still passes (issue #344 review 6)', () => {
+  const T = scaffoldRepo();
+  fs.mkdirSync(path.join(T, 'product', 'epics', 'EP-demo', '.sdlc'), { recursive: true });
+  commit(T, 'chore: a slice a short lane should not have\n\nContract-Change: yes', {
+    'specs/EP-demo-S01/contracts/a.md': 'a\n',
+    'specs/EP-demo-S01/link.md': linkMd({ story: 'EP-demo-S01', 'product-repo': '../../product', 'contract-lock': 'none' }),
+  });
+  const base = git(T, 'rev-parse', 'HEAD').toString().trim();
+  commit(T, 'chore: a stray file\n\nContract-Change: yes', { 'specs/EP-demo-S01/contracts/c.md': 'c\n' });
+  git(T, 'rm', '-q', 'specs/EP-demo-S01/contracts/c.md', 'specs/EP-demo-S01/contracts/a.md');
+  git(T, 'commit', '-q', '-m', 'chore: drop the slice\n\nContract-Change: yes');
+  const r = runGate(CONTRACT, T, [base]);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /only REMOVES contract slice files/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// A branch that does not merge cleanly cannot be read as its merge — fail closed (the platform cannot
+// merge it either). Only where git can build merges; an older git reads the merge base as before.
+test('contract-check gate: a branch that conflicts with its base fails closed (issue #363 review 4)', { skip: !MERGE_TREE && 'git older than 2.38' }, () => {
+  const T = scaffoldRepo();
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: main edits a', { 'a.txt': 'main' });
+  git(T, 'checkout', '-q', 'feature');
+  commit(T, 'chore: the branch edits a\n\nTask: EP-demo-S01-T01', { 'a.txt': 'feature' });
+  const r = runGate(CONTRACT, T);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /this branch does not merge cleanly into main/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('contract-check and backfill-check pass two merge bases that hide nothing (issue #363 review 3)', () => {
+  const T = scaffoldRepo();
+  const twoBases = crissCross(T, 'specs/EP-demo-S01/contracts/api.md', 'v1\n', 'v2 re-locked\n');
+  git(T, 'merge', '-q', '--no-ff', '-m', 'merge b1 into the branch', 'b1'); // a plain merge: the branch holds b1's slice
+  commit(T, 'feat: implement endpoint\n\nTask: EP-demo-S01-T01', { 'src/api.js': 'x' });
+  twoBases();
+  for (const [gate, tag] of [[CONTRACT, 'contract-check'], [BACKFILL, 'backfill']]) {
+    const r = runGate(gate, T);
+    if (!MERGE_TREE) { assert.equal(r.code, 1, `${tag}: ${r.out}`); assert.match(r.out, OLD_GIT); continue; }
+    assert.equal(r.code, 0, `${tag}: ${r.out}`);
+    assert.match(r.out, new RegExp(`note \\[${tag}\\]: 'main' and HEAD have 2 merge bases`), `${tag}: ${r.out}`);
+  }
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
 test('contract-check gate: a LATER story pinning a stale lock is not masked by a clean first one (issue #161)', () => {
   const T = scaffoldRepo();
   const hash = 'c'.repeat(64);
@@ -910,15 +1554,16 @@ test('contract-check gate: the PR that removes a linked slice under a lockless e
 });
 
 test('contract-check reads the surface as contracts(/|$) in every place, and the tree before any PASS (E115)', () => {
-  // One arm and its twin: the hatch compares `surface` and `deleted` line for line, and `stories` names
-  // who is checked. An old `contracts/` form in any of them breaks the removal PR above.
+  // One arm and its twin: `surface` names what is touched, the per-story list and `stories` who is checked.
+  // An old `contracts/` form in any of them breaks the removal PR above. (Since #363 review 6 the hatch
+  // reads "gone from what lands" per path, so there is no `deleted` list to pin beside `surface`.)
   const src = fs.readFileSync(CONTRACT, 'utf8');
   const code = src.split('\n').filter((l) => !/^\s*#/.test(l));
   assert.deepEqual(code.filter((l) => /contracts\/['"]|contracts\/\.\*/.test(l)), [], 'no old surface pattern left');
-  assert.equal(code.filter((l) => l.includes('contracts(/|$)')).length, 2);
-  // The per-story lists (the hatch's two) match `specs/<story>/contracts` as TEXT since E117 review 2 —
-  // a folder that is not a story ID may hold pattern characters — with the same `(/|$)` end.
-  assert.equal(code.filter((l) => l.includes('p="specs/${story}/contracts" awk') && l.includes('length($0) == length(p) || substr($0, length(p) + 1, 1) == "/"')).length, 2);
+  assert.equal(code.filter((l) => l.includes('contracts(/|$)')).length, 1);
+  // The per-story list matches `specs/<story>/contracts` as TEXT since E117 review 2 — a folder that is
+  // not a story ID may hold pattern characters — with the same `(/|$)` end.
+  assert.equal(code.filter((l) => l.includes('p="specs/${story}/contracts" awk') && l.includes('length($0) == length(p) || substr($0, length(p) + 1, 1) == "/"')).length, 1);
   assert.equal(code.filter((l) => l.includes('contracts(/.*)?$')).length, 1);
   const read = src.indexOf('git ls-tree -r -z --full-tree HEAD');
   assert.ok(read >= 0 && read < src.indexOf('PASS [contract-check]'), 'the tree is read before the first PASS');
@@ -989,6 +1634,14 @@ test('contract-check and backfill-check list every change by both paths, byte-wi
   for (const rel of ['skills/yad-checks/templates/checks/contract-check.sh', 'skills/yad-backfill/templates/checks/backfill-check.sh']) {
     const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     const lists = src.split('\n').filter((l) => !/^\s*#/.test(l) && /\bgit\b.*\bdiff\b.*(--name-only|--raw)/.test(l));
+    // Every other list a gate reads names from: `git log` (the branch's own commits, #363 review 5) and the
+    // old-git guard's `--name-status` lists. Each names a rename by both paths (with rename detection on,
+    // a move is an `R` that `--diff-filter=D` never matches, and the guard would fail open — review 6),
+    // and `git log` reads the full history (a merged side's commits are otherwise dropped — review 6).
+    for (const l of src.split('\n').filter((x) => !/^\s*#/.test(x) && (/\bgit log\b.*--name-only/.test(x) || /\bgit diff\b.*--name-status/.test(x)))) {
+      assert.match(l, /--no-renames/, `${rel}: ${l.trim()}`);
+      if (/\bgit log\b.*--name-only/.test(l)) assert.match(l, /git log --full-history /, `${rel}: ${l.trim()}`);
+    }
     assert.ok(lists.length >= 1, `${rel}: no changed list found`);
     for (const l of lists) {
       assert.match(l, /--no-renames/, `${rel}: ${l.trim()}`);
@@ -996,7 +1649,23 @@ test('contract-check and backfill-check list every change by both paths, byte-wi
       // path shifted every pair after it.
       if (/--raw/.test(l)) assert.match(l, / -z .*\| while IFS= read -r -d '' h && IFS= read -r -d '' p; do/, `${rel}: ${l.trim()}`);
       // A newline inside a path becomes `?` (E121): split on newlines alone, one odd name made a path.
+      // The quote pass (issue #344 review 1) keeps the names NUL-separated in a file and reads them NUL
+      // by NUL (`read -d ''`), so a newline in a name is refused by name instead of folded into another.
+      else if (/ -z .* > "\$_yad_tmp\/q-(files|gone)"/.test(l)) {
+        // Each list has exactly one reader, and it splits on NUL (review 2: a second reader that split on
+        // newlines would have slipped past a looser pin).
+        const code = src.split('\n').filter((c) => !/^\s*#/.test(c));
+        const readers = (f) => code.filter((c) => c.includes(`"$_yad_tmp/${f}"`) && !/ -z .* > /.test(c) && !/\[ (!\s)?-s /.test(c));
+        assert.deepEqual(readers('q-files').map((c) => c.trim()), ['done < "$_yad_tmp/q-files"'], `${rel}: q-files has one reader`);
+        assert.ok(src.includes(`while IFS= read -r -d '' _f; do`), `${rel}: q-files is read NUL by NUL`);
+        const gone = readers('q-gone').map((c) => c.trim());
+        assert.equal(gone.length, 1, `${rel}: q-gone has one reader`);
+        assert.ok(gone[0].startsWith(`tr '\\n\\0' '?\\n' < "$_yad_tmp/q-gone" | while IFS= read -r _f; do`), `${rel}: q-gone is folded before it is printed`);
+      }
       else assert.match(l, / -z .*\| tr '\\n\\0' '\?\\n'/, `${rel}: ${l.trim()}`);
+      // From the merge base, or the merge into the base when there are several (issue #363, review 3): two
+      // dots compared with the base's tip, and `BASE...HEAD` reads from one merge base when there are several.
+      assert.match(l, /"\$DIFF_FROM" "\$DIFF_TO"/, `${rel}: ${l.trim()}`);
     }
     assert.ok(src.indexOf('export LC_ALL=C') >= 0 && src.indexOf('export LC_ALL=C') < src.indexOf(lists[0]), `${rel}: bytes before the list`);
   }

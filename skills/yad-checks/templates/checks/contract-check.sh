@@ -68,7 +68,58 @@ if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
   echo "FAIL [contract-check]: base ref '${BASE}' not found — fetch full history / check the base branch."
   exit 1
 fi
+# Two readings (issue #363). The TRAILER, and the slice files the branch's own commits touch, are read
+# from this branch's commits: `git log BASE..HEAD` (three dots in `log` would add the base's commits
+# too). The CHANGE is what merging the branch into the base makes it — the block below.
 RANGE="${BASE}..HEAD"
+# What this branch changes is what MERGING it into BASE would change (#363 reviews 1, 3 and 4). A diff
+# from the base's TIP (two dots) blamed the branch for what the base did after it split off. A diff from
+# the merge base missed two things the real merge does: with several merge bases it reads from ONE, so a
+# hand-resolved merge could undo what the other side brought in (review 1); and the merge follows a
+# RENAME on the base, so an edit to a file the base moved into a protected path lands there unseen
+# (review 4). `git merge-tree --write-tree` (git 2.38+) builds the merge without touching anything, and
+# the diff runs from BASE to it — what GitHub's own merge checkout gives. A branch that does not merge
+# cleanly fails closed: the platform cannot merge it either. An older git falls back to the merge base,
+# with one merge base only and no base-side rename of a file the branch changes; otherwise it fails
+# closed. No merge base at all (a shallow clone, unrelated history) fails closed too.
+_mbs="$(git merge-base --all "$BASE" HEAD 2>/dev/null)" || _mbs=""
+if [ -z "$_mbs" ]; then
+  echo "FAIL [contract-check]: '${BASE}' and HEAD share no history — fetch full history (a shallow clone has no merge base) or check the base branch."
+  exit 1
+fi
+_mb_count="$(printf '%s\n' "$_mbs" | wc -l | tr -d ' ')"
+# The exit code says which case this is (review 5): 0 a clean merge, 1 a conflict, 129 a git older than
+# 2.38 (it does not know --write-tree), anything else git could not build it (a missing object, say).
+_mt=0
+_mt_out="$(git merge-tree --write-tree --no-messages "$BASE" HEAD 2>/dev/null)" || _mt=$?
+DIFF_TO="${_mt_out%%$'\n'*}"
+if [ "$_mt" = 0 ] && [ -n "$DIFF_TO" ] && git rev-parse --verify --quiet "${DIFF_TO}^{tree}" >/dev/null 2>&1; then
+  DIFF_FROM="$(git rev-parse --verify --quiet "${BASE}^{commit}")"
+  [ "$_mb_count" = 1 ] || echo "note [contract-check]: '${BASE}' and HEAD have ${_mb_count} merge bases — the change is read as the merge into ${BASE} makes it."
+elif [ "$_mt" = 1 ]; then
+  echo "FAIL [contract-check]: this branch does not merge cleanly into ${BASE}, so what it changes there cannot be read. Merge ${BASE} into the branch, resolve the conflicts, then push again."
+  exit 1
+elif [ "$_mt" != 129 ]; then
+  echo "FAIL [contract-check]: git could not build the merge of this branch into ${BASE} (git merge-tree exit ${_mt}) — fetch the full history of both, then run again."
+  exit 1
+elif [ "$_mb_count" != 1 ]; then
+  echo "FAIL [contract-check]: '${BASE}' and HEAD have ${_mb_count} merge bases, and this git (older than 2.38) cannot build the merge into ${BASE}. Merge ${BASE} into the branch, then push again."
+  exit 1
+else
+  DIFF_FROM="$_mbs"; DIFF_TO="HEAD"
+  # The fallback reads the branch's own diff, so an edit to a file the base has since moved would follow
+  # the rename into the merge unseen (review 4). Rename detection itself has limits the real merge does
+  # not share (review 5: `diff.renameLimit`), so it is not used: a path the base REMOVED — deleted or
+  # moved away — that the branch MODIFIES fails closed. Both deleting it is a clean merge, and passes.
+  _gone="$(git diff --no-renames --diff-filter=D --name-status -z "$_mbs" "$BASE" | tr '\n\0' '?\n' | awk 'NR % 2 == 0')" || { echo "FAIL [contract-check]: git could not list what ${BASE} removed since the branch split off."; exit 1; }
+  _mine="$(git diff --no-renames --name-status -z "$_mbs" HEAD | tr '\n\0' '?\n' | awk 'NR % 2 == 1 { s = $0; next } s == "M" || s == "T"')" || { echo "FAIL [contract-check]: git could not list what this branch changes."; exit 1; }
+  # A here-string, not a pipe: `grep -q` stops at the first match, and a large list written into a pipe
+  # it has left would end in SIGPIPE — read as "no match" under pipefail (review 5).
+  if [ -n "$_gone" ] && [ -n "$_mine" ] && grep -Fxq -f <(printf '%s\n' "$_mine") <<<"$_gone"; then
+    echo "FAIL [contract-check]: ${BASE} removed or moved a file this branch changes, and this git (older than 2.38) cannot follow it into the merge. Merge ${BASE} into the branch, then push again."
+    exit 1
+  fi
+fi
 
 # No symlink and no submodule anywhere under specs/ (E115). The gate reads PATHS: a link lets the
 # content live somewhere the paths below never name. A symlink at `specs`, `specs/<story>` or
@@ -144,25 +195,22 @@ fi
 #                 slice change and failed the PR over a file that does not exist.
 # Both lists (this one and `deleted` below) are built the SAME way: the no-lock escape hatch compares
 # them line for line.
-changed="$(git diff --no-renames --name-only -z "$RANGE" | tr '\n\0' '?\n')"
-surface="$(printf '%s\n' "$changed" | grep -E '^specs/[^/]+/contracts(/|$)' || true)"
+changed="$(git diff --no-renames --name-only -z "$DIFF_FROM" "$DIFF_TO" | tr '\n\0' '?\n')"
+# The slice files the branch's OWN commits touch count too, even when the merge nets them to nothing
+# (review 5, the user's decision): a "Rebase and merge" replays each commit, so a commit that mirrors the
+# base's re-lock and a later one that undoes it lands the undo, while the merge shows no change. The
+# base's commits are not in this range, so a slice that changed only there is still not this branch's.
+# `--full-history` (review 6): `git log -- <path>` otherwise simplifies history and drops a merged side's
+# commits whose result matches the other parent — a slice edit there would replay in a rebase unseen.
+own="$(git log --full-history --no-merges --no-renames --format= --name-only -z "$RANGE" -- specs | tr '\n\0' '?\n')"
+surface="$(printf '%s\n%s\n' "$changed" "$own" | grep -E '^specs/[^/]+/contracts(/|$)' | sort -u || true)"
 
-# Slice paths this diff DELETES. `--name-only` above lists a deleted file exactly like a changed one,
-# which is right for the trailer rule — removing an agreed endpoint IS a surface change — but it
-# creates a dead end for the one epic that should never have had a slice in the first place.
-#
-# A short-lane epic has no lock and never will (E40). Once a `specs/<story>/contracts/` file exists
-# under one, the unflagged rule below fails the commit, the no-lock rule further down fails the
-# flagged one, and the cleanup commit that DELETES the file fails too — so there is no diff that
-# passes, including the correct one. An escape hatch is not optional there.
-#
-# Deleting your own copy of a surface that nothing upstream has locked cannot widen it: with no lock
-# there is no agreed shape for the deletion to contradict. So a delete-only diff is allowed through
-# the no-lock branch (and only that branch — where a lock EXISTS, a deletion is still a real surface
-# change and every rule below applies to it unchanged).
-# --no-renames matters here too: a slice MOVED out of contracts/ is a delete of the old path, and
-# without it git reports an `R`, which --diff-filter=D never matches — the hatch would refuse the move.
-deleted="$(git diff --no-renames --diff-filter=D --name-only -z "$RANGE" | tr '\n\0' '?\n' | grep -E '^specs/[^/]+/contracts(/|$)' || true)"
+# A story that only REMOVES its slice is told apart below by what LANDS (review 6): every touched slice
+# path is gone from the merge. A short-lane epic has no lock and never will (E40); once a
+# `specs/<story>/contracts/` file exists under one, the unflagged rule fails the commit and the no-lock
+# rule fails the flagged one — so deleting the file has to pass, or there is no way out. Deleting your
+# own copy of a surface nothing upstream has locked cannot widen it. Where a lock EXISTS, a deletion is
+# still a real surface change, and every rule below applies to it unchanged.
 
 if [ -z "$surface" ]; then
   echo "PASS [contract-check]: diff does not touch the contract surface (specs/*/contracts and everything under it)."
@@ -173,15 +221,11 @@ echo "note [contract-check]: diff touches the contract surface:"
 printf '%s\n' "$surface" | sed 's/^/  /'
 
 cc="$(git log "$RANGE" --format='%(trailers:key=Contract-Change,valueonly)' | sed '/^$/d' | tr 'A-Z' 'a-z')"
-if ! printf '%s\n' "$cc" | grep -qx 'yes'; then
-  echo "FAIL [contract-check]: contract surface changed without a 'Contract-Change: yes' trailer."
-  echo "  -> Route back to the architecture gate: update + re-lock contract.md in the product repo,"
-  echo "     or, if this epic is on a short lane (chore/spike) and has no architecture gate, move the"
-  echo "     surface change to a new epic on the classic route,"
-  echo "     re-run yad-spec, then implement with Contract-Change: yes. The surface is never widened"
-  echo "     from inside a code repo."
-  exit 1
-fi
+# No trailer is not yet a FAIL (issue #344): a slice that only QUOTES the locked contract word for word
+# changes nothing, and demanding `Contract-Change: yes` for it made the trailer mean nothing. The quote
+# pass below (after the helpers it needs) decides; anything it cannot prove is the FAIL it always was.
+no_trailer=""
+printf '%s\n' "$cc" | grep -qx 'yes' || no_trailer=1
 
 # --- shared link.md resolution (byte-identical in contract-check / lineage-check / epic-open /
 # --- reconcile-debt-check; the gates are deliberately standalone, so it is duplicated, not sourced) ---
@@ -559,6 +603,191 @@ resolve_product() {
   esac
 }
 
+# The `"hash": "sha256:<hex>"` of a contract-lock.json, hex only. Newline-tolerant, first match: the key
+# and its value may legally sit on separate lines. Empty when there is none (`|| true`: under `pipefail`
+# a no-match grep would fail the pipeline).
+lock_hash() { tr '\n' ' ' < "$1" | grep -oE '"hash"[[:space:]]*:[[:space:]]*"sha256:[0-9a-f]+"' | head -1 | sed -E 's/.*sha256:([0-9a-f]+)"$/\1/' || true; }
+# One string value of a lock file ($2 = its key), the same newline-tolerant way. Empty when absent.
+lock_str() { tr '\n' ' ' < "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true; }
+
+# The lines of a contract.md's CONTRACT-SURFACE block, as yadflow hashes them (contractSurfaceHash in
+# cli/epic-state.mjs): a CR before the newline dropped, every line once with its newline.
+surface_lines() { awk '{ sub(/\r$/, "") } /CONTRACT-SURFACE:BEGIN/ { f = 1; next } /CONTRACT-SURFACE:END/ { f = 0; next } f' "$1"; }
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+  else return 1; fi
+}
+# The physical path of a folder, or nothing when it cannot be entered.
+phys_dir() { (cd "$1" 2>/dev/null && pwd -P) || true; }
+
+# Issue #344: is story $1's changed slice an exact quote of its locked contract? Says why not, one line
+# per reason, and returns 1. Sets `current` (the lock's hash) for the caller's note.
+#
+# A slice file is a quote when it is Markdown, holds exactly ONE `<!-- CONTRACT-QUOTE:BEGIN -->` …
+# `<!-- CONTRACT-QUOTE:END -->` block whose non-blank lines are one UNBROKEN, IN-ORDER run of the locked
+# surface's non-blank lines, and holds nothing else but blank lines and, as its first non-blank line, the
+# optional title `# Contract slice — <story ID>` (review 2: two blocks, each a run, could be stitched
+# into a meaning the lock never had, and a free title could say anything; review 1: notes outside a
+# block were never read, so a new endpoint written there passed; and
+# lines checked one by one could be reordered into a different meaning). Its content is read from the
+# commit by its exact name (review 1: a newline in a name, written as `?` in the list, opened a
+# different file on disk), so a name holding a newline is refused.
+quote_story() {
+  _qs="$1"; _qbad=0; current=""
+  if ! story_ok "$_qs"; then
+    echo "  ${_qs}: specs/${_qs}/contracts is not under a story ID — it quotes no lock."; return 1
+  fi
+  _qp="specs/${_qs}/contracts"   # a story ID holds no pattern character, so this pathspec is exact
+  yad_tmp
+  git diff --no-renames --diff-filter=D --name-only -z "$DIFF_FROM" "$DIFF_TO" -- "$_qp" > "$_yad_tmp/q-gone" || { echo "  ${_qs}: git could not list the slice's deletions."; return 1; }
+  { git diff --no-renames --diff-filter=d --name-only -z "$DIFF_FROM" "$DIFF_TO" -- "$_qp" && git log --full-history --no-merges --no-renames --format= --name-only -z "$RANGE" -- "$_qp"; } | sort -z -u > "$_yad_tmp/q-files" || { echo "  ${_qs}: git could not list the slice's changes."; return 1; }
+  # Never a PASS by an empty list: the surface named this story, so its slice has changed files.
+  if [ ! -s "$_yad_tmp/q-files" ] && [ ! -s "$_yad_tmp/q-gone" ]; then
+    echo "  ${_qs}: git listed no changed slice file for this story — the quote cannot be checked."; return 1
+  fi
+  if [ -s "$_yad_tmp/q-gone" ]; then
+    tr '\n\0' '?\n' < "$_yad_tmp/q-gone" | while IFS= read -r _f; do echo "  ${_f}: this removes slice file(s) — a deletion changes the surface."; done
+    return 1
+  fi
+  # When the branch's own commits touch the slice, a "Rebase and merge" replays them one by one, and what
+  # that lands is not the merge this gate reads (reviews 5 and 6: mirror-then-undo commits, and commits
+  # hidden behind a merge). The quote proof is exact only when the branch already holds the base and has
+  # no merge commits: then every merge method lands the branch tip, which IS the merge read below.
+  # Otherwise the trailer is needed — or a rebase onto the base.
+  if [ -n "$(git log --full-history --no-merges --format=%H "$RANGE" -- "$_qp")" ]; then
+    if ! git merge-base --is-ancestor "$BASE" HEAD 2>/dev/null || [ -n "$(git rev-list --merges "$RANGE")" ]; then
+      echo "  ${_qs}: this branch's own commits change the slice, and it is not rebased onto ${BASE} (or holds merge commits) — a quote can be proven only on a branch rebased onto ${BASE}. Rebase it, then push again."
+      return 1
+    fi
+  fi
+  _ql="specs/${_qs}/link.md"
+  # The link.md that LANDS (review 5): the base may have re-pinned it since the branch split off.
+  if ! git cat-file blob "${DIFF_TO}:${_ql}" > "$_yad_tmp/q-link.md" 2>/dev/null; then
+    echo "  ${_qs}: ${_ql} is not there, so the slice is tied to no lock — re-run yad-spec."; return 1
+  fi
+  _qpin="$(printf '%s' "$(link_val contract-lock "$_yad_tmp/q-link.md")" | sed -E 's/^sha256:([0-9a-f]+).*$/\1/')"
+  product_for "$_qs"
+  if [ -n "$prod_note" ]; then printf '%s\n' "$prod_note" | sed 's/^/note [contract-check]: /'; fi
+  if [ -n "$prod_fail" ]; then echo "  ${_qs}: ${prod_fail}"; return 1; fi
+  _qepic="$(story_epic "$_qs")"
+  _qlock=""
+  [ -n "$prod" ] && _qlock="${prod}/epics/${_qepic}/.sdlc/contract-lock.json"
+  if [ -z "$_qlock" ] || [ ! -f "$_qlock" ]; then
+    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock — the Product's lock is not reachable at ${_qlock:-<no product-repo in ${_ql}>}."
+    return 1
+  fi
+  current="$(lock_hash "$_qlock")" || current=""
+  if [ -z "$current" ]; then echo "  ${_qs}: ${_qlock} has no readable \"hash\": \"sha256:…\" value."; return 1; fi
+  if [ -z "$_qpin" ]; then
+    echo "  ${_qs}: ${_ql} names no contract-lock — re-run yad-spec, which copies it from the Product."; return 1
+  fi
+  if [ "$_qpin" != "$current" ]; then
+    echo "  ${_qs}: ${_ql} pins ${_qpin:0:12}…, not the current lock ${current:0:12}… — re-run yad-spec."
+    return 1
+  fi
+  # Where the locked text lives. A change-epic that inherits its architecture carries a POINTER lock
+  # (`inheritedFrom` / `ref`, yad-change) and no contract.md of its own: the surface is the owner's. Read
+  # it there, as `yad doctor` does — only inside this Product's epics/, and only when the owner's lock
+  # still holds the hash this one copied. An epic WITH its own contract.md re-authored its architecture
+  # and left the pointer fields behind: its own surface is read (review 2). `yad doctor` reads it too, and
+  # also still checks the pointer and warns about the leftover fields; the gate needs only the surface
+  # the quote is compared with, so it does not.
+  _qc="${prod}/epics/${_qepic}/contract.md"
+  _qref="$(lock_str "$_qlock" ref)"
+  _qfrom="$(lock_str "$_qlock" inheritedFrom)"
+  if [ ! -f "$_qc" ] && { [ -n "$_qref" ] || [ -n "$_qfrom" ]; }; then
+    [ -n "$_qref" ] || _qref="../../${_qfrom}/.sdlc/contract-lock.json"
+    _qepics="$(phys_dir "${prod}/epics")"
+    case "$_qref" in /*) _qrefp="$_qref" ;; *) _qrefp="${prod}/epics/${_qepic}/.sdlc/${_qref}" ;; esac
+    _qowner_sdlc="$(phys_dir "$(dirname "$_qrefp")")"
+    [ -n "$_qepics" ] || _qowner_sdlc=""
+    case "$_qowner_sdlc" in
+      "$_qepics"/*/.sdlc) ;;
+      *) echo "  ${_qs}: ${_qepic}'s pointer lock names '${_qref}', which is not another epic's lock in this Product."; return 1 ;;
+    esac
+    _qowner_lock="${_qowner_sdlc}/$(basename "$_qref")"
+    if [ "$(basename "$_qref")" != "contract-lock.json" ] || [ ! -f "$_qowner_lock" ]; then
+      echo "  ${_qs}: ${_qepic}'s pointer lock names '${_qref}', and there is no lock there."; return 1
+    fi
+    if [ "$(lock_hash "$_qowner_lock")" != "$current" ]; then
+      echo "  ${_qs}: ${_qepic}'s pointer lock copies ${current:0:12}…, but its owner now locks another surface — re-copy the owner's hash (yad-change)."; return 1
+    fi
+    _qc="$(dirname "$_qowner_sdlc")/contract.md"
+  fi
+  if [ ! -f "$_qc" ]; then echo "  ${_qs}: ${_qc} is not there — nothing to quote from."; return 1; fi
+  surface_lines "$_qc" > "$_yad_tmp/surface"
+  _qh="$(sha256_hex < "$_yad_tmp/surface")" || _qh=""
+  if [ -z "$_qh" ]; then echo "  ${_qs}: no sha256sum or shasum on this machine — the lock cannot be checked."; return 1; fi
+  if [ "$_qh" != "$current" ]; then
+    echo "  ${_qs}: the Product's contract.md no longer matches its lock (${_qh:0:12}… vs ${current:0:12}…) — re-lock it upstream (yad-architecture Step 5)."
+    return 1
+  fi
+  while IFS= read -r -d '' _f; do
+    [ -n "$_f" ] || continue   # never a name; an empty record is skipped rather than read
+    case "$_f" in
+      *$'\n'*) echo "  ${_f//$'\n'/?}: a slice file name holding a newline is not read — rename it."; _qbad=1; continue ;;
+    esac
+    case "$_f" in
+      *.md) ;;
+      *) echo "  ${_f}: only a Markdown slice can pass as a quote; any other file under contracts/ needs the trailer."; _qbad=1; continue ;;
+    esac
+    # The content as it lands (the merge into the base; with the rule above, also the branch tip), by its
+    # exact name — never a file on disk that a folded name might point at.
+    if ! git cat-file blob "${DIFF_TO}:${_f}" > "$_yad_tmp/q-file" 2>/dev/null; then
+      echo "  ${_f}: the branch's own commits touch it, but it is not in what lands (added and removed again?) — that needs the trailer."; _qbad=1; continue
+    fi
+    # A zero byte ends a line for some awks (macOS), so text after it was never compared (review 2).
+    if ! tr -d '\000' < "$_yad_tmp/q-file" | cmp -s - "$_yad_tmp/q-file"; then
+      echo "  ${_f}: holds a zero byte — a slice is text; it is not read."; _qbad=1; continue
+    fi
+    _qv="$(awk -v title="# Contract slice — ${_qs}" -v bom="$(printf '\357\273\277')" '
+      function norm(x) { sub(/\r$/, "", x); sub(/[ \t]+$/, "", x); return x }
+      FILENAME == ARGV[1] { $0 = norm($0); if ($0 != "") { surf = surf "\n" $0; s[$0] = 1 } next }
+      { if (FNR == 1 && index($0, bom) == 1) $0 = substr($0, length(bom) + 1); $0 = norm($0) }
+      $0 == "<!-- CONTRACT-QUOTE:BEGIN -->" { if (inb) bad = "nested"; inb = 1; blocks++; seen = 1; q = ""; qfirst = ""; next }
+      $0 == "<!-- CONTRACT-QUOTE:END -->" {
+        if (!inb) { bad = "order"; next }
+        inb = 0
+        if (q == "") { if (res == "") res = "empty"; next }
+        if (res == "" && index(surf "\n", q "\n") == 0) res = "run " qfirst
+        next
+      }
+      inb {
+        if ($0 == "") next
+        if (!($0 in s) && miss == "") miss = $0
+        if (qfirst == "") qfirst = $0
+        q = q "\n" $0
+        next
+      }
+      $0 == "" { next }
+      $0 == title && !seen { seen = 1; next }
+      { seen = 1 }
+      outside == "" { outside = $0 }
+      END {
+        if (bad != "" || inb) { print "count"; exit }
+        if (blocks == 0) { print "none"; exit }
+        if (blocks > 1) { print "many"; exit }
+        if (outside != "") { print "outside " outside; exit }
+        if (miss != "") { print "miss " miss; exit }
+        if (res != "") { print res; exit }
+        print "ok"
+      }' "$_yad_tmp/surface" - < "$_yad_tmp/q-file")" || _qv="unreadable"
+    case "$_qv" in
+      ok) ;;
+      none) echo "  ${_f}: has no CONTRACT-QUOTE block, so it cannot be told from a change."; _qbad=1 ;;
+      count) echo "  ${_f}: every CONTRACT-QUOTE block must be closed, BEGIN before END, none inside another."; _qbad=1 ;;
+      many) echo "  ${_f}: holds more than one CONTRACT-QUOTE block — one block per file; quote another part of the surface in another file."; _qbad=1 ;;
+      empty) echo "  ${_f}: a CONTRACT-QUOTE block quotes nothing."; _qbad=1 ;;
+      outside*) echo "  ${_f}: this line sits outside the CONTRACT-QUOTE block: ${_qv#outside?} — only blank lines and, first, the title '# Contract slice — ${_qs}' may; notes go in spec.md or plan.md."; _qbad=1 ;;
+      miss*) echo "  ${_f}: this line is not in the locked surface: ${_qv#miss?}"; _qbad=1 ;;
+      run*) echo "  ${_f}: the block starting '${_qv#run?}' is not one unbroken run of the locked surface, in its order — quote whole consecutive lines."; _qbad=1 ;;
+      *) echo "  ${_f}: could not be read."; _qbad=1 ;;
+    esac
+  done < "$_yad_tmp/q-files"
+  return "$_qbad"
+}
+
 # Fidelity check (best-effort): when the product repo is reachable, the story's link.md must pin the
 # CURRENT product lock — proof the contract was actually updated/re-locked upstream, not just flagged.
 #
@@ -570,21 +799,70 @@ resolve_product() {
 # (the same rule spec-link applies per commit).
 stories="$(printf '%s\n' "$surface" | sed -E 's#^specs/([^/]+)/contracts(/.*)?$#\1#' | sort -u)"
 rc=0
+
+# --- issue #344: with no trailer, pass only a slice that is an exact quote of its locked contract ---
+# yad-spec writes the lines it copies from the locked CONTRACT-SURFACE block between
+# `<!-- CONTRACT-QUOTE:BEGIN -->` and `<!-- CONTRACT-QUOTE:END -->`. What makes a slice a quote — and
+# every rule reviews 1 and 2 added to keep a changed surface from passing as one — is said once, above
+# `quote_story`. Anything it cannot prove is the trailer's FAIL, as before #344.
+if [ -n "$no_trailer" ]; then
+  quote_ok=1
+  while IFS= read -r story; do
+    [ -z "$story" ] && continue
+    if quote_story "$story"; then
+      echo "note [contract-check]: ${story}'s slice is an exact quote of the locked contract (${current:0:12}…)."
+    else
+      quote_ok=""
+    fi
+  done <<QSTORIES
+$stories
+QSTORIES
+  if [ -n "$quote_ok" ]; then
+    echo "PASS [contract-check]: every changed slice is an exact quote of its locked contract — no Contract-Change trailer needed."
+    exit 0
+  fi
+  echo "FAIL [contract-check]: contract surface changed without a 'Contract-Change: yes' trailer."
+  echo "  -> If the slice only QUOTES the locked contract: one Markdown file per unbroken run of the surface,"
+  echo "     holding one <!-- CONTRACT-QUOTE:BEGIN --> … <!-- CONTRACT-QUOTE:END --> block and nothing else but"
+  echo "     blank lines and the title '# Contract slice — <story ID>' (re-run yad-spec); fix what is listed above."
+  echo "  -> If it changes the surface: Route back to the architecture gate — update + re-lock contract.md"
+  echo "     in the product repo, or, if this epic is on a short lane (chore/spike) and has no architecture"
+  echo "     gate, move the surface change to a new epic on the classic route,"
+  echo "     re-run yad-spec, then implement with Contract-Change: yes. The surface is never widened"
+  echo "     from inside a code repo."
+  exit 1
+fi
 while IFS= read -r story; do
   [ -z "$story" ] && continue
   # This story's own changed and deleted slice paths, matched as text (a folder that is not a story ID
   # may hold characters a pattern would read; the prefix goes in through the environment, because
-  # `awk -v` turns a `\b` in a folder name into a backspace). A story whose every changed slice file is
-  # DELETED only removes (only_removes); one whose slice is also GONE at HEAD (slice_gone) is a whole
+  # `awk -v` turns a `\b` in a folder name into a backspace). A story whose every touched slice file is
+  # gone from what lands only removes (only_removes); one whose slice folder is also GONE (slice_gone) is a whole
   # clean-up, the only kind that needs no link.md — deleting link.md with PART of a slice used to drop
   # a stale pin while the rest of the slice stayed (E117 review 3).
   story_surface="$(printf '%s\n' "$surface" | p="specs/${story}/contracts" awk 'BEGIN { p = ENVIRON["p"] } index($0, p) == 1 && (length($0) == length(p) || substr($0, length(p) + 1, 1) == "/")')"
-  story_deleted="$(printf '%s\n' "$deleted" | p="specs/${story}/contracts" awk 'BEGIN { p = ENVIRON["p"] } index($0, p) == 1 && (length($0) == length(p) || substr($0, length(p) + 1, 1) == "/")')"
+  # Only removes: every slice path the story touches is gone from what lands (review 6: a file added and
+  # removed again on the branch is in the surface but in no delete list). A folded name (`?`) cannot be
+  # looked up exactly, so it never counts as gone.
   only_removes=""
-  [ -n "$story_surface" ] && [ "$story_surface" = "$story_deleted" ] && only_removes=1
+  if [ -n "$story_surface" ]; then
+    only_removes=1
+    while IFS= read -r _p; do
+      case "$_p" in *'?'*) only_removes=""; break ;; esac
+      if git cat-file -e "${DIFF_TO}:${_p}" 2>/dev/null; then only_removes=""; break; fi
+    done <<STORYSURF
+$story_surface
+STORYSURF
+  fi
   slice_gone=""
-  if [ -n "$only_removes" ] && ! git cat-file -e "HEAD:specs/${story}/contracts" 2>/dev/null; then slice_gone=1; fi
+  # Gone from what LANDS (the merge into the base, review 4): a file the base adds beside the deletion
+  # would otherwise be a slice left with no link.md.
+  if [ -n "$only_removes" ] && ! git cat-file -e "${DIFF_TO}:specs/${story}/contracts" 2>/dev/null; then slice_gone=1; fi
   link="specs/${story}/link.md"
+  # The link.md that LANDS (review 6, the twin of the quote pass): the base may have re-pinned or removed it.
+  yad_tmp
+  landed_link=""
+  if git cat-file blob "${DIFF_TO}:${link}" > "$_yad_tmp/t-link.md" 2>/dev/null; then landed_link="$_yad_tmp/t-link.md"; fi
   if ! story_ok "$story"; then
     if [ -n "$only_removes" ]; then
       echo "note [contract-check]: specs/${story}/contracts is not under a story ID, and this only removes it — allowed."
@@ -595,7 +873,7 @@ while IFS= read -r story; do
     rc=1
     continue
   fi
-  if [ ! -f "$link" ]; then
+  if [ -z "$landed_link" ]; then
     # Removing a story's whole slice with its link.md is a clean-up, as before. Adding or changing a
     # slice without its link.md is not (E117 review 2): yad-spec writes the two together, and a PR could
     # delete link.md to drop a stale pin, or add a slice for an epic that exists nowhere. Nor is removing
@@ -609,7 +887,7 @@ while IFS= read -r story; do
     rc=1
     continue
   fi
-  pinned="$(printf '%s' "$(link_val contract-lock "$link")" | sed -E 's/^sha256:([0-9a-f]+).*$/\1/')"
+  pinned="$(printf '%s' "$(link_val contract-lock "$landed_link")" | sed -E 's/^sha256:([0-9a-f]+).*$/\1/')"
   epic="$(story_epic "$story")"   # story EP-<slug>-S0N -> epic EP-<slug>
   product_for "$story"
   if [ -n "$prod_note" ]; then printf '%s\n' "$prod_note" | sed 's/^/note [contract-check]: /'; fi
@@ -628,7 +906,7 @@ while IFS= read -r story; do
     # unparseable lock is a FAIL below — so a formatting choice must not become a gate failure.
     # `|| current=""` is load-bearing: under `pipefail` a no-match grep fails the whole pipeline, which
     # under `set -e` would abort the gate instead of reaching the unparseable-lock FAIL below.
-    current="$(tr '\n' ' ' < "$lock" | grep -oE '"hash"[[:space:]]*:[[:space:]]*"sha256:[0-9a-f]+"' | head -1 | sed -E 's/.*sha256:([0-9a-f]+)"$/\1/')" || current=""
+    current="$(lock_hash "$lock")" || current=""
     # A lock we can READ but cannot PARSE proves nothing, and an empty `current` used to short-circuit
     # the comparison below straight into the "hash matches" note — the gate affirmatively reporting a
     # match it never made. Fail closed instead: a truncated, half-written or schema-changed lock is a

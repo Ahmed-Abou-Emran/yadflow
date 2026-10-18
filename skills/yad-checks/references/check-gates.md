@@ -125,13 +125,66 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
   `yad-spec` writes real files, so nothing legitimate lives there as a link. Removing a link under
   `contracts/` is a change to the surface and needs `Contract-Change: yes`; on a lockless epic it takes
   the removal hatch below. `yad doctor` warns `checks:symlink-blind` for an older copy without this check.
-- Computes the changed files in `<base>..HEAD`.
+- Computes the changed files as **what merging the branch into the target would change** (issue #363):
+  `git merge-tree --write-tree <base> HEAD` (git 2.38+) builds that merge without touching anything, and
+  the diff runs from the target to it — what GitHub's own merge checkout gives. The quote pass reads the
+  slice's content, and the "whole slice removed" check its tree, from that result too. Why the merge and
+  not a simpler range:
+  - a two-dot diff compared with the target's tip, so a slice that landed on the target after the branch
+    split off failed a branch that never touched it;
+  - a diff from the merge base reads from ONE merge base when there are several (a hotfix merged into
+    both, stacked branches, a criss-cross merge), so a hand-resolved merge could undo what the other
+    side brought in (review 1);
+  - and it misses a **rename** on the target: the real merge follows it, so an edit to a file the target
+    moved into a slice (or a backfilled feature) lands there unseen (review 4).
+
+  The trailer is still read from `git log <base>..HEAD` (this branch's own commits), and so are the
+  slice files **the branch's own commits touch** (merge commits left out, the full history read so a
+  merged side's commits are not dropped): they count as touched even when the merge nets them to nothing
+  (review 5, the user's decision). A GitHub "Rebase and merge" replays each commit, so a commit that
+  mirrors the target's re-lock and a later one that undoes it would land the undo while the merge shows
+  no change. So when the branch's own commits touch a slice, **the quote proof also needs the branch
+  rebased onto the target, with no merge commits** (review 6): then every merge method lands the branch
+  tip, which is the merge the gate reads, and the proof is exact. Otherwise the gate says to rebase (or
+  add the trailer). Both paths read the `link.md` that lands, from the merge. A story "only removes" its
+  slice when every slice path it touches is gone from what lands.
+  A branch that does not merge cleanly **FAILS** closed (the platform cannot merge it either): merge the
+  target into it. A base that shares no history with HEAD (a shallow clone), or a merge git cannot build
+  (a missing object), **FAILS** closed. **Older git** (before 2.38) falls back to the merge base,
+  `<base>...HEAD`, and fails closed when there is more than one, or when the target **removed or moved**
+  a file the branch modifies (no rename detection: its limits differ from the merge's).
 - The surface is `specs/<story>/contracts` **and** everything under it: a path that IS
   `specs/<story>/contracts` (a link being removed) counts too.
 - If **nothing** under `specs/*/contracts/**` changed → **PASS** (normal implementation only *consumes*
   the contract).
 - If the surface slice changed:
-  - Require a `Contract-Change: yes` trailer. **FAIL** (route back to the architecture gate) if absent.
+  - Require a `Contract-Change: yes` trailer. **FAIL** (route back to the architecture gate) if absent —
+    **unless every touched story's slice is an exact quote** (issue #344). A story's slice is a quote
+    when all of these hold, and the failure lists each one that does not:
+    - the story's folder is a story ID and its `link.md` is there;
+    - the Product is reached (the same resolution as below) and its `contract-lock.json` is readable;
+    - `link.md` pins that lock's hash;
+    - the Product's `epics/<epic>/contract.md` still hashes to the lock (the `CONTRACT-SURFACE` recipe),
+      so the lines are compared with the **locked** text, not a later edit. A change-epic that inherits
+      its architecture has a **pointer lock** (`inheritedFrom` / `ref`) and no `contract.md`: the owner's
+      `contract.md` is read instead, only inside the Product's `epics/`, and only while the owner's lock
+      still holds the copied hash. An epic that re-authored its architecture and kept the pointer fields
+      has its own `contract.md`, and that is read (`yad doctor` reads it too, and also warns about the
+      leftover fields);
+    - no slice file is deleted (a deletion changes the surface);
+    - every changed slice file is **Markdown** (`.md`; any other file under `contracts/` needs the
+      trailer), read from the commit by its exact name (a name holding a newline, or content holding a
+      zero byte, is refused), and holds **exactly one** `<!-- CONTRACT-QUOTE:BEGIN -->` …
+      `<!-- CONTRACT-QUOTE:END -->` block, not empty. Its non-blank lines (trailing spaces and a CR
+      ignored) are **one unbroken run of the locked surface's non-blank lines, in its order** — lines
+      checked one by one could be reordered into a different meaning (review 1), and two blocks, each a
+      run, could be stitched into one (review 2); to quote two parts, use two files. Outside the block the
+      file holds only blank lines and, as its first non-blank line, the optional title
+      `# Contract slice — <story ID>` (exactly that text; a leading BOM is ignored): a note there was never
+      read, so a new endpoint written in it passed (review 1), and a free title could say anything
+      (review 2). Notes go in `spec.md` or `plan.md`.
+    A prose slice from before this rule has no block, so it still needs the trailer until `yad-spec`
+    rewrites it.
   - Best-effort fidelity: when the product repo is reachable (via `link.md`'s `product-repo` path),
     require `link.md`'s pinned `contract-lock` hash to match the product repo's current
     `contract-lock.json`. A claimed change that still pins the **old** lock **FAILS** — re-run

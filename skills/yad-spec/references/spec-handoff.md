@@ -53,8 +53,24 @@ comes from the story's acceptance criteria and the **locked contract surface** �
   `OrderStatus`) are **quoted from the contract** and marked as contract-owned; repo-private fields
   are marked as local.
 - **`contracts/`** — the slice of the API/event surface this repo implements, **quoted from the locked
-  `contract.md`** (e.g. `POST /orders` request/response). Add a one-line note that this is a quote of
-  the locked surface, not a new definition.
+  `contract.md`** (e.g. `POST /orders` request/response). Put the quoted lines, **copied whole and word
+  for word** from the `CONTRACT-SURFACE` block, between ONE pair of markers per file, under the fixed
+  title:
+  ```
+  # Contract slice — EP-checkout-S01
+
+  <!-- CONTRACT-QUOTE:BEGIN -->
+  - `POST /orders` — place an order from the cart.
+    - request: `{ items: { sku: string, qty: number }[], address: string, payment: string, note?: string }`
+  <!-- CONTRACT-QUOTE:END -->
+  ```
+  The block is one **unbroken run** of consecutive surface lines, in their order; to quote two parts of
+  the surface, write two files, one block each. The file holds nothing else but blank lines and, first,
+  the title `# Contract slice — <story ID>` exactly as shown (or no title) — notes (for example, which
+  endpoints this story builds) go in `spec.md` or `plan.md`. Write the slice as
+  Markdown (`.md`). The contract-check gate then passes the slice with **no** `Contract-Change` trailer,
+  because it can prove every quoted line is in the lock (issue #344). Never reword, reorder or skip a line
+  inside a block: that is a surface change, and it needs the trailer.
   **Do NOT create this folder on a short-lane epic** (`profile: chore` or `spike`). Those routes have
   no architecture step, so there is no locked `contract.md` to quote and no lock for CI to check the
   quote against — the gate refuses a slice under a lockless epic. A short-lane story consumes the

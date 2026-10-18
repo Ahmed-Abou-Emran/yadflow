@@ -64,6 +64,54 @@ if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
   echo "FAIL [backfill]: base ref '${BASE}' not found — fetch full history / check the base branch."
   exit 1
 fi
+# What this branch changes is what MERGING it into BASE would change (#363 reviews 1, 3 and 4). A diff
+# from the base's TIP (two dots) blamed the branch for what the base did after it split off. A diff from
+# the merge base missed two things the real merge does: with several merge bases it reads from ONE, so a
+# hand-resolved merge could undo what the other side brought in (review 1); and the merge follows a
+# RENAME on the base, so an edit to a file the base moved into a protected path lands there unseen
+# (review 4). `git merge-tree --write-tree` (git 2.38+) builds the merge without touching anything, and
+# the diff runs from BASE to it — what GitHub's own merge checkout gives. A branch that does not merge
+# cleanly fails closed: the platform cannot merge it either. An older git falls back to the merge base,
+# with one merge base only and no base-side rename of a file the branch changes; otherwise it fails
+# closed. No merge base at all (a shallow clone, unrelated history) fails closed too.
+_mbs="$(git merge-base --all "$BASE" HEAD 2>/dev/null)" || _mbs=""
+if [ -z "$_mbs" ]; then
+  echo "FAIL [backfill]: '${BASE}' and HEAD share no history — fetch full history (a shallow clone has no merge base) or check the base branch."
+  exit 1
+fi
+_mb_count="$(printf '%s\n' "$_mbs" | wc -l | tr -d ' ')"
+# The exit code says which case this is (review 5): 0 a clean merge, 1 a conflict, 129 a git older than
+# 2.38 (it does not know --write-tree), anything else git could not build it (a missing object, say).
+_mt=0
+_mt_out="$(git merge-tree --write-tree --no-messages "$BASE" HEAD 2>/dev/null)" || _mt=$?
+DIFF_TO="${_mt_out%%$'\n'*}"
+if [ "$_mt" = 0 ] && [ -n "$DIFF_TO" ] && git rev-parse --verify --quiet "${DIFF_TO}^{tree}" >/dev/null 2>&1; then
+  DIFF_FROM="$(git rev-parse --verify --quiet "${BASE}^{commit}")"
+  [ "$_mb_count" = 1 ] || echo "note [backfill]: '${BASE}' and HEAD have ${_mb_count} merge bases — the change is read as the merge into ${BASE} makes it."
+elif [ "$_mt" = 1 ]; then
+  echo "FAIL [backfill]: this branch does not merge cleanly into ${BASE}, so what it changes there cannot be read. Merge ${BASE} into the branch, resolve the conflicts, then push again."
+  exit 1
+elif [ "$_mt" != 129 ]; then
+  echo "FAIL [backfill]: git could not build the merge of this branch into ${BASE} (git merge-tree exit ${_mt}) — fetch the full history of both, then run again."
+  exit 1
+elif [ "$_mb_count" != 1 ]; then
+  echo "FAIL [backfill]: '${BASE}' and HEAD have ${_mb_count} merge bases, and this git (older than 2.38) cannot build the merge into ${BASE}. Merge ${BASE} into the branch, then push again."
+  exit 1
+else
+  DIFF_FROM="$_mbs"; DIFF_TO="HEAD"
+  # The fallback reads the branch's own diff, so an edit to a file the base has since moved would follow
+  # the rename into the merge unseen (review 4). Rename detection itself has limits the real merge does
+  # not share (review 5: `diff.renameLimit`), so it is not used: a path the base REMOVED — deleted or
+  # moved away — that the branch MODIFIES fails closed. Both deleting it is a clean merge, and passes.
+  _gone="$(git diff --no-renames --diff-filter=D --name-status -z "$_mbs" "$BASE" | tr '\n\0' '?\n' | awk 'NR % 2 == 0')" || { echo "FAIL [backfill]: git could not list what ${BASE} removed since the branch split off."; exit 1; }
+  _mine="$(git diff --no-renames --name-status -z "$_mbs" HEAD | tr '\n\0' '?\n' | awk 'NR % 2 == 1 { s = $0; next } s == "M" || s == "T"')" || { echo "FAIL [backfill]: git could not list what this branch changes."; exit 1; }
+  # A here-string, not a pipe: `grep -q` stops at the first match, and a large list written into a pipe
+  # it has left would end in SIGPIPE — read as "no match" under pipefail (review 5).
+  if [ -n "$_gone" ] && [ -n "$_mine" ] && grep -Fxq -f <(printf '%s\n' "$_mine") <<<"$_gone"; then
+    echo "FAIL [backfill]: ${BASE} removed or moved a file this branch changes, and this git (older than 2.38) cannot follow it into the merge. Merge ${BASE} into the branch, then push again."
+    exit 1
+  fi
+fi
 
 
 # Folded as macOS and Windows fold a name (E116, as E115): `Src/` IS `src/` there, and `src/Billing/` IS
@@ -167,10 +215,10 @@ fi
 # The two are paired here, NUL by NUL, into one line — `<modes and status><TAB><path>` — and a newline
 # inside a path becomes `?`: split into lines first, one file named `a<newline>b` put every later header
 # where its path should be, and every src/<feature> change after it was never seen (review 1).
-changed="$(git diff --no-renames --raw -z "${BASE}..HEAD" | while IFS= read -r -d '' h && IFS= read -r -d '' p; do
+changed="$(git diff --no-renames --raw -z "$DIFF_FROM" "$DIFF_TO" | while IFS= read -r -d '' h && IFS= read -r -d '' p; do
   printf '%s\t%s\n' "$h" "${p//$'\n'/?}"
 done)" || {
-  echo "FAIL [backfill]: git could not list the changes between '${BASE}' and HEAD."
+  echo "FAIL [backfill]: git could not list what this branch changes in '${BASE}'."
   exit 1
 }
 # The spellings of each src/<feature> folder, on the base and at HEAD: `<top>/<feature>`, once each.

@@ -15,6 +15,19 @@ in CI on every PR/MR and must pass before merge (build plan §C). Each is a smal
    `specs/<story>/contracts/`) without a `Contract-Change: yes` trailer **and** an updated, re-locked
    contract upstream, it **FAILS and routes back to the architecture gate**. The shared surface is
    never widened from inside a code repo (Phase 2 contract representation: delimited block + SHA-256 lock).
+   **A quote is not a change (issue #344):** a slice whose every changed file is Markdown holding exactly
+   one `<!-- CONTRACT-QUOTE:BEGIN -->` … `<!-- CONTRACT-QUOTE:END -->` block (plus blank lines and, first,
+   the optional title `# Contract slice — <story ID>`), the block an unbroken, in-order run of the locked
+   `CONTRACT-SURFACE` lines, passes with **no** trailer — when the Product is reached, `link.md` pins the current lock, and the locked `contract.md`
+   (the owner's, for a change-epic's pointer lock) still hashes to it. Anything it cannot prove still
+   needs the trailer. **The change is what merging the branch into the target would change** (issue
+   #363; `git merge-tree`, git 2.38+), so a slice that changed on the target after the branch split off is
+   not this branch's, and a rename on the target cannot carry an edit into a slice unseen. A branch that
+   does not merge cleanly fails closed; an older git reads from the merge base and fails closed on
+   several merge bases or a file the target removed or moved that the branch modifies. A slice the
+   branch's own commits touch counts even when the merge nets it to nothing (a "Rebase and merge"
+   replays every commit), and its quote proof then needs the branch rebased onto the target with no
+   merge commits; `docs/branch-protection.md` lists the merge methods the gate models.
    Every story whose slice the diff touches is checked, not just the first — see `references/check-gates.md`.
    A claimed `Contract-Change` against an epic that has **no lock at all** fails too: an epic on a short
    lane (`chore`/`spike`) has no architecture step and never locks a surface, so it may consume the

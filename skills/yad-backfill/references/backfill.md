@@ -58,7 +58,14 @@ follow the convention. Never finalise a boundary silently.
 
 ## The gate — `checks/backfill-check.sh`
 
-A change is blocked **only until the features it touches** have approved specs — not the whole repo:
+A change is blocked **only until the features it touches** have approved specs — not the whole repo.
+"The features it touches" are what merging the branch into the target would change (issue #363):
+`git merge-tree --write-tree <base> HEAD` (git 2.38+), diffed from the target. A file that changed on the
+target after the branch split off is not this branch's change; a file the target renamed into a feature
+that the branch edits at its old path IS (the merge carries the edit there); and with several merge bases
+nothing a hand-resolved merge undid is missed. A branch that does not merge cleanly, or a base that shares
+no history with HEAD (a shallow clone), **FAILS** closed. An older git reads from the merge base and fails
+closed on several merge bases, or when the target removed or moved a file the branch modifies.
 
 - For each `src/<feature>/` the diff touches, if `specs/backfill/<feature>/spec.md` exists it must be
   `verified: true`; otherwise **FAIL** (run backfill + approve for that feature first).
