@@ -35,6 +35,13 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 process.env.YAD_PLATFORM_LOGIN = '0';
 // E70: `yad doctor` reads each repo's branch protection with the same `gh`/`glab` login — off here too.
 process.env.YAD_PLATFORM_READ = '0';
+// Issue #362: `gate ci` asks the platform which branch a PR/MR is on before it moves the pointer — the
+// developer's real `gh`, which may name a real repo (`GH_REPO`). Every test gets a stub that cannot
+// answer (the "used as given" path), unless it passes its own `branchOf`.
+async function loadGateCi() {
+  const { gateCi } = await import('./gate.mjs');
+  return (root, opts = {}) => gateCi(root, { branchOf: () => ({ ok: false, reason: 'not asked in tests' }), ...opts });
+}
 // Strip ambient git identity env: GIT_AUTHOR_*/GIT_COMMITTER_* override repo-level `git config`,
 // and semantic-release exports them during `npm publish` (prepublishOnly runs this suite) — test
 // commits must carry the identity each test sets, not the publisher's.
@@ -4927,11 +4934,18 @@ test('gate sync: a merged-but-held review does not open a new comment round per 
     await gateSync(T, { epic: 'EP-test', today: day, reader: () => stuck });
   }
   assert.equal(fs.readFileSync(commentsFile, 'utf8'), before, 'an unchanged thread state re-records the same round, byte for byte');
+  // Nor a new dated side file or sync date per day (issue #362): the same threads and approvals under
+  // a new day's name were a daily commit with nothing new in them.
+  const reviews = fs.readdirSync(path.join(ep, 'reviews')).sort();
+  assert.ok(!reviews.some((f) => /2026-06-2[012]/.test(f)), `no dated review files for unchanged re-reads: ${reviews.join(', ')}`);
+  const ptr = JSON.parse(fs.readFileSync(path.join(ep, '.sdlc/product-prs.json'), 'utf8')).find((p) => p.artifact === 'architecture.md');
+  assert.equal(ptr.lastSyncedAt, '2026-06-09', 'the sync date stays on the day something last changed');
 
   // A genuinely new comment IS a new round — the idempotency must not swallow real activity.
   const escalated = { ...stuck, threads: [...stuck.threads, { id: 't2', resolved: false, login: 'ca', body: 'a second reviewer weighs in' }] };
   await gateSync(T, { epic: 'EP-test', today: '2026-06-23', reader: () => escalated });
   assert.deepEqual([...new Set(rounds().map((cm) => cm.round))].sort(), [1, 2], 'a changed thread state opens round 2');
+  assert.ok(fs.existsSync(path.join(ep, 'reviews/architecture--2026-06-23--comments.md')), 'a real change still writes its dated side file');
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -6299,7 +6313,7 @@ test('runCommit: the missing-Task warning is stage-aware (Product vs code repo)'
 // default branch at merge. Derives the epic/artifact from the review branch name.
 // ---------------------------------------------------------------------------------------------
 const { parseReviewBranch, artifactFromBase, artifactPaths, upsertProductPr, artifactBase, advanceState, markInReview, discoveryHash, DISCOVERY_FILES, skipStep, unskipStep, deferStep, undeferStep, unblockStep, optionalStepsOf, optionalStepsFor, isSkippableStep, authorStepFor, repairState, canonicalApprovals, canonicalComments, canonicalProductPrs, isPassed, isAuthored } = await import('./epic-state.mjs');
-const { gateCi } = await import('./gate.mjs');
+const gateCi = await loadGateCi();
 
 // issue #163. Sorting is only a fix if the order is TOTAL: `Array#sort` is stable, so records that tie
 // on the sort key keep their input order — which is exactly the rotating order being eliminated. A
@@ -10092,6 +10106,211 @@ test('gate ci --merged: a repeat sweep over two merged reviews commits nothing (
   assert.equal(git(ci, 'status', '--porcelain').toString().trim(), '', 'and must leave no working-tree churn');
   git(author, 'fetch', '-q', 'origin');
   assert.equal(show(author, 'origin/trunk:epics/EP-test/.sdlc/approvals.json'), ledger, 'approvals.json is byte-identical');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// issue #362: two merged review MRs for ONE artifact (a re-review on a fresh MR, or per-story
+// `stories-S01` / `stories-S02` branches, which all map to `stories/`). hub-prs.json holds one pointer
+// per artifact, so on the buggy code each sweep visit moved it to its own MR — a real diff every time,
+// committed as "advance … on merge" although the step was long done: 3 MRs × 96 sweeps = 288 commits/day.
+test('gate ci --merged: a sweep over two merged MRs for one artifact commits nothing once the step is done (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+
+  // The schedule lists every review MR merged in the window: the one that closed the step (#7) and
+  // an older or later one for the same artifact (#9).
+  const sweep = async (day) => {
+    for (const pr of [7, 9]) {
+      await gateCi(ci, { branch: 'review/EP-test/architecture', pr, merged: true, today: day, reader: () => fullApproval });
+    }
+  };
+  await sweep('2026-06-09'); // the advance itself — this one legitimately commits
+  git(author, 'fetch', '-q', 'origin');
+  const advanced = JSON.parse(show(author, 'origin/trunk:epics/EP-test/.sdlc/state.json'));
+  assert.equal(advanced.steps.find((s) => s.id === 'architecture-review').status, 'done');
+  const subjects = () => git(ci, 'log', '--format=%s', 'HEAD').toString().split('\n').filter((l) => l.includes('on merge'));
+  assert.equal(subjects().length, 1, 'one advance commit for one gate');
+
+  const count = () => git(ci, 'rev-list', '--count', 'HEAD').toString().trim();
+  const settled = count();
+  const pointer = show(author, 'origin/trunk:epics/EP-test/.sdlc/product-prs.json');
+  await sweep('2026-06-10');
+  await sweep('2026-06-11');
+  assert.equal(count(), settled, 'a repeat sweep must not commit a pointer flip');
+  assert.equal(git(ci, 'status', '--porcelain').toString().trim(), '', 'and must leave no working-tree churn');
+  git(author, 'fetch', '-q', 'origin');
+  assert.equal(show(author, 'origin/trunk:epics/EP-test/.sdlc/product-prs.json'), pointer, 'the pointer never moves back to the older MR');
+  assert.equal(JSON.parse(pointer).find((p) => p.artifact === 'architecture.md').number, 9, 'the newest review wins');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// issue #362, the twin: the same flip while the step is NOT done (merged, but the approvals are not
+// there yet). Each visit used to move the pointer to its own MR and commit a "sync" — the loop ran
+// for the whole 7-day window just the same.
+test('gate ci --merged: two merged MRs for one artifact do not flip the pointer while the step is open (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+
+  const noApprovals = { ...fullApproval, reviews: [] };
+  const sweep = async (day) => {
+    for (const pr of [7, 9]) {
+      await gateCi(ci, { branch: 'review/EP-test/architecture', pr, merged: true, today: day, reader: () => noApprovals });
+    }
+  };
+  await sweep('2026-06-09');
+  git(author, 'fetch', '-q', 'origin');
+  const st = JSON.parse(show(author, 'origin/trunk:epics/EP-test/.sdlc/state.json'));
+  assert.notEqual(st.steps.find((s) => s.id === 'architecture-review').status, 'done', 'no approvals: the step stays open');
+
+  // Later days too: an unchanged open step used to re-stamp `lastSyncedAt` and write a fresh dated
+  // approval record every day — one commit a day for the whole window.
+  const count = () => git(ci, 'rev-list', '--count', 'HEAD').toString().trim();
+  const settled = count();
+  await sweep('2026-06-10');
+  await sweep('2026-06-11');
+  assert.equal(count(), settled, 'a repeat sweep must not commit a pointer flip on an open step');
+  assert.equal(git(ci, 'status', '--porcelain').toString().trim(), '', 'and must leave no working-tree churn');
+  git(author, 'fetch', '-q', 'origin');
+  const ptr = JSON.parse(show(author, 'origin/trunk:epics/EP-test/.sdlc/product-prs.json'));
+  assert.equal(ptr.find((p) => p.artifact === 'architecture.md').number, 9, 'the newest review wins');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// issue #362 review: numbers come from creation order, merges happen in any order. A newer MR (#9)
+// merged while still held must not block an OLDER one (#7) that merges later with the approvals the
+// gate needs — the trial read lets #7 advance the step, and the sweep is quiet afterwards.
+test('gate ci --merged: an older merged review that passes still advances past a held newer one (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+
+  const reader = (_p, n) => (n === 7 ? fullApproval : { ...fullApproval, reviews: [] });
+  await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 9, merged: true, today: '2026-06-09', reader });
+  await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 7, merged: true, today: '2026-06-09', reader });
+  git(author, 'fetch', '-q', 'origin');
+  const st = JSON.parse(show(author, 'origin/trunk:epics/EP-test/.sdlc/state.json'));
+  assert.equal(st.steps.find((s) => s.id === 'architecture-review').status, 'done', 'the approved older review advances the gate');
+
+  const count = () => git(ci, 'rev-list', '--count', 'HEAD').toString().trim();
+  const sweep = async (day) => { for (const pr of [7, 9]) await gateCi(ci, { branch: 'review/EP-test/architecture', pr, merged: true, today: day, reader }); };
+  // The first sweep moves the pointer forward to the newer #9 once — a newer review must be read, or a
+  // re-review of a done step would be lost (#156) — and from then on nothing moves.
+  const before = Number(count());
+  await sweep('2026-06-10');
+  assert.ok(Number(count()) - before <= 1, 'at most one commit: the pointer moves forward once');
+  const settled = count();
+  await sweep('2026-06-11');
+  await sweep('2026-06-12');
+  assert.equal(count(), settled, 'and the sweep settles once the step is done');
+  assert.equal(git(ci, 'status', '--porcelain').toString().trim(), '', 'with no working-tree churn');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// A mistyped `--pr` on the manual recovery must not become the pointer: numbers only grow, so a wrong
+// high number would stay there and outrank every real review after it.
+test('gate ci --merged: refuses a PR number that is not on the review branch (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+  const before = git(ci, 'rev-list', '--count', 'HEAD').toString().trim();
+  const branchOf = (_p, n) => ({ ok: true, branch: n === 97 ? 'review/EP-other/epic' : 'review/EP-test/architecture' });
+  const prev = process.exitCode;
+  await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 97, merged: true, today: '2026-06-09', reader: () => fullApproval, branchOf });
+  assert.equal(process.exitCode, 1, 'a wrong number fails the run');
+  process.exitCode = prev;
+  assert.equal(git(ci, 'rev-list', '--count', 'HEAD').toString().trim(), before, 'and writes nothing');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// The twin of `gate sync --pr`: a number the platform cannot place is used as given — but said.
+test('gate ci --merged: warns when the platform cannot confirm the PR number (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+  const lines = [];
+  const orig = console.log;
+  console.log = (l) => lines.push(String(l));
+  try {
+    await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 7, merged: true, today: '2026-06-09', reader: () => fullApproval, branchOf: () => ({ ok: false, reason: 'offline' }) });
+  } finally { console.log = orig; }
+  assert.match(lines.join('\n'), /could not confirm #7 belongs to review\/EP-test\/architecture \(offline\) — using it as given/);
+  const st = JSON.parse(fs.readFileSync(path.join(ci, 'epics/EP-test/.sdlc/state.json'), 'utf8'));
+  assert.equal(st.steps.find((s) => s.id === 'architecture-review').status, 'done', 'and the merge still advances');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// The trial read of an older review: a failed platform read is "could not check", not "does not
+// pass" — the run goes red and nothing moves. Its own verdict lines stay out of the log.
+test('gate ci --merged: an older review whose read fails turns the run red and moves nothing (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+  const reader = (_p, n) => (n === 7 ? { ok: false, reason: 'boom' } : { ...fullApproval, reviews: [] });
+  await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 9, merged: true, today: '2026-06-09', reader });
+  const prev = process.exitCode;
+  process.exitCode = 0;
+  const lines = [];
+  const orig = console.log;
+  console.log = (l) => lines.push(String(l));
+  try {
+    await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 7, merged: true, today: '2026-06-09', reader });
+  } finally { console.log = orig; }
+  assert.equal(process.exitCode, 1, 'a failed read of the older review fails the run');
+  process.exitCode = prev;
+  const out = lines.join('\n');
+  assert.match(out, /could not read PR #7 to check it against the gate/);
+  assert.doesNotMatch(out, /does not pass the gate/, 'never "does not pass" for a review it could not read');
+  assert.doesNotMatch(out, /boom read|PR #7, rule/, 'the trial prints nothing of its own');
+  const ptr = JSON.parse(fs.readFileSync(path.join(ci, 'epics/EP-test/.sdlc/product-prs.json'), 'utf8'));
+  assert.equal(ptr.find((p) => p.artifact === 'architecture.md').number, 9);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// A Product that moved platform starts its numbering again: an old pointer from the other platform is
+// not "newer", and the first move records a fresh URL and sync date, never the old review's.
+test('gate ci --merged: a pointer from another platform never outranks a new review (issue #362)', async () => {
+  const { T, author, ci } = scaffoldCiProduct();
+  git(author, 'checkout', '-q', 'trunk');
+  git(author, 'merge', '-q', '--no-ff', 'review/EP-test/architecture', '-m', 'merge review/EP-test/architecture');
+  git(author, 'push', '-q', 'origin', 'trunk');
+  git(ci, 'fetch', '-q', 'origin');
+  git(ci, 'checkout', '-q', '-B', 'trunk', 'origin/trunk');
+  const file = path.join(ci, 'epics/EP-test/.sdlc/product-prs.json');
+  const platform = 'github'; // scaffoldCiProduct's Product platform
+  const ptrs = [{ step: 'architecture-review', artifact: 'architecture.md', platform: platform === 'gitlab' ? 'github' : 'gitlab',
+    number: 50, url: 'https://old.example/50', branch: 'review/EP-test/architecture', lastSyncedAt: '2026-01-01', nudged: ['al'] }];
+  for (const f of ['product-prs.json', 'hub-prs.json']) fs.writeFileSync(path.join(ci, 'epics/EP-test/.sdlc', f), JSON.stringify(ptrs, null, 2) + '\n');
+  git(ci, 'add', '-A');
+  git(ci, 'commit', '-q', '-m', 'seed: pointer from the old platform');
+  await gateCi(ci, { branch: 'review/EP-test/architecture', pr: 7, merged: true, today: '2026-06-09', reader: () => fullApproval });
+  const now = JSON.parse(fs.readFileSync(file, 'utf8')).find((p) => p.artifact === 'architecture.md');
+  assert.equal(now.number, 7, 'the new review is read, not the old platform\'s #50');
+  assert.equal(now.platform, platform);
+  assert.notEqual(now.url, 'https://old.example/50', 'the old review\'s URL is not carried to a new number');
+  assert.ok(!(now.nudged || []).includes('al'), 'nor its nudges');
+  assert.notEqual(now.lastSyncedAt, '2026-01-01', 'nor its sync date');
+  const st = JSON.parse(fs.readFileSync(path.join(ci, 'epics/EP-test/.sdlc/state.json'), 'utf8'));
+  assert.equal(st.steps.find((s) => s.id === 'architecture-review').status, 'done');
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -19007,7 +19226,7 @@ function scaffoldLegacyProduct({ verified = true, checks = {}, reviewed = true }
 }
 
 test('gate ci: on a verified Product the gate bot moves the product level to foundation/ — one commit, no backup (E75 follow-up)', async () => {
-  const { gateCi } = await import('./gate.mjs');
+  const gateCi = await loadGateCi();
   const { T, origin, ci } = scaffoldLegacyProduct();
   try {
     await grab(() => gateCi(ci, { today: '2026-09-13' }));
@@ -19031,7 +19250,7 @@ test('gate ci: on a verified Product the gate bot moves the product level to fou
 });
 
 test('gate ci: the product level stays put on stale checks, on a local ledger, and on a review head before merge (E75 follow-up)', async () => {
-  const { gateCi } = await import('./gate.mjs');
+  const gateCi = await loadGateCi();
   const cases = [
     // A guard that knows only epics/: moving the ledger under it would leave foundation/ unguarded.
     ['stale checks', { checks: { 'checks/ledger-guard.sh': '#!/usr/bin/env bash\ncase "$f" in\n  epics/*) ;;\nesac\n' } }, {}, /wired checks predate the Foundation.*yad update/],
@@ -19072,7 +19291,7 @@ test('gate ci: the product level\'s own review merges — the same run advances 
   // The common real-world order on a verified Product: the discovery review is open, so no move yet; its
   // merge event advances it where it is, flips the section's status, and only then does the move run —
   // four stagers on paths that vanish mid-run. Everything must land on the default branch as one commit.
-  const { gateCi } = await import('./gate.mjs');
+  const gateCi = await loadGateCi();
   const { T, origin, ci } = scaffoldLegacyProduct({ reviewed: false });
   const prev = process.exitCode;
   try {
@@ -19105,7 +19324,7 @@ test('gate ci: the product level\'s own review merges — the same run advances 
 });
 
 test('gate ci: a merge of review/EP-discovery/* after the move is read from foundation/, and a merge with no ledger anywhere is red (E75 follow-up)', async () => {
-  const { gateCi } = await import('./gate.mjs');
+  const gateCi = await loadGateCi();
   const { T, ci } = scaffoldLegacyProduct();
   const prev = process.exitCode;
   try {
@@ -28288,7 +28507,8 @@ test('E122: every caller of the default-branch guard hands it the Product root',
 // E124 review: with no platform, `gate sync` / `gate ci` name the settings file that is actually there. Naming
 // product.json on a Product that has only hub.json would have a person create a one-key product.json (E122).
 test('E124: the no-platform warning of gate sync and gate ci names the settings file on disk', async () => {
-  const { gateSync, gateCi } = await import('./gate.mjs');
+  const { gateSync } = await import('./gate.mjs');
+  const gateCi = await loadGateCi();
   for (const [name, want, other] of [['hub.json', /\(\.sdlc\/hub\.json\)/, /product\.json/], ['product.json', /\(\.sdlc\/product\.json\)/, /hub\.json/]]) {
     const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-noplatform-'));
     try {

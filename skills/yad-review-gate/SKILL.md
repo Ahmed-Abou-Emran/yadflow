@@ -221,8 +221,10 @@ has the same commenters and counts, it is rewritten in place, so re-running `syn
 it. **Manual approvals (no `source` tag) are never touched.** For the architecture+contract step, the
 fingerprint a bridge approval is bound to is the contract surface, so a re-lock makes every approval of
 the old surface stale: it stays on disk and no longer counts (re-lock invalidates platform approvals
-too). Then refresh the `approved.md`
-record, set the PR ledger's `lastSyncedAt`, and **re-evaluate Step 3**. **Never hand-write either PR-ledger file.** It lives under two names until v5 — `product-prs.json` (read first) and `hub-prs.json` — and the engine writes both together. Writing one leaves the pair disagreeing, and then every yad command refuses (YAD-STATE-008) until `yad migrate --apply` settles it. Use `yad gate`, which keeps them in step.  Under the PR-driven CLI (`yad
+too). Then, when the sync learned
+something (an approval, a comment round, the step state or a nudge changed, or the review was never
+synced), refresh the `approved.md` record and set the PR ledger's `lastSyncedAt`; an unchanged re-sync
+writes neither (issue #362). Always **re-evaluate Step 3**. **Never hand-write either PR-ledger file.** It lives under two names until v5 — `product-prs.json` (read first) and `hub-prs.json` — and the engine writes both together. Writing one leaves the pair disagreeing, and then every yad command refuses (YAD-STATE-008) until `yad migrate --apply` settles it. Use `yad gate`, which keeps them in step.  Under the PR-driven CLI (`yad
 gate sync`), `sync` advances the step when Step 3 passes on a **merged**, fully-resolved, approved PR
 (the merge is the human act); otherwise it records state and holds the step `in_review`.
 

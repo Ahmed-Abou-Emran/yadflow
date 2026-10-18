@@ -103,7 +103,15 @@ export const c = {
   red: (s) => paint('31', s),
   cyan: (s) => paint('36', s),
 };
+// `quietly(fn)`: run `fn` with every line below silenced — for a dry run whose verdict is only an
+// input to the caller's own decision, and would read as a second verdict in a CI log (issue #362).
+let muted = 0;
+export async function quietly(fn) {
+  muted++;
+  try { return await fn(); } finally { muted--; }
+}
 export const log = (s = '') => {
+  if (muted) return;
   if (!jsonRun) return console.log(s);
   jsonRun.afterFail = false;
   console.error(s);
@@ -112,22 +120,25 @@ export const step = (n, total, title) => log(`\n${c.cyan(`[${n}/${total}]`)} ${c
 export const ok = (s) => log(`  ${c.green('✓')} ${s}`);
 export const info = (s) => log(`  ${c.dim('•')} ${s}`);
 export const warn = (s) => {
+  if (muted) return;
   if (jsonRun) jsonRun.warnings.push(stripAnsi(s));
   log(`  ${c.yellow('!')} ${s}`);
 };
 export const fail = (s) => {
+  if (muted) return;
   log(`  ${c.red('✗')} ${s}`);
   if (jsonRun) { jsonRun.failures.push({ error: stripAnsi(s), hint: null }); jsonRun.afterFail = true; }
 };
 // A hint belongs to a failure only when it is the very next line under it — never a later `hand`.
 export const hand = (s) => {
+  if (muted) return;
   const attach = jsonRun?.afterFail ? jsonRun.failures.at(-1) : null;
   log(`  ${c.yellow('→')} ${s}`);
   if (attach) attach.hint = stripAnsi(s);
 };
 // Like `info`, but to STDERR — for diagnostics emitted by commands whose STDOUT must stay pure (e.g. a
 // JSON bundle a tool parses). Keeps the human hint visible without corrupting machine-readable output.
-export const note = (s) => console.error(`  ${c.dim('•')} ${s}`);
+export const note = (s) => { if (!muted) console.error(`  ${c.dim('•')} ${s}`); };
 // Dimmed, indented guidance under a step — what it does / why / what to enter / what skipping means.
 // Accepts a string or an array of lines so a knowledgeable user can skim past it.
 export const guide = (lines) => { for (const l of (Array.isArray(lines) ? lines : [lines])) log(`    ${c.dim(l)}`); };

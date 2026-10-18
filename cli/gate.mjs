@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  c, log, ok, info, warn, hand, fail, note, readJSON, readJSONStrict, writeJSON, run, pushWithRebase, isPlainObject, writeMirrored, emitJSON, refuse, collectWarning,
+  c, log, ok, info, warn, hand, fail, note, quietly, readJSON, readJSONStrict, writeJSON, run, pushWithRebase, isPlainObject, writeMirrored, emitJSON, refuse, collectWarning,
 } from './lib.mjs';
 import { OWNING_COMMIT_ENV } from './hook.mjs';
 import { PROJECT_FILES, isVerifiedLedger , productConfigPath, settingsEditHint } from './manifest.mjs';
@@ -633,7 +633,7 @@ function stageIndexIfClean(root, git, commits = null) {
   return !git('diff', '--cached', '--quiet', '--', INDEX_FILE).ok;
 }
 
-export async function gateSync(root, { epic, artifact, today, reader = readPr, finder = findPrForBranch, branchOf = prBranch, poster = postComment, number = null, local = false, dryRun = false, headCount = null } = {}) {
+export async function gateSync(root, { epic, artifact, today, reader = readPr, finder = findPrForBranch, branchOf = prBranch, poster = postComment, number = null, local = false, dryRun = false, headCount = null, probe = null } = {}) {
   const { productConfig } = loadProduct(root);
   if (!productConfig?.platform) { warn(`no Product platform configured (${settingsEditHint(root)}) — local gate, nothing to sync`); return { epic, synced: 0, advanced: 0, written: false, gates: [] }; }
   const platform = productConfig.platform;
@@ -688,7 +688,12 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
     const s = findReviewStep(state, p.artifact);
     return s ? state.steps.indexOf(s) : Number.MAX_SAFE_INTEGER;
   };
-  const targets = [...resolved.targets].sort((a, b) => stepIndex(a) - stepIndex(b));
+  // `probe` (gateCi only, dry runs only): read this PR/MR in place of the recorded pointer, to ask whether
+  // an OLDER merged review passes the gate before the pointer is moved back to it (issue #362). A copy, so
+  // nothing about the recorded pointer changes.
+  if (probe != null && !dryRun) throw new Error('gateSync: probe is for dry runs only');
+  const targets = [...resolved.targets].map((p) => (probe != null && p.artifact === artifact ? { ...p, number: probe } : p))
+    .sort((a, b) => stepIndex(a) - stepIndex(b));
   if (!targets.length) {
     // The stamp still lands (E64): an epic with no review PR on file is exactly one no later sync would
     // write, so `yad doctor`'s "run `yad gate sync <epic>`" would otherwise repeat for ever.
@@ -747,6 +752,9 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
     warnUnlockedContract(epicDir, pr.artifact);
     warnIncompleteDiscovery(epicDir, pr.artifact);
     const approvalsBefore = JSON.stringify(approvals);
+    const commentsBefore = JSON.stringify(comments);
+    const stateBefore = JSON.stringify(state);
+    const nudgedBefore = JSON.stringify(pr.nudged || []);
     const recs = mapApprovers(pull.reviews, { headOid: pull.headOid });
     approvals = upsertBridge(approvals, recs, { stepId: step.id, artifact: pr.artifact, curHash, today, prNumber: pr.number ?? null, closed: alreadyDone, aliases, clashed, accepted: acceptedHashes(epicDir, pr.artifact) });
 
@@ -769,8 +777,11 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
     // `chore(gate): advance … [skip ci]` commit on the default branch — every 15 minutes for a week.
     // That is the same churn the resource_group fix exists to stop, so it must not be reintroduced here.
     if (!alreadyDone) {
-      if (!readOnly) writeComments(epicDir, base(pr.artifact), today, blocking);
       comments = recordComments(comments, { artifact: pr.artifact, stepId: step.id, today, blocking, aliases, clashed });
+      // The dated side file only when the round really changed (issue #362): a merged review held by one
+      // unresolved thread is re-read every 15 minutes for a week, and the same threads re-written under
+      // each new day's name was a daily commit with nothing new in it.
+      if (!readOnly && JSON.stringify(comments) !== commentsBefore) writeComments(epicDir, base(pr.artifact), today, blocking);
     }
 
     // Social nudge: a bare APPROVE (no verified engagement) still counts (soft default), but the bot
@@ -857,12 +868,19 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
       state = markInReview(state, step, { by, date: today, pr: pr.number ?? null, hash: curHash });
       for (const m of pred.missing) hand(`still needed: ${m}`);
     }
-    // Stamp when this run actually learned something: an open step every time, and a closed one only
-    // when the approval record genuinely changed (a re-opened review that was re-approved). Otherwise
-    // an identical re-sync would rewrite the date daily and churn the ledger, while a real re-review
-    // would leave no trace of when it was reconciled.
-    if (!alreadyDone) { pr.lastSyncedAt = today; open.push(pr); }
-    else if (JSON.stringify(approvals) !== approvalsBefore) pr.lastSyncedAt = today;
+    // Stamp only when this run actually learned something. A closed step: when the approval record
+    // genuinely changed (a re-opened review that was re-approved). An open step: when its approvals,
+    // comment rounds, state or nudges changed, or it was never synced. Otherwise an identical re-sync
+    // rewrote the date — and a fresh dated approval record — every day: a merged review the gate still
+    // holds is re-read by the sweep for a week, one commit a day with nothing new (issue #362), while a
+    // real change would leave no trace of when it was reconciled.
+    const learned = JSON.stringify(approvals) !== approvalsBefore;
+    if (!alreadyDone) {
+      if (learned || pr.lastSyncedAt == null || JSON.stringify(comments) !== commentsBefore
+        || JSON.stringify(state) !== stateBefore || JSON.stringify(pr.nudged || []) !== nudgedBefore) {
+        pr.lastSyncedAt = today; open.push(pr);
+      }
+    } else if (learned) pr.lastSyncedAt = today;
     synced++;
   }
 
@@ -957,7 +975,7 @@ export function convertProductLevel(root, productConfig, { git = (...a) => run('
   }
 }
 
-export async function gateCi(root, { branch, pr, merged = false, today, push = true, reader = readPr } = {}) {
+export async function gateCi(root, { branch, pr, merged = false, today, push = true, reader = readPr, branchOf = prBranch } = {}) {
   const { productConfig } = loadProduct(root);
   if (!productConfig?.platform) { warn(`no Product platform configured (${settingsEditHint(root)}) — nothing to sync`); return { synced: 0, committed: false, pushed: false }; }
   const git = (...args) => run('git', args, { cwd: root });
@@ -1049,7 +1067,49 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     // The merge event may fire before any hub-prs record exists (Path B never wrote one pre-merge) —
     // build the entry from the event itself so the advance commit carries it onto the default branch.
     const existing = (ledger.productPrs || []).find((x) => x.artifact === job.artifact);
-    const number = Number(job.pr) || existing?.number || null;
+    // Issue #362: a merge run moves the pointer BACK to an older PR/MR only when that review passes the
+    // gate. The scheduled sweep revisits EVERY review merged in its window, and several can share one
+    // artifact (a re-review on a fresh MR; `stories-S01`, `stories-S02` all map to `stories/`). Moving
+    // the one pointer to each in turn was a real diff on every visit — committed and pushed every 15
+    // minutes for 7 days, done step or not. Numbers only grow within one repo, so the newest review wins
+    // and the sweep settles; a newer review still moves it forward, so a re-review of a done step is read
+    // (#156). But an older merged review that PASSES while the newer one is held must still advance the
+    // gate — that is also the manual recovery — so an open step asks first, in a dry run: once it
+    // passes, the step is done and every later visit is quiet.
+    // A pointer from another platform (the Product moved, and numbering started again) is not newer.
+    let older = merged && existing?.number != null && Number(job.pr) > 0 && Number(job.pr) < existing.number
+      && (existing.platform == null || existing.platform === productConfig.platform);
+    let unread = false;
+    if (older && !isPassed(step)) {
+      // Silenced: its verdict is only this decision's input, and would read as a second verdict in the
+      // CI log. Its exit code is this decision's too — a failed read is said, and failed, below.
+      const code = process.exitCode;
+      const trial = await quietly(() => gateSync(root, { epic: job.epic, artifact: job.artifact, today, reader, dryRun: true, probe: Number(job.pr), headCount: sweepCount }));
+      process.exitCode = code;
+      if (trial.gates.some((g) => g.passed)) older = false;
+      else if (!trial.gates.length) {
+        // A failed platform read is not "does not pass": the gate cannot tell, so the run goes red.
+        fail(`${job.epic}: could not read PR #${job.pr} to check it against the gate — syncing #${existing.number}, the review recorded for ${job.artifact}`);
+        process.exitCode = 1;
+        unread = true;
+      }
+    }
+    if (older && !unread) info(`${job.epic}: PR #${job.pr} is older than #${existing.number}, the review recorded for ${job.artifact}, and ${isPassed(step) ? `the step is already ${stepStatus(step) === 'deferred' ? 'deferred' : stepStatus(step) === 'skipped' ? 'skipped' : 'done'}` : 'does not pass the gate'} — syncing #${existing.number}`);
+    // Before the pointer moves to a number other than the one it holds, ask the platform that the PR/MR is on
+    // this review branch: a mistyped `--pr` on the manual recovery would otherwise become the pointer,
+    // and with numbers that only grow it could stay there (issue #362 review). A platform that cannot
+    // answer is not evidence against it — the same rule `gate sync --pr` follows.
+    if (merged && !older && Number(job.pr) > 0 && existing?.number !== Number(job.pr)) {
+      const head = branchOf(productConfig.platform, Number(job.pr), { cwd: root });
+      if (head.ok && head.branch !== job.branch) {
+        fail(`${job.epic}: #${job.pr} is on '${head.branch}', not the review branch '${job.branch}' — check the --pr number`);
+        process.exitCode = 1;
+        continue;
+      }
+      // Said, as `gate sync --pr` says it: an unconfirmed number is used as given, never silently.
+      if (!head.ok) warn(`could not confirm #${job.pr} belongs to ${job.branch} (${head.reason}) — using it as given`);
+    }
+    const number = older ? existing.number : Number(job.pr) || existing?.number || null;
     // Same migration as gateSync, at the one point CI knows the OLD pointer: stamp the approvals it
     // recorded before replacing it, or a re-review on the replacement PR can never be told from a
     // re-read of the old one and stays permanently stale.
@@ -1068,10 +1128,13 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
         info(`${job.epic}: recorded PR #${existing.number} on ${stamped} approval(s) that predate PR provenance`);
       }
     }
-    if (!existing || existing.number !== number || existing.branch !== job.branch) {
+    if (!older && (!existing || existing.number !== number || existing.branch !== job.branch)) {
       ledger.productPrs = upsertProductPr(ledger.productPrs, {
+        // A new number is a new review: its URL, nudges and sync date are not the old one's.
         step: step.id, artifact: job.artifact, platform: productConfig.platform, number,
-        url: existing?.url ?? null, branch: job.branch, lastSyncedAt: existing?.lastSyncedAt ?? null,
+        ...(existing?.number === number
+          ? { url: existing?.url ?? null, branch: job.branch, lastSyncedAt: existing?.lastSyncedAt ?? null, ...(existing?.nudged ? { nudged: existing.nudged } : {}) }
+          : { url: null, branch: job.branch, lastSyncedAt: null }),
       });
       writeMirrored(ledger.files.productPrs, ledger.files.productPrsLegacy, ledger.productPrs);
     }
@@ -1225,7 +1288,11 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     ? 'rebuild the Product index'
     : !branch
       ? 'scheduled gate sync' // sweep is a batch; one subject for the run
-      : `advance ${jobs[0].epic}/${jobs[0].base} on merge`;
+      // Say "advance" only when a step really advanced (issue #362): a re-read of a done step that
+      // still changed the ledger is a sync, and a log full of repeated "advance" lines hides the real one.
+      : advancedEpics.size
+        ? `advance ${jobs[0].epic}/${jobs[0].base} on merge`
+        : `sync ${jobs[0].epic}/${jobs[0].base} after merge`;
   // The move, when there is one, is the subject: it is the change a reader of the default branch most
   // needs to find, and a sync subject would name a folder the same commit deletes. The sync goes in the body.
   const subject = moved
