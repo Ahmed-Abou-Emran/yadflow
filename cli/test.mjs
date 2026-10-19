@@ -28902,3 +28902,116 @@ test('E124: the keep rules are as narrow as their reasons', () => {
   assert.deepEqual(rules('docs/CHANGELOG.md', 'the hub'), [null]);
 });
 // hub-keep:end
+
+// ---- #345: where a code repo's CI gets YAD_PRODUCT_TOKEN (names only) --------------------------------------
+const { readTokenPlacement, tokenLine, readExpiringProductTokens } = await import('./product-token.mjs');
+
+test('#345 product token: GitHub — repo secret, organisation secret, missing, and an unread org list', () => {
+  const read = (calls) => readTokenPlacement({ platform: 'github', gitUrl: GH_URL }, { runner: fakePlatform({ calls }).runner, env: ON });
+  let r = read([[/actions\/secrets/, 200, { total_count: 2, secrets: [{ name: 'OTHER' }, { name: 'YAD_PRODUCT_TOKEN' }] }]]);
+  assert.deepEqual([r.known, r.project.set], [true, true]);
+  assert.equal(tokenLine(r, { name: 'app' }).status, 'ok');
+  r = read([[/actions\/secrets/, 200, { secrets: [] }], [/organization-secrets/, 200, { secrets: [{ name: 'YAD_PRODUCT_TOKEN' }] }]]);
+  assert.match(tokenLine(r, { name: 'app' }).message, /organisation secret shared with it/);
+  r = read([[/actions\/secrets/, 200, { secrets: [] }], [/organization-secrets/, 200, { secrets: [] }]]);
+  let line = tokenLine(r, { name: 'app' });
+  assert.equal(line.status, 'warn');
+  assert.match(line.message, /^app: YAD_PRODUCT_TOKEN is not set for its CI — contract-check, lineage-check, epic-open and reconcile-debt-check cannot read the Product there and only defer on every PR$/);
+  assert.match(line.hint, /gh secret set YAD_PRODUCT_TOKEN --repo acme\/app/);
+  r = read([[/actions\/secrets/, 200, { secrets: [] }], [/organization-secrets/, 403]]);
+  line = tokenLine(r, { name: 'app' });
+  assert.equal(line.status, 'warn');
+  assert.match(line.message, /could not be read \(GitHub refused/);
+  // The repo's own list unread: not known, never "missing".
+  r = read([[/actions\/secrets/, 403]]);
+  assert.equal(r.known, false);
+  assert.equal(tokenLine(r, { name: 'app' }).status, 'info');
+  // A full page without the name proves nothing.
+  r = read([[/actions\/secrets/, 200, { secrets: Array.from({ length: PAGE }, (_, i) => ({ name: `S${i}` })) }]]);
+  assert.equal(r.known, false);
+});
+
+test('#345 product token: GitLab — project, protected, environment-scoped, from a group (naming its other repos), missing', () => {
+  const URL3 = 'https://gitlab.com/acme/team/app.git';
+  const read = (calls) => readTokenPlacement({ platform: 'gitlab', gitUrl: URL3 }, { runner: fakePlatform({ calls }).runner, env: ON });
+  const tok = (extra = {}) => ({ key: 'YAD_PRODUCT_TOKEN', value: 'glpat-SECRET', protected: false, environment_scope: '*', ...extra });
+  const noGroups = [[/^groups\//, 200, []]];
+  let r = read([[/^projects\/acme%2Fteam%2Fapp\/variables/, 200, [tok()]], ...noGroups]);
+  assert.equal(tokenLine(r, { name: 'app' }).status, 'ok');
+  // The value is dropped at the call: nothing of it is kept.
+  assert.doesNotMatch(JSON.stringify(r), /SECRET|glpat/);
+  r = read([[/^projects\/.*\/variables/, 200, [tok({ protected: true })]], ...noGroups]);
+  let line = tokenLine(r, { name: 'app' });
+  assert.equal(line.status, 'warn');
+  assert.match(line.message, /PROTECTED variable, which only pipelines on protected branches get/);
+  assert.match(line.hint, /untick "Protect variable"/);
+  r = read([[/^projects\/.*\/variables/, 200, [tok({ environment_scope: 'production' })]], ...noGroups]);
+  assert.match(tokenLine(r, { name: 'app' }).message, /limited to the environment production/);
+  // From a group: nearest first, and the other registered repos in that group named.
+  const asked = fakePlatform({ calls: [[/^projects\/.*\/variables/, 200, []], [/^groups\/acme%2Fteam\/variables/, 200, [tok()]], [/^groups\/acme\/variables/, 200, []]] });
+  r = readTokenPlacement({ platform: 'gitlab', gitUrl: URL3 }, { runner: asked.runner, env: ON });
+  assert.deepEqual(r.groups.map((g) => [g.path, g.set]), [['acme/team', true], ['acme', false]]);
+  line = tokenLine(r, { name: 'app', others: (g) => (g === 'acme/team' ? ['web', 'mobile'] : []) });
+  assert.equal(line.status, 'warn');
+  assert.match(line.message, /^app: YAD_PRODUCT_TOKEN comes from the group acme\/team, so every project in that group gets a token that can read the Product \(registered here: web, mobile\)$/);
+  assert.match(line.hint, /set it on the project instead/);
+  // Set on the project AND a group: still said.
+  r = read([[/^projects\/.*\/variables/, 200, [tok()]], [/^groups\/acme%2Fteam\/variables/, 200, []], [/^groups\/acme\/variables/, 200, [tok()]]]);
+  assert.match(tokenLine(r, { name: 'app' }).message, /set on the project, and the group acme also sets YAD_PRODUCT_TOKEN/);
+  // Missing everywhere, and missing with a group that could not be read.
+  r = read([[/^projects\/.*\/variables/, 200, []], ...noGroups]);
+  assert.match(tokenLine(r, { name: 'app' }).message, /is not set on the project or its groups — .* on every merge request$/);
+  r = read([[/^projects\/.*\/variables/, 200, []], [/^groups\/acme%2Fteam\//, 403], [/^groups\/acme\//, 200, []]]);
+  assert.match(tokenLine(r, { name: 'app' }).message, /the group acme\/team could not be read \(GitLab refused/);
+  // Off: not known, and nothing asked.
+  const off = fakePlatform({ calls: [] });
+  r = readTokenPlacement({ platform: 'gitlab', gitUrl: URL3 }, { runner: off.runner, env: { YAD_PLATFORM_READ: '0' } });
+  assert.equal(r.known, false);
+  assert.deepEqual(off.asked, []);
+});
+
+test('#345 product token: a GitLab Product\'s access tokens that can clone it and expire within 30 days', () => {
+  const read = (body, today = '2026-10-19') => readExpiringProductTokens({ gitUrl: GL_URL }, { runner: fakePlatform({ calls: [[/access_tokens/, 200, body]] }).runner, env: ON, today });
+  const r = read([
+    { id: 1, name: 'ci-read', scopes: ['read_repository'], expires_at: '2026-11-01', active: true, revoked: false },
+    { id: 2, name: 'far', scopes: ['read_repository'], expires_at: '2027-06-01', active: true },
+    { id: 3, name: 'wrong-scope', scopes: ['read_api'], expires_at: '2026-10-20', active: true },
+    { id: 4, name: 'gone', scopes: ['api'], expires_at: '2026-10-20', active: false },
+    { id: 5, name: 'no-expiry', scopes: ['api'], expires_at: null, active: true },
+    { id: 6, name: 'edge', scopes: ['api'], expires_at: '2026-11-18', active: true },
+  ]);
+  assert.deepEqual(r.soon.map((t) => [t.name, t.expires, t.days]), [['ci-read', '2026-11-01', 13], ['edge', '2026-11-18', 30]]);
+});
+
+test('#345 doctor: one product-token line per connected code repo, none for the Product\'s own repo or with no git_url', async () => {
+  const { productTokenChecks } = await import('./doctor.mjs');
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'yad-345-'));
+  try {
+    fs.mkdirSync(path.join(T, '.sdlc'), { recursive: true });
+    fs.writeFileSync(path.join(T, '.sdlc/product.json'), JSON.stringify({ platform: 'gitlab', git_url: 'https://gitlab.com/acme/product.git', default_branch: 'main' }));
+    fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [
+      { name: 'api', platform: 'gitlab', git_url: 'https://gitlab.com/acme/team/api.git' },
+      { name: 'web', platform: 'gitlab', git_url: 'https://gitlab.com/acme/team/web.git' },
+      { name: 'mono', platform: 'gitlab', git_url: 'git@gitlab.com:Acme/Product.git' },
+      { name: 'local', platform: 'local' },
+    ] }));
+    const f = fakePlatform({ calls: [
+      [/^projects\/acme%2Fteam%2Fapi\/variables/, 200, []], [/^projects\/acme%2Fteam%2Fweb\/variables/, 200, []],
+      [/^groups\/acme%2Fteam\/variables/, 200, [{ key: 'YAD_PRODUCT_TOKEN', value: 'v', protected: false, environment_scope: '*' }]], [/^groups\/acme\/variables/, 200, []],
+      [/^projects\/acme%2Fproduct\/access_tokens/, 200, [{ id: 9, name: 'prod-read', scopes: ['read_repository'], expires_at: '2026-10-25', active: true }]],
+    ] });
+    let checks = [];
+    productTokenChecks(checks, T, { runner: f.runner, env: ON, today: '2026-10-19' });
+    assert.deepEqual(checks.map((x) => [x.id, x.section, x.status]), [
+      ['product-token:api', 'product-token', 'warn'], ['product-token:web', 'product-token', 'warn'], ['product-token-expiry', 'product-token', 'warn'],
+    ]);
+    assert.match(checks[0].message, /comes from the group acme\/team, .*\(registered here: web\)/);
+    assert.match(checks[2].message, /the Product's access token prod-read \(read_repository\) expires on 2026-10-25 \(in 6 day\(s\)\)/);
+    assert.doesNotMatch(JSON.stringify(checks), /"v"/);
+    // No git_url on the Product: nothing to check.
+    fs.writeFileSync(path.join(T, '.sdlc/product.json'), JSON.stringify({ platform: 'gitlab' }));
+    checks = [];
+    productTokenChecks(checks, T, { runner: f.runner, env: ON });
+    assert.deepEqual(checks, []);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
