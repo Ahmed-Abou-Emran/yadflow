@@ -11794,6 +11794,8 @@ test('doctor: #364 a fixed node image warns YAD-CI-002 on every wired GitLab fra
   const node = r.checks.filter((x) => x.id.startsWith('ci-node:'));
   assert.ok(node.every((x) => x.status === 'warn' && /YAD-CI-002/.test(x.message)));
   assert.ok(node.some((x) => x.id === 'ci-node:backend' && x.message.includes('yad-update-guard.yml') && /yad update/.test(x.hint)), 'repo update-guard');
+  // A plain update leaves a hand-edited copy alone, so the hint names the way out of that too (review 1).
+  assert.ok(node.every((x) => x.message.includes('yad-docs.yml') || /--overwrite-local/.test(x.hint)), 'the hint covers a modified copy');
   assert.ok(node.some((x) => x.id === 'ci-node:product' && x.message.includes('yad-gate-sync.yml')), 'product gate-sync');
   const docsNode = node.find((x) => x.message.includes('yad-docs.yml'));
   assert.ok(docsNode && /yad docs sync --wire/.test(docsNode.hint) && !/yad update/.test(docsNode.hint), 'the Pages job names its own fix');
@@ -11805,6 +11807,20 @@ test('doctor: #364 a fixed node image warns YAD-CI-002 on every wired GitLab fra
   r = await doctorOn(T);
   assert.ok(!r.checks.some((x) => /yad-docs\.yml/.test(x.message)), 'a team-owned Pages file is left alone');
   fs.rmSync(T, { recursive: true, force: true });
+});
+
+// #364 review 1: a repo kept at the Product's own root shares its `.gitlab/ci/` files, so one file is one
+// warning — not one as the Product's and one again as the repo's.
+test('doctor: #364 a GitLab file shared by the Product and a repo at its root warns once', async () => {
+  const { ciTagsChecks } = await import('./doctor.mjs');
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'yad-364-mono-'));
+  try {
+    fs.mkdirSync(path.join(T, '.gitlab/ci'), { recursive: true });
+    fs.writeFileSync(path.join(T, '.gitlab/ci/yad-update-guard.yml'), 'job:\n  image: node:20\n  script: [x]\n');
+    const checks = [];
+    ciTagsChecks(checks, T, { platform: 'gitlab', ledger: 'verified' }, { repos: [{ name: 'mono', platform: 'gitlab', path: '.' }] });
+    assert.deepEqual(checks.map((x) => x.id).sort(), ['ci-node:product', 'ci-tags:product']);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
 test('doctor: corrupt repos.json fails with YAD-STATE-001', async () => {

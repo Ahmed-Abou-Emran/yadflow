@@ -197,13 +197,17 @@ Copy from this skill's `templates/`:
     empty-expanded tag so the jobs run untagged (gitlab.com shared runners); older versions may
     strand them `pending`, in which case set the variable to a real tag. The variable lives in
     project settings, so it survives every `yad` sync. Single value only — `tags: [$VAR]` is one tag
-    equal to the whole variable, not a comma-split.
+    equal to the whole variable, not a comma-split. Leave **Protect variable** unticked on both
+    variables below: a protected variable reaches only pipelines on protected branches, so the MR
+    gates would run without it — untagged and on the default Node line.
   - **The Node line** (#364): every GitLab job runs `image: node:${YAD_NODE_VERSION}`, `22` by default.
     Set a `YAD_NODE_VERSION` CI/CD variable (a current `20`, `22` or `24` line) to change it — a
     project variable wins over the fragment's value, so the fragment itself is never edited.
   - **Shell-executor runners** ignore `image:`. The jobs then run on the runner host as they are, so
-    the host needs `bash`, `git` and Node (any current 20, 22 or 24 line — for example from nvm) on the
-    runner user's `PATH`; `YAD_NODE_VERSION` has no effect there. Point `YAD_RUNNER_TAGS` at that
+    the host needs `bash`, `git`, `curl` (the signature gates read the GitLab API with it; without it
+    every commit reads as unverified) and Node (any current 20, 22 or 24 line — for example from nvm)
+    on the runner user's `PATH`, plus whatever the repo's own build needs (Corepack, pnpm, …) for
+    `build-test-lint`. `YAD_NODE_VERSION` has no effect there. Point `YAD_RUNNER_TAGS` at that
     runner's tag.
   - **Do not hand-edit the fragments to fit a runner.** They are managed bytes: `yad check` reports a
     hand-edited one as `modified`, and a plain `yad update` leaves it alone — so it never receives a
@@ -212,6 +216,10 @@ Copy from this skill's `templates/`:
     a `.yad-orig` copy of the edited one first). `yad doctor` warns when a wired
     fragment has no `tags:` (`YAD-CI-001`) or still runs a fixed `node:<n>` image (`YAD-CI-002`, an
     install from before the variable — `yad update` replaces it).
+  - **Product jobs of your own** (`yad-product-checks.yml`): before #364 this fragment set its image
+    and tag in a top-level `default:`, which GitLab applies to every job in the pipeline — the
+    Product's own jobs too. They now sit on the yad jobs only. A job of yours that had no `image:` or
+    `tags:` and relied on that block needs its own after `yad update`.
 
 - Ensure `<repo>/package.json` defines `lint`, `build`, `test` scripts (see `references/check-gates.md`
   for the canonical scripts). **Only ADD a missing script; never overwrite an existing one.**

@@ -753,7 +753,9 @@ export function projectChecks(checks, root, { headCount = null } = {}) {
 // read — no API calls, so neither the variables' values nor the runner's executor are known here.
 export function ciTagsChecks(checks, root, productConfig, registry) {
   const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } }; // absent: not this check's concern
-  const UPDATE = 'run `yad update`';
+  // A plain update replaces an outdated copy but leaves a hand-edited (`modified`) one alone — and a copy
+  // edited to fit a runner is the case #364 is about, so the hint names both (review 1).
+  const UPDATE = 'run `yad update` (if `yad check` lists the file as `modified`, move your change into the `YAD_RUNNER_TAGS` / `YAD_NODE_VERSION` CI/CD variables, then run `yad update --overwrite-local` — it replaces every hand-edited managed file, keeping a `.yad-orig` copy of each)';
   const fragments = [];
   if (productConfig?.platform === 'gitlab' && isVerifiedLedger(productConfig)) {
     fragments.push(
@@ -778,7 +780,12 @@ export function ciTagsChecks(checks, root, productConfig, registry) {
       fragments.push({ scope: forTerminal(repo.name), repo: true, file, path: path.join(path.resolve(root, repo.path), file) });
     }
   }
+  // A repo kept at the Product's own root (a monorepo) shares its files: one warning per file (review 1).
+  const seen = new Set();
   for (const f of fragments) {
+    const at = path.resolve(f.path);
+    if (seen.has(at)) continue;
+    seen.add(at);
     const txt = read(f.path);
     if (txt === null || (f.ours && !f.ours(txt))) continue;
     // The id cannot tell the Product from a repo named `product`; this key can (E124 review 1).
