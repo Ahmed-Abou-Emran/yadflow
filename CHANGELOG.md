@@ -1,3 +1,39 @@
+# [4.6.0](https://github.com/abdelrahmannasr/yadflow/compare/v4.5.2...v4.6.0) (2026-10-19)
+
+
+### Bug Fixes
+
+* **checks:** a quote is checked whole, in order, from the commit ([#344](https://github.com/abdelrahmannasr/yadflow/issues/344), [#363](https://github.com/abdelrahmannasr/yadflow/issues/363) review 1) ([b7156ba](https://github.com/abdelrahmannasr/yadflow/commit/b7156ba03c9ae8a2d9890a6b27a2ae00888a6650))
+* **checks:** a quote proof under rebase-merge needs a rebased branch ([#344](https://github.com/abdelrahmannasr/yadflow/issues/344), [#363](https://github.com/abdelrahmannasr/yadflow/issues/363) review 6) ([ba09ee4](https://github.com/abdelrahmannasr/yadflow/commit/ba09ee4e096882e34dc1fc3f6c019ae11ffe8ca4)), closes [#363-style](https://github.com/abdelrahmannasr/yadflow/issues/363-style)
+* **checks:** contract-check reads the change from the merge base, and passes an exact quote ([#363](https://github.com/abdelrahmannasr/yadflow/issues/363), [#344](https://github.com/abdelrahmannasr/yadflow/issues/344)) ([d255fd6](https://github.com/abdelrahmannasr/yadflow/commit/d255fd681b54dfe82fbc3ec9b51f775f2f806900))
+* **checks:** one quote block per file under a fixed title ([#344](https://github.com/abdelrahmannasr/yadflow/issues/344), [#363](https://github.com/abdelrahmannasr/yadflow/issues/363) review 2) ([d3345e3](https://github.com/abdelrahmannasr/yadflow/commit/d3345e3820595bed3e532340b51506241a1b7aae))
+* **checks:** own slice commits count, and the old-git guard has no rename limit ([#344](https://github.com/abdelrahmannasr/yadflow/issues/344), [#363](https://github.com/abdelrahmannasr/yadflow/issues/363) review 5) ([f9ed54c](https://github.com/abdelrahmannasr/yadflow/commit/f9ed54cfde47f45003ca608f0b8c3a1c29399735))
+* **checks:** read every change as the merge into the base ([#363](https://github.com/abdelrahmannasr/yadflow/issues/363) review 4) ([c2858b5](https://github.com/abdelrahmannasr/yadflow/commit/c2858b5fbbf6977ed0f8fc905e5d682eaa1f3438))
+* **checks:** read several merge bases as the merge into the base ([#363](https://github.com/abdelrahmannasr/yadflow/issues/363) review 3) ([260f41b](https://github.com/abdelrahmannasr/yadflow/commit/260f41b1eec8d177407a434ccd3341f61cfe8a69))
+* **gate:** a quiet, honest trial read and a fresh pointer on a new number ([#362](https://github.com/abdelrahmannasr/yadflow/issues/362) review 2) ([70f13aa](https://github.com/abdelrahmannasr/yadflow/commit/70f13aa78db1475201c9547cea02f0cbb79f636b))
+* **gate:** let an older approved review advance past a held newer one ([#362](https://github.com/abdelrahmannasr/yadflow/issues/362) review 1) ([a558ccc](https://github.com/abdelrahmannasr/yadflow/commit/a558ccc2dfe991c6fec3d71fd1df7150d18cf213)), closes [#9](https://github.com/abdelrahmannasr/yadflow/issues/9) [#7](https://github.com/abdelrahmannasr/yadflow/issues/7)
+* **gate:** stop the merge sweep re-committing a settled review ([#362](https://github.com/abdelrahmannasr/yadflow/issues/362)) ([57666d3](https://github.com/abdelrahmannasr/yadflow/commit/57666d3984bfb53b05a946ba6ed7e5a7f9517603)), closes [#156](https://github.com/abdelrahmannasr/yadflow/issues/156)
+* **gate:** warn on an unconfirmed --pr; keep the check on ([#362](https://github.com/abdelrahmannasr/yadflow/issues/362) review 3) ([f1078c6](https://github.com/abdelrahmannasr/yadflow/commit/f1078c66da786f99326e47f5f358bf0618bbf8e9)), closes [#N](https://github.com/abdelrahmannasr/yadflow/issues/N)
+* **lifecycle:** a newer yadflow step is unusable under every file rule (E134 review 6) ([3617a08](https://github.com/abdelrahmannasr/yadflow/commit/3617a08b48a7ae031b7811f3ce93e15b0b228753))
+* **lifecycle:** claim a set's member files; ".sdlc" is the ledger too (E134 review 4) ([0a1ca78](https://github.com/abdelrahmannasr/yadflow/commit/0a1ca78e49fdb66d8a0352fdbb33224821a221b9))
+* **lifecycle:** close the validator gaps review round 1 found (E134) ([23dc3d9](https://github.com/abdelrahmannasr/yadflow/commit/23dc3d918e340db18265da37816523dea2f77555))
+* **lifecycle:** close the validator gaps review round 2 found (E134) ([d2e6f4c](https://github.com/abdelrahmannasr/yadflow/commit/d2e6f4c4a0cbef291fb77eede39028991741ed51))
+* **lifecycle:** empty names, same-step twins, folder levels (E134 review 5) ([7484fd1](https://github.com/abdelrahmannasr/yadflow/commit/7484fd10f6db97186978fab405c4018cde6ec73b))
+* **lifecycle:** one data-driven claims rule for yadflow's files (E134 review 3) ([1b8b972](https://github.com/abdelrahmannasr/yadflow/commit/1b8b9724f76e8d4fb350814b9c1a9b3eadb4a71e))
+* **lifecycle:** the ledger exception is the exact shipped path (E134 review 7) ([b34a115](https://github.com/abdelrahmannasr/yadflow/commit/b34a115ed823b7196572f701590696ea106e0387))
+* **reconcile:** git's "Merge commit/tag ... into" subjects are not read for a task ([#365](https://github.com/abdelrahmannasr/yadflow/issues/365) review 6) ([6dfdb57](https://github.com/abdelrahmannasr/yadflow/commit/6dfdb57cea872f21065b72c96a87dc180e391fd1))
+* **reconcile:** guard the repos read, and no all-clear over what was not read ([#365](https://github.com/abdelrahmannasr/yadflow/issues/365) review 1) ([0a3f37d](https://github.com/abdelrahmannasr/yadflow/commit/0a3f37d5c16639d9252d179e854d6b77e5a82660))
+* **reconcile:** judge each monorepo merge by what its side changed ([#365](https://github.com/abdelrahmannasr/yadflow/issues/365) review 4) ([6a3e5d6](https://github.com/abdelrahmannasr/yadflow/commit/6a3e5d64d28be4dc6b39f04939cbb8e77d9d2ddc))
+* **reconcile:** monorepo folders read their own commits only; shallow clones are not read ([#365](https://github.com/abdelrahmannasr/yadflow/issues/365) review 5) ([30c4f15](https://github.com/abdelrahmannasr/yadflow/commit/30c4f155dba2761cadfcb4c24e94fec9a4b1044a))
+* **reconcile:** monorepo merges, branch names and stories with no repo ([#365](https://github.com/abdelrahmannasr/yadflow/issues/365) review 3) ([d88ef4f](https://github.com/abdelrahmannasr/yadflow/commit/d88ef4f69ef88773b1a8b9f6f6c1c8c41fb52493))
+* **reconcile:** no all-clear over a registry, repo or commit not read in full ([#365](https://github.com/abdelrahmannasr/yadflow/issues/365) review 2) ([32e0ad1](https://github.com/abdelrahmannasr/yadflow/commit/32e0ad1090de188671c69054375ec6df53715056))
+
+
+### Features
+
+* **lifecycle:** ship the lifecycle as a versioned JSON default (E134) ([9b86025](https://github.com/abdelrahmannasr/yadflow/commit/9b86025e5ab21ae2e89a4e346db99f94ff53ff1e))
+* **reconcile:** report merged work the build ledger does not record ([#365](https://github.com/abdelrahmannasr/yadflow/issues/365)) ([b8173ec](https://github.com/abdelrahmannasr/yadflow/commit/b8173ec26acfe97f12b0fb3ca2fd858464910d67)), closes [#346](https://github.com/abdelrahmannasr/yadflow/issues/346)
+
 ## [4.5.2](https://github.com/abdelrahmannasr/yadflow/compare/v4.5.1...v4.5.2) (2026-10-16)
 
 
