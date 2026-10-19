@@ -135,7 +135,7 @@ record_path() {
 }
 product_for() {
   _link="specs/$1/link.md"
-  prod=""; prod_note=""; prod_fail=""
+  prod=""; prod_note=""; prod_fail=""; _fix_where="product-repo in specs/$1/link.md"; _fix_when=""
   yad_tmp   # here, in this shell: a $(…) below would set it, and its EXIT trap, in a subshell only
   product_rel="$(link_val product-repo "$_link")"
   _from="$_link"
@@ -188,6 +188,16 @@ SIBLINGS
 }${_link} names product-repo '${product_rel}', but ${_from} on ${BASE} says '${_base_rel}' — the Product is read from the base value; a new one counts once it merges."
     product_rel="$_base_rel"
   fi
+  # What a failure below tells the person to change (#351): the source that was read. Only on a first
+  # spec (the base names no Product) is it this PR's own link.md, which counts at once; anything else is
+  # read from the base, so a change to it counts only after it merges.
+  if [ -n "$_use_rec" ]; then
+    _fix_where="path in .sdlc/product-link.json"; _fix_when=", and merge that change on its own first: a value counts once ${BASE} has it"
+  elif [ -n "$_base_rel" ]; then
+    _fix_where="product-repo in ${_from}"; _fix_when=", and merge that change on its own first: a value counts once ${BASE} has it"
+  else
+    _fix_where="product-repo in ${_link}"; _fix_when=" in this pull request"
+  fi
   # A Product this repo keeps, asked of the base first (see above). Both joins resolve_product may pick.
   case "$product_rel" in
     '') _cands="" ;;
@@ -217,7 +227,7 @@ CANDS
       case "$prod" in /*) _pc="$prod" ;; *) _pc="./$prod" ;; esac
       _phys="$(cd -P "$_pc" 2>/dev/null && pwd -P)" || _phys=""
       if [ -z "$_phys" ]; then
-        prod_fail="product-repo resolves to '${prod}', a folder the gate cannot enter to check where it really is — so it is not read. Point product-repo in the story's link.md (or path in .sdlc/product-link.json) at a folder the job can read, and merge that change on its own first: a value counts once ${BASE} has it."
+        prod_fail="product-repo resolves to '${prod}', a folder the gate cannot enter to check where it really is — so it is not read. Point ${_fix_where} at a folder the job can read${_fix_when}."
         return 0
       fi
       # Not inside this repo's own git folder (review 7). git never lists `.git/` as tracked, yet a PR
@@ -230,7 +240,7 @@ CANDS
         _p="$_phys"
         while :; do
           if [ "$_p" -ef "$_gd" ]; then
-            prod_fail="product-repo resolves to '${prod}', inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product. Point path in .sdlc/product-link.json at the Product checkout (.yad/product, from the repo root), or product-repo in the story's link.md (../../.yad/product, from the story's folder), and merge that change on its own first: a value counts once ${BASE} has it."
+            prod_fail="product-repo resolves to '${prod}', inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product. Point ${_fix_where} at the Product checkout (.yad/product from the repo root, ../../.yad/product from a story's folder)${_fix_when}."
             return 0
           fi
           case "$_p" in /|'') break ;; esac
@@ -264,7 +274,7 @@ KEPT
   [ -n "$_kept_here" ] || return 0
   if [ -n "$product_rel" ]; then _what="product-repo '${product_rel}' reaches nothing"; else _what="link.md names no product-repo"; fi
   if [ "$(printf '%s' "$_kept_here" | grep -c .)" -gt 1 ]; then
-    prod_fail="${_what}, and ${BASE} keeps more than one Product holding ${_epic_of} ($(printf '%s' "$_kept_here" | tr '\n' ' ' | sed -E 's/ +$//')) — the gate cannot tell which is meant. Set product-repo in the story's link.md to one of them, and merge that change on its own first: a value counts once ${BASE} has it."
+    prod_fail="${_what}, and ${BASE} keeps more than one Product holding ${_epic_of} ($(printf '%s' "$_kept_here" | tr '\n' ' ' | sed -E 's/ +$//')) — the gate cannot tell which is meant. Set ${_fix_where} to one of them${_fix_when}."
     return 0
   fi
   _k="$(printf '%s' "$_kept_here" | head -1)"
@@ -320,7 +330,7 @@ KEPT
 base_product() {
   _r="$1"; _e="${_r:+$_r/}epics"
   if [ "$(git cat-file -t "${BASE}:${_e}" 2>/dev/null)" != tree ]; then
-    prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and ${BASE} has no '${_e}' folder — there is nothing on the base to read. Merge that Product's epics into ${BASE} first, or point product-repo in the story's link.md (or path in .sdlc/product-link.json) at the Product checkout, merged on its own first."
+    prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and ${BASE} has no '${_e}' folder — there is nothing on the base to read. Merge that Product's epics into ${BASE} first, or point ${_fix_where} at the Product checkout${_fix_when}."
     return 0
   fi
   # (awk reads to the end rather than stopping at the first hit: stopping left `tr` writing into a

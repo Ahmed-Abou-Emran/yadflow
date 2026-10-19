@@ -182,9 +182,9 @@ while IFS= read -r sha; do
       echo "WARN [verified-commits]: ${short} unsigned merge commit — introduces no content of its own (covered by verified parents); signature waived. (Self-hosted GitLab does not sign UI merge commits; on a platform that signs its merges an unsigned content-free merge is unusual but still harmless.)"
     else
       if [ "$sig_api_error" = 1 ]; then
-        echo "FAIL [verified-commits]: ${short} — the job could not ask GitHub for the commit's signature (gh api failed). The job needs GH_TOKEN set to the workflow's github.token, as the yad workflows set it; then run it again."
+        echo "FAIL [verified-commits]: ${short} — the job could not ask GitHub for the commit's signature (gh api failed). The job needs GH_TOKEN set to the workflow's github.token, as the yad workflows set it; then run it again. On your own machine: install gh and run gh auth login."
       else
-        resign="sign commits with a GPG or SSH key added to your ${platform} account (git config commit.gpgsign true; for an SSH key also gpg.format ssh and user.signingkey). On a pull request branch, re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' ${BASE}, and force-push. On the default branch, do not force-push: land the change again through a pull request of signed commits."
+        resign="sign commits with a GPG or SSH key added to your ${platform} account (git config commit.gpgsign true; for an SSH key also gpg.format ssh and user.signingkey). On a pull request branch, re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' ${BASE}, and force-push. On the default branch, do not force-push: revert the commit, then land the change again through a pull request of signed commits."
         if [ "$platform" = gitlab ]; then
           echo "FAIL [verified-commits]: ${short} signature missing/unverified — ${resign} If the commits are signed, the job could not read GitLab's signature API: set a GITLAB_TOKEN (or SDLC_API_TOKEN) CI/CD variable with the read_api scope."
         else

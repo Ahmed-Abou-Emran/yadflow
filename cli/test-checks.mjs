@@ -2947,7 +2947,7 @@ for (const g of GATES) {
     commit(T, g.subject || 'feat: add thing\n\nTask: EP-demo-S01-T01', { 'src/thing.js': 'x', ...(g.files || {}) });
     r = runGate(g.script, T);
     assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /keeps more than one Product holding EP-demo \(a b\) — the gate cannot tell which is meant\. Set product-repo in the story's link\.md to one of them, and merge that change on its own first: a value counts once main has it\./);
+    assert.match(r.out, /keeps more than one Product holding EP-demo \(a b\) — the gate cannot tell which is meant\. Set product-repo in specs\/EP-demo-S01\/link\.md to one of them, and merge that change on its own first: a value counts once main has it\./);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
@@ -3009,7 +3009,7 @@ for (const g of GATES) {
     try {
       const r = runGate(g.script, T);
       assert.equal(r.code, 1, r.out);
-      assert.match(r.out, /a folder the gate cannot enter to check where it really is — so it is not read\. Point product-repo in the story's link\.md \(or path in \.sdlc\/product-link\.json\) at a folder the job can read, and merge that change on its own first: a value counts once main has it\./);
+      assert.match(r.out, /a folder the gate cannot enter to check where it really is — so it is not read\. Point product-repo in specs\/EP-demo-S01\/link\.md at a folder the job can read in this pull request\./);
     } finally {
       fs.chmodSync(path.join(T, 'product'), 0o755);
       fs.rmSync(T, { recursive: true, force: true });
@@ -3044,7 +3044,21 @@ for (const g of GATES) {
     });
     const r = runGate(g.script, T);
     assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product\. Point path in \.sdlc\/product-link\.json at the Product checkout \(\.yad\/product, from the repo root\), or product-repo in the story's link\.md \(\.\.\/\.\.\/\.yad\/product, from the story's folder\), and merge that change on its own first: a value counts once main has it\./);
+    assert.match(r.out, /inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product\. Point product-repo in specs\/EP-demo-S01\/link\.md at the Product checkout \(\.yad\/product from the repo root, \.\.\/\.\.\/\.yad\/product from a story's folder\) in this pull request\./);
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+
+  test(`${g.name} gate: a refused Product path read from the base record names the record, merged first (#351)`, () => {
+    const T = scaffoldRepo();
+    productFiles(T, 'our-product', g.seed, { settings: true });
+    onBase(T, { '.sdlc/product-link.json': JSON.stringify({ path: '.git/refs/heads' }) });
+    git(T, 'branch', 'epics/EP-demo/x');
+    commit(T, g.subject || 'feat: add thing\n\nTask: EP-demo-S01-T01', {
+      'src/thing.js': 'x', ...(g.files || {}), 'specs/EP-demo-S01/link.md': linkFor(g, '../../our-product'),
+    });
+    const r = runGate(g.script, T);
+    assert.equal(r.code, 1, r.out);
+    assert.ok(r.out.includes("not a Product. Point path in .sdlc/product-link.json at the Product checkout (.yad/product from the repo root, ../../.yad/product from a story's folder), and merge that change on its own first: a value counts once main has it."), r.out);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
@@ -3057,7 +3071,7 @@ for (const g of GATES) {
     });
     const r = runGate(g.script, T);
     assert.equal(r.code, 1, r.out);
-    assert.ok(r.out.includes("a Product this repo keeps, and main has no 'our-product/epics' folder — there is nothing on the base to read. Merge that Product's epics into main first, or point product-repo in the story's link.md (or path in .sdlc/product-link.json) at the Product checkout, merged on its own first."), r.out);
+    assert.ok(r.out.includes("a Product this repo keeps, and main has no 'our-product/epics' folder — there is nothing on the base to read. Merge that Product's epics into main first, or point product-repo in specs/EP-demo-S01/link.md at the Product checkout in this pull request."), r.out);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
@@ -3693,7 +3707,7 @@ test('build-test-lint gate: failing test script fails the gate', () => {
   });
   const r = runGate(BTL, T, []);
   assert.notEqual(r.code, 0, 'failing tests must fail the gate');
-  assert.match(r.out, /FAIL \[build\/test\/lint\]: 'npm run test' failed\. If nothing is printed above, package\.json has no "test" script — add one\. Otherwise the output above says why: run it on your machine, fix what it reports, and push again\./);
+  assert.match(r.out, /FAIL \[build\/test\/lint\]: 'npm run test' failed — the output above says why\. Run it on your machine, fix what it reports, and push again\./);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -3704,7 +3718,7 @@ test('build-test-lint gate: a failing or missing step is named, and the later st
   });
   const r = runGate(BTL, T, []);
   assert.notEqual(r.code, 0, r.out);
-  assert.match(r.out, /FAIL \[build\/test\/lint\]: 'npm run build' failed\. If nothing is printed above, package\.json has no "build" script — add one\./);
+  assert.match(r.out, /FAIL \[build\/test\/lint\]: package\.json has no "build" script — add one; the gate runs lint, build and test, in that order\./);
   assert.doesNotMatch(r.out, /\[build\/test\/lint\] test…/);
   fs.rmSync(T, { recursive: true, force: true });
 });

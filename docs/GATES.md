@@ -153,13 +153,15 @@ in this order:
    [product-checkout](#product-checkout)).
 2. `product-repo` in the story's `specs/<story>/link.md`, **as the base has it**. For a story that is
    new in this pull request, another story's `link.md` on the base is used.
-3. A Product kept inside this repo (a monorepo), read from the base commit.
-4. Only when the base names no Product at all (the repo's **first spec**): the story's own
+3. Only when the base names no Product at all (the repo's **first spec**): the story's own
    `product-repo` from this pull request.
+4. Only when the value chosen above reaches nothing: a Product kept inside this repo (a monorepo) that
+   holds the story's epic, read from the base commit.
 
 Once the base names a Product, the pull request under check does not decide where it is read from. A
 change to `product-link.json` or to `product-repo` counts only after it merges, so make that change in
-its own pull request.
+its own pull request. The failure messages below name the file that was read, and say which case
+applies: "in this pull request" on a first spec, or "merge that change on its own first" otherwise.
 
 **When the Product cannot be reached at all** (CI did not check it out), lineage-check, epic-open and
 reconcile-debt print `PASS [gate]: … deferred`, and contract-check skips the lock comparison with a
@@ -168,12 +170,12 @@ a changed slice on the repo's [first spec](#contract-check).
 
 | Message (after `FAIL [<gate>]: …`) | What to change |
 |---|---|
-| `product-repo resolves to '<path>', a folder the gate cannot enter … Point product-repo in the story's link.md (or path in .sdlc/product-link.json) at a folder the job can read, and merge that change on its own first: …` | Fix the path, or the folder's permissions. |
-| `product-repo resolves to '<path>', inside this repo's own git folder … Point path in .sdlc/product-link.json at the Product checkout (.yad/product, from the repo root), or product-repo in the story's link.md (../../.yad/product, from the story's folder), and merge that change on its own first: …` | The path points into `.git/`. Point it at the Product checkout. |
-| `<what>, and <base> keeps more than one Product holding <epic> (<list>) — the gate cannot tell which is meant. Set product-repo in the story's link.md to one of them, and merge that change on its own first: …` | Set `product-repo` to one of the listed folders. |
+| `product-repo resolves to '<path>', a folder the gate cannot enter … Point <the file and field that was read> at a folder the job can read …` | Fix the path, or the folder's permissions. |
+| `product-repo resolves to '<path>', inside this repo's own git folder … Point <the file and field> at the Product checkout (.yad/product from the repo root, ../../.yad/product from a story's folder) …` | The path points into `.git/`. Point it at the Product checkout. |
+| `<what>, and <base> keeps more than one Product holding <epic> (<list>) — the gate cannot tell which is meant. Set <the file and field> to one of them …` | Set the value to one of the listed folders. |
 | `product-repo reaches the Product through '<path>', a symlink, submodule or file this repo tracks … Point product-repo at the Product itself.` | Point it at the real Product folder, not at a link. |
 | `product-repo resolves to '<path>', which holds files this repo tracks, but <base> does not track '.sdlc/product.json' … Untrack those files (git rm -r --cached '<path>') or point product-repo at the Product.` | A pull request cannot add its own Product. Untrack the folder, or point at the real Product. |
-| `product-repo resolves to '<path>', a Product this repo keeps, and <base> has no '<path>/epics' folder … Merge that Product's epics into <base> first, or point … at the Product checkout, merged on its own first.` | Merge the Product's epics into the base first. |
+| `product-repo resolves to '<path>', a Product this repo keeps, and <base> has no '<path>/epics' folder … Merge that Product's epics into <base> first, or point <the file and field> at the Product checkout …` | Merge the Product's epics into the base first, or fix the value. |
 | `'<path>/epics/<file>' on <base> is a symlink or a submodule … Replace it with the files themselves.` | Replace the link inside the kept Product with real files, in its own pull request. |
 | `product-repo resolves to '<path>', a Product this repo keeps, and '<path>/epics' could not be read from <base> — run the job again; if it repeats, check the code out with full history and no partial-clone filter …` | As it says. |
 
@@ -273,7 +275,7 @@ failure. Each one says why that story's slice could not pass as a quote:
 | `the branch's own commits touch it, but it is not in what lands (added and removed again?)` | That needs the trailer. |
 | `specs/<folder>/contracts is not under a story ID — it quotes no lock.` | Move the slice under its story's folder, or delete it. |
 | `<link.md> is not there, so the slice is tied to no lock` | Re-run `yad-spec`. |
-| `<lock> has no readable "hash" value.` | Lock the contract again upstream (`yad-architecture`, Step 5). |
+| `<lock> has no readable "hash": … value.` | Lock the contract again upstream (`yad-architecture`, Step 5). |
 | A [Where the Product is read from](#where-the-product-is-read-from) message | See that table. |
 | `<link.md> names no contract-lock` / `pins …, not the current lock` | Re-run `yad-spec`. |
 | `cannot check <story>'s slice against its lock — the Product's lock is not reachable` | Let CI check the Product out (see [product-checkout](#product-checkout)), or add the trailer. |
@@ -296,7 +298,8 @@ lockfile shows (npm or pnpm).
 
 | Message | What to change |
 |---|---|
-| `FAIL [build/test/lint]: '<command> run <step>' failed. If nothing is printed above, package.json has no "<step>" script — add one. Otherwise the output above says why: run it on your machine, fix what it reports, and push again.` | As it says. npm prints nothing for a missing script; pnpm prints "Missing script". The later steps do not run after a failure. |
+| `FAIL [build/test/lint]: '<command> run <step>' failed — the output above says why. Run it on your machine, fix what it reports, and push again.` | As it says. The later steps do not run after a failure. |
+| `FAIL [build/test/lint]: package.json has no "<step>" script — add one; the gate runs lint, build and test, in that order.` | Add the script to `package.json`. |
 | `FAIL [package-manager]: …` | See [the package manager checks](#install-deps); the same checks run here. |
 
 ## lineage-check
@@ -497,8 +500,8 @@ author commits is decided by write access to the repo, not by a list.
 
 | Message (after `FAIL [verified-commits]: <sha> …`) | What to change |
 |---|---|
-| `signature missing/unverified — sign commits with a GPG or SSH key added to your <platform> account (…). On a pull request branch, re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' <base>, and force-push. On the default branch, do not force-push: land the change again through a pull request of signed commits.` | As it says. On GitLab the message adds: if the commits are signed, set the `GITLAB_TOKEN` variable, because GitLab answers "no signature" and "no access" the same way. |
-| `— the job could not ask GitHub for the commit's signature (gh api failed). The job needs GH_TOKEN …` | Set `GH_TOKEN: ${{ github.token }}` on the job, as the `yad` workflows do, then run it again. |
+| `signature missing/unverified — sign commits with a GPG or SSH key added to your <platform> account (…). On a pull request branch, re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' <base>, and force-push. On the default branch, do not force-push: revert the commit, then land the change again through a pull request of signed commits.` | As it says. On GitLab the message adds: if the commits are signed, set the `GITLAB_TOKEN` variable, because GitLab answers "no signature" and "no access" the same way. |
+| `— the job could not ask GitHub for the commit's signature (gh api failed). The job needs GH_TOKEN …` | Set `GH_TOKEN: ${{ github.token }}` on the job, as the `yad` workflows do, then run it again. On your own machine, install `gh` and run `gh auth login`. |
 | `unknown platform '<x>' (SDLC_PLATFORM must be github\|gitlab\|none).` | Fix `SDLC_PLATFORM`. |
 
 ## ledger-guard
@@ -549,8 +552,8 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
 | `a PR may add or change only its author's own member file …` | Each person runs `yad member add` in their own pull request. To drop someone else, use `yad member remove <login> --reason "<why>"`. |
 | `only <platform>-<login>.json files belong in .sdlc/members/` | Remove or rename the file. |
 | `<file>: not a member file (no "accounts" list)` / `does not hold <author>'s own <platform> account …` / `the account id in the file … is not the author's` / `must hold exactly one <platform> account …` | Write the file again with `yad member add`, as its own person. |
-| `belonged to account id …, not <author>'s — a reused login does not take over a member file; remove it first` | Remove the old file first with `yad member remove <login> --reason`, in its own pull request. |
-| `holds an email no commit in this PR proves …` | Make one commit with that email in the pull request (`yad member add` does), and verify the email on your account. |
+| `belonged to account id …, not <author>'s (<id>) — a reused login does not take over a member file; remove it first` | Remove the old file first with `yad member remove <login> --reason`, in its own pull request. |
+| `holds an email no commit in this PR proves …` (GitHub only) | Make one commit with that email in the pull request (`yad member add` does), and verify the email on your account. |
 | `the account <x> is in <a> and <b>` | One account belongs to one member. Remove the stale file with `yad member remove <login> --reason`. |
 | `one email is in <a> and <b>` (GitHub only) | One email belongs to one member. Remove the duplicate email from one file, or remove the stale file. |
 | `"<path>" is another spelling of .sdlc/ …` / `… of .sdlc/members/` / `… is not a folder at HEAD (a link?)` / `… is not a plain file (a link?)` / `<a> and <b> are one file on macOS and Windows` | Use the real `.sdlc/members/` folder and plain files, one spelling each. |
