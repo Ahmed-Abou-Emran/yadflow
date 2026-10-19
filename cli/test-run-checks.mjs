@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const YAD = path.join(ROOT, 'bin/yad.mjs');
@@ -337,8 +338,8 @@ test('yad run checks: Ctrl-C stops the run even when the gate catches it, and th
       child.stdout.on('data', (d) => { out += d; });
       child.stderr.on('data', (d) => { out += d; });
       const started = Date.now();
-      while (!/build\/test\/lint\]? lint…|\[build\/test\/lint\] lint/.test(out) && Date.now() - started < 20000) await new Promise((r) => setTimeout(r, 100));
-      await new Promise((r) => setTimeout(r, 500));
+      while (!/build\/test\/lint\]? lint…|\[build\/test\/lint\] lint/.test(out) && Date.now() - started < 20000) await sleep(100);
+      await sleep(500);
       // Ctrl-C reaches the whole group; a plain kill reaches yad alone.
       if (sig === 'SIGINT') process.kill(-child.pid, sig); else process.kill(child.pid, sig);
       const code = await new Promise((r) => child.on('close', r));
