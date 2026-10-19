@@ -38,8 +38,15 @@ import { repoPathFromGitUrl } from './protection.mjs';
 
 // GitLab hands CI only this many characters of a merge request description (#164, #343).
 const GITLAB_DESCRIPTION_CUT = 2700;
-// Written into the Product copy, so a copy a killed run left behind is known as ours and replaced.
-const MARKER = '.yad-run-checks';
+// The record of a run's Product copy, kept in this repo's git folder — where the Product's own files
+// cannot reach it, and where no gate sees it — so a copy a killed run left behind is known and replaced.
+const MARKER = 'yad-run-checks.json';
+const markerPath = (repoRoot) => {
+  const p = git(repoRoot, ['rev-parse', '--git-path', MARKER]).stdout;
+  return p ? path.resolve(repoRoot, p) : null;
+};
+// What this run is, as `ps` shows a yad run's command line.
+const RUN_COMMAND = /yad\S*\s+run\s+checks\b/;
 const PRODUCT_GATES = new Set(['contract-check', 'lineage-check', 'epic-open', 'reconcile-debt']);
 
 const git = (cwd, args, opts = {}) => run('git', args, { cwd, ...opts });
@@ -102,24 +109,22 @@ function readRecord(repoRoot, base) {
   return { rel, branch, record };
 }
 
-// Whose copy is this? { state: null } — not ours (no marker); 'alive' — a run on this machine still using
-// it; 'gone' — the run that wrote it is over, and `created` is the folder it made. A process id is reused
-// once its process is gone (after a reboot, a root daemon may hold it), so 'alive' also needs the marker
-// to be from since the last boot and, where `ps` can say, that process to be a yad run. A marker from
-// another host is 'gone': a folder two machines share is not a case this guards.
-function markerOwner(p) {
-  let text;
-  try { text = fs.readFileSync(p, 'utf8'); } catch { return { state: null }; }
-  const m = text.split('\n')[0].match(/^(\d+) (\d+) (\S+) (.*)$/);
-  if (!m) return { state: 'gone', created: null };
-  const [, pid, startMs, created, host] = m;
-  const gone = { state: 'gone', created: created === '-' ? null : created };
-  if (host !== os.hostname() || Number(pid) === process.pid) return gone;
-  if (Number(startMs) < Date.now() - os.uptime() * 1000 - 60000) return gone;
-  try { process.kill(Number(pid), 0); } catch (e) { if (e.code !== 'EPERM') return gone; }
+// Whose copy is at `rel`? { state: null } — no record of one (not ours); 'alive' — a run on this machine
+// still using it; 'gone' — the run that wrote it is over, and `created` is the folder it made. A process id
+// is reused once its process is gone (after a reboot a daemon may hold it), so 'alive' also needs the run to
+// have started since the last boot and, where `ps` can say, that process to be a `yad run checks`. A record
+// from another host is 'gone': a folder two machines share is not a case this guards.
+function markerOwner(file, rel) {
+  let m;
+  try { m = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return { state: null }; }
+  if (!m || m.rel !== rel) return { state: null };
+  const gone = { state: 'gone', created: typeof m.created === 'string' ? m.created : null };
+  if (m.host !== os.hostname() || !Number.isInteger(m.pid) || m.pid === process.pid) return gone;
+  if (!(m.start >= Date.now() - os.uptime() * 1000 - 60000)) return gone;
+  try { process.kill(m.pid, 0); } catch (e) { if (e.code !== 'EPERM') return gone; }
   if (process.platform !== 'win32') {
-    const ps = run('ps', ['-o', 'command=', '-p', pid]);
-    if (ps.ok && !/yad/.test(ps.stdout)) return gone;
+    const ps = run('ps', ['-o', 'command=', '-p', String(m.pid)]);
+    if (ps.ok && !RUN_COMMAND.test(ps.stdout)) return gone;
   }
   return { state: 'alive' };
 }
@@ -127,8 +132,9 @@ function markerOwner(p) {
 // Write the Product's default branch to `rel`. Returns { placed, created?, note } or { fail }.
 function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, { fetch }) {
   const dest = path.join(repoRoot, rel);
+  const marker = markerPath(repoRoot);
   if (exists(dest)) {
-    const owner = markerOwner(path.join(dest, MARKER));
+    const owner = marker ? markerOwner(marker, rel) : { state: null };
     if (owner.state === null) {
       return { placed: false, note: `${rel} is already there, so it is read as it is — it may not be the Product's default branch; remove it to read that` };
     }
@@ -136,9 +142,13 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
       return { placed: false, note: `another yad run checks is using ${rel} right now — this run reads it as it is (remove ${rel} if no other run is going)` };
     }
     // A copy a killed run left behind: remove what that run made — a folder on the way to it included,
-    // never anything outside the record's path.
-    const made = owner.created && (rel === owner.created || rel.startsWith(`${owner.created}/`)) ? path.join(repoRoot, owner.created) : dest;
-    fs.rmSync(made, { recursive: true, force: true });
+    // when that folder is on the record's path and holds nothing this repo tracks.
+    fs.rmSync(dest, { recursive: true, force: true });
+    const c0 = owner.created;
+    if (c0 && c0 !== rel && rel.startsWith(`${c0}/`) && !git(repoRoot, ['ls-files', '--', c0]).stdout) {
+      fs.rmSync(path.join(repoRoot, c0), { recursive: true, force: true });
+    }
+    try { fs.rmSync(marker); } catch { /* gone */ }
   }
   if (!productRoot) {
     return { placed: false, note: `no Product clone found from this repo (the workspace file names it), so ${rel} is not written — the Product-reading gates may read what product-repo in a link.md reaches on this machine, including unmerged edits, where CI would read nothing` };
@@ -168,9 +178,12 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yad-run-checks-'));
   const idx = path.join(tmp, 'index');
   try {
-    fs.mkdirSync(dest, { recursive: true });
     // First, so even a copy cut short by a crash is known as ours next time.
-    fs.writeFileSync(path.join(dest, MARKER), `${process.pid} ${Date.now()} ${created ? path.relative(repoRoot, created).split(path.sep).join('/') : '-'} ${os.hostname()}\nwritten by yad run checks; removed when the run ends\n`);
+    if (marker) {
+      fs.mkdirSync(path.dirname(marker), { recursive: true });
+      fs.writeFileSync(marker, JSON.stringify({ pid: process.pid, start: Date.now(), host: os.hostname(), rel, created: created ? path.relative(repoRoot, created).split(path.sep).join('/') : null }));
+    }
+    fs.mkdirSync(dest, { recursive: true });
     const env = { ...process.env, GIT_INDEX_FILE: idx };
     delete env.GIT_DIR; delete env.GIT_WORK_TREE;
     const read = spawnSync('git', ['read-tree', sha.stdout], { cwd: productRoot, env, encoding: 'utf8' });
@@ -180,11 +193,12 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
     if (out.status !== 0) throw new Error((out.stderr || '').trim().split('\n')[0] || 'git could not write it');
   } catch (e) {
     if (created) fs.rmSync(created, { recursive: true, force: true });
+    if (marker) { try { fs.rmSync(marker); } catch { /* gone */ } }
     return { placed: false, note: [...notes, `could not write the Product's ${branch} to ${rel} (${e.message}) — the Product-reading gates may read what product-repo in a link.md reaches on this machine`].join('; ') };
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  return { placed: true, created, dest, note: [...notes, `the Product's ${branch} (${sha.stdout.slice(0, 12)}) is written to ${rel}, as CI checks it out, and removed after these gates`].join('; ') };
+  return { placed: true, created, dest, marker, note: [...notes, `the Product's ${branch} (${sha.stdout.slice(0, 12)}) is written to ${rel}, as CI checks it out, and removed after these gates`].join('; ') };
 }
 
 // Each commit's signature, as git reads it here. `%G?`: G good, U good with unknown trust, X/Y expired,
@@ -234,7 +248,9 @@ function runGate(cmd, args, { cwd, env }, live) {
     child.stdout.on('data', take);
     child.stderr.on('data', take);
     let done = false;
+    let wait = null;
     const finish = (res) => {
+      if (wait) clearTimeout(wait);
       if (done) return;
       done = true;
       live.child = null;
@@ -256,7 +272,7 @@ function runGate(cmd, args, { cwd, env }, live) {
         finish({ status, signal });
       };
       // Nothing left holding the output: done now. Otherwise a short wait for the last of it.
-      if (ended === 2) end(); else setTimeout(end, 300);
+      if (ended === 2) end(); else wait = setTimeout(end, 300);
     });
   });
 }
@@ -305,7 +321,17 @@ export async function runChecks(dir, opts = {}) {
   let recRel = null;
   try { recRel = safeRecordPath(JSON.parse(git(repoRoot, ['show', `${base}:.sdlc/product-link.json`]).stdout)?.path); } catch { /* none */ }
   const st = spawnSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], { cwd: repoRoot, encoding: 'utf8' });
-  const dirty = (st.stdout || '').split('\0').filter(Boolean).map((e) => e.slice(3))
+  // A rename or copy is two entries, `R  new` then the old name with no status: the old one is skipped.
+  const entries = (st.stdout || '').split('\0');
+  const changed = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (!e) continue;
+    changed.push(e.slice(3));
+    if (e[0] === 'R' || e[0] === 'C') i++;
+  }
+  // An untracked folder on the record's path (`.yad/`, shown collapsed) is skipped whole.
+  const dirty = changed
     .filter((p) => !(recRel && (p.startsWith(`${recRel}/`) || `${recRel}/`.startsWith(`${p.replace(/\/$/, '')}/`))));
   if (dirty.length) info(`uncommitted changes are built and tested here but are not in the push (${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? `, and ${dirty.length - 3} more` : ''}) — commit or stash them for CI's answer`);
   if (git(repoRoot, ['rev-list', '--count', `${base}..HEAD`]).stdout === '0') {
@@ -318,6 +344,7 @@ export async function runChecks(dir, opts = {}) {
   // A Product review branch's title is `review: <artifact> (EP-<slug>)`, which `yad gate open` writes — a
   // commit subject is never it.
   const reviewHead = isProduct && /^review\/EP-/.test(branchName);
+  if (isProduct && branchName === 'HEAD') info('HEAD is detached: the Product gates split by branch name, so check out the branch the PR comes from for CI\'s answer');
   if (!title && !reviewHead) {
     const subjects = git(repoRoot, ['log', '--no-merges', '--format=%s', `${base}..HEAD`]).stdout.split('\n').filter(Boolean);
     if (subjects.length === 1) { title = subjects[0]; titleNote = 'the title is the branch\'s one commit subject (pass --title to check another)'; }
@@ -329,6 +356,7 @@ export async function runChecks(dir, opts = {}) {
   const removeProduct = () => {
     if (!placed?.placed) return;
     fs.rmSync(placed.created || placed.dest, { recursive: true, force: true });
+    if (placed.marker) { try { fs.rmSync(placed.marker); } catch { /* gone */ } }
     placed.placed = false;
   };
   // The gate runs in a session of its own, so a Ctrl-C reaches only yad, which passes it on. It ends the

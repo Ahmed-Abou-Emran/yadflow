@@ -995,7 +995,7 @@ names can actually close:
 `yad run checks` runs every installed gate in one go, the way CI runs them: this repo's own `checks/`,
 against `origin/<default branch>`, with the Product's default branch written where
 `.sdlc/product-link.json` says while the four Product-reading gates run, and removed after (a folder
-already there is read as it is and kept). Signatures are checked with git there; the platform's
+already there is read as it is, unless a killed run of `yad run checks` left it — that one is replaced). Signatures are checked with git there; the platform's
 Verified badge is judged in CI. To run one gate on its own:
 
 From inside the code repo, against the PR/MR base (e.g. `master`). For the gates that take one, the

@@ -127,7 +127,8 @@ yad run checks --body pr-description.md
   [verified-commits](#verified-commits) by git's own signature check. Your unmerged Product edits are
   not seen, as CI does not see them.
 - Every gate runs, including the package install and build/test/lint (`--no-build` skips those two),
-  then a summary. The exit code is 1 when a gate fails.
+  then a summary. The exit code is 1 when a gate fails or the run is refused, and 130 when it is
+  stopped with Ctrl-C.
 - Give the pull request text with `--title "<title>"` and `--body <file>`. A branch of one commit uses
   its subject as the title. Without them, pr-title and pr-template are skipped — a skipped gate is not a
   pass. On GitLab it warns when the description is 2700 characters or longer — GitLab cuts the text CI

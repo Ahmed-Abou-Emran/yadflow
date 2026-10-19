@@ -4,7 +4,7 @@
 import './fixtures/git-quiet.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -304,7 +304,9 @@ test('yad run checks: a folder already there is read as it is and kept; a copy a
     assert.match(r.out, /\.yad\/product is already there, so it is read as it is — it may not be the Product's default branch/);
     assert.ok(fs.existsSync(path.join(backend, '.yad/product/epics/x.md')), 'a folder the run did not write is left in place');
     fs.rmSync(path.join(backend, '.yad/product'), { recursive: true });
-    write(backend, { '.yad/product/.yad-run-checks': 'left\n', '.yad/product/stale.md': 'old\n' });
+    // What a killed run leaves: its copy, and its record in the git folder.
+    write(backend, { '.yad/product/stale.md': 'old\n' });
+    fs.writeFileSync(path.join(backend, '.git/yad-run-checks.json'), JSON.stringify({ pid: 999999, start: 0, host: os.hostname(), rel: '.yad/product', created: '.yad/product' }));
     r = yad(backend, ['run', 'checks', '--no-build']);
     assert.match(r.out, /is written to \.yad\/product/);
     assert.ok(!fs.existsSync(path.join(backend, '.yad/product')), 'the leftover copy is replaced, then removed');
@@ -333,7 +335,7 @@ test('yad run checks: Ctrl-C stops the run even when the gate catches it, and th
       'package-lock.json': JSON.stringify({ name: 'b', version: '0.0.0', lockfileVersion: 3, requires: true, packages: { '': { name: 'b', version: '0.0.0' } } }),
     });
     for (const sig of ['SIGINT', 'SIGTERM']) {
-      const child = (await import('node:child_process')).spawn(process.execPath, [YAD, 'run', 'checks', '--title', 'feat: x'], { cwd: backend, env: { ...ENV, PWD: backend, YAD_NO_REPORT: '1' }, detached: true });
+      const child = spawn(process.execPath, [YAD, 'run', 'checks', '--title', 'feat: x'], { cwd: backend, env: { ...ENV, PWD: backend, YAD_NO_REPORT: '1' }, detached: true });
       let out = '';
       child.stdout.on('data', (d) => { out += d; });
       child.stderr.on('data', (d) => { out += d; });
@@ -431,8 +433,7 @@ test('yad run checks: a stop during a Product gate removes the copy; a gate that
   const { W, backend } = workspace();
   try {
     fs.writeFileSync(path.join(backend, 'checks/lineage-check.sh'), '#!/usr/bin/env bash\necho "lineage started"\ntrap "" INT TERM HUP\nsleep 30\n');
-    const { spawn } = await import('node:child_process');
-    const child = spawn(process.execPath, [YAD, 'run', 'checks', '--no-build'], { cwd: backend, env: { ...ENV, PWD: backend, YAD_NO_REPORT: '1' } });
+        const child = spawn(process.execPath, [YAD, 'run', 'checks', '--no-build'], { cwd: backend, env: { ...ENV, PWD: backend, YAD_NO_REPORT: '1' } });
     let out = '';
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { out += d; });
@@ -451,22 +452,28 @@ test('yad run checks: a stop during a Product gate removes the copy; a gate that
 test('yad run checks: a copy another live run is using is not touched; a product-checkout FAIL skips the four gates; uncommitted work is named', () => {
   const { W, backend } = workspace();
   try {
-    // This test's own process stands for a live run (its command line holds "yad", from yadflow's path).
-    write(backend, { '.yad/product/.yad-run-checks': `${process.pid} ${Date.now()} .yad ${os.hostname()}\n`, '.yad/product/x.md': 'busy\n' });
+    // A process whose command line reads `yad run checks` stands for a live run.
+    const busy = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)', '--', 'yad', 'run', 'checks'], { stdio: 'ignore' });
+    write(backend, { '.yad/product/x.md': 'busy\n' });
+    const record = (pid, created) => fs.writeFileSync(path.join(backend, '.git/yad-run-checks.json'), JSON.stringify({ pid, start: Date.now(), host: os.hostname(), rel: '.yad/product', created }));
+    record(busy.pid, '.yad');
     let r = yad(backend, ['run', 'checks', '--no-build']);
+    busy.kill();
     assert.match(r.out, /another yad run checks is using \.yad\/product right now — this run reads it as it is \(remove \.yad\/product if no other run is going\)/);
     assert.ok(fs.existsSync(path.join(backend, '.yad/product/x.md')));
     // A reused process id — here pid 1, never a yad run — is not a live run: the copy is replaced, and the
     // .yad folder that run made goes with it.
-    write(backend, { '.yad/product/.yad-run-checks': `1 ${Date.now()} .yad ${os.hostname()}\n` });
+    record(1, '.yad');
     r = yad(backend, ['run', 'checks', '--no-build']);
     assert.match(r.out, /is written to \.yad\/product/);
     assert.ok(!fs.existsSync(path.join(backend, '.yad')), 'the killed run\'s folder is gone too');
+    assert.ok(!fs.existsSync(path.join(backend, '.git/yad-run-checks.json')), 'and its record');
     write(backend, { 'src/new.js': 'not added\n' });
+    git(backend, 'mv', 'src/thing.js', 'src/moved.js');
     fs.mkdirSync(path.join(W, 'shared'));
     fs.symlinkSync(path.join(W, 'shared'), path.join(backend, '.yad'));
     r = yad(backend, ['run', 'checks', '--no-build']);
-    assert.match(r.out, /uncommitted changes are built and tested here but are not in the push \(src\/new\.js\)/);
+    assert.match(r.out, /uncommitted changes are built and tested here but are not in the push \(src\/moved\.js, src\/new\.js\)/);
     assert.match(r.out, /skipped: contract-check — product-checkout failed, so it was not run \(as in CI\)/);
     assert.match(r.out, /✗ product-checkout — the Product could not be put where CI puts it/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
