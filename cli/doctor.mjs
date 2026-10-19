@@ -2552,8 +2552,22 @@ export function productTokenChecks(checks, root, { runner, env, today } = {}) {
   };
   const listed = repos.map(({ repo, i }) => ({ repo, i, url: urlOf(repo), at: where(urlOf(repo)) }));
   let gitlabSeen = false;
+  const topOf = (dir) => {
+    const r = run('git', ['rev-parse', '--show-toplevel'], { cwd: dir });
+    if (!r.ok || !r.stdout) return null;
+    try { return fs.realpathSync(r.stdout.trim()); } catch { return r.stdout.trim(); }
+  };
+  const rootTop = topOf(root);
   for (const { repo, i, url, at } of listed) {
-    if (at && product && at.host === product.host && at.repo === product.repo) continue; // the Product's own repo
+    // The Product's own repo (a monorepo) needs no token: on disk, the record writer's own test — the same
+    // git top as the Product (review 1); else the same host and path.
+    const repoRoot = typeof repo.path === 'string' && repo.path ? path.resolve(root, repo.path) : null;
+    const onDisk = repoRoot && exists(repoRoot) ? topOf(repoRoot) : null;
+    if (onDisk && rootTop && onDisk === rootTop) continue;
+    if (!onDisk && at && product && at.host === product.host && at.repo === product.repo) continue;
+    // A repo on disk with no product-link record has no checkout that reads the token (review 1): CI only
+    // speaks where the record is, and so does this.
+    if (onDisk && !exists(path.join(repoRoot, PRODUCT_LINK))) continue;
     const platform = repo.platform || detectPlatform(url || '') || null;
     if (platform !== 'github' && platform !== 'gitlab') continue;
     if (platform === 'gitlab') gitlabSeen = true;
@@ -2568,11 +2582,12 @@ export function productTokenChecks(checks, root, { runner, env, today } = {}) {
   if (gitlabSeen && productPlatform === 'gitlab') {
     const r = readExpiringProductTokens({ gitUrl: productConfig.git_url }, { ...opts, ...(today ? { today } : {}) });
     if (!r.known) {
-      check(checks, 'product-token-expiry', 'product-token', 'info', `whether one of the Product's access tokens that can clone it expires soon is not known — ${r.why}`);
+      check(checks, 'product-token-expiry', 'product-token', 'warn', `whether one of the Product's access tokens that can clone it expires soon is not known — ${r.why}`);
     } else {
-      for (const t of r.soon) {
+      for (const [k, t] of r.soon.entries()) {
         const when = t.days < 0 ? `expired on ${t.expires}` : `expires on ${t.expires} (in ${t.days} day(s))`;
-        check(checks, 'product-token-expiry', 'product-token', 'warn',
+        // One id per token, as the per-repo lines have (review 1); a name that may be an address is its place.
+        check(checks, hideAddresses(t.name) === t.name ? `product-token-expiry:${t.name}` : `product-token-expiry:#${k + 1}`, 'product-token', 'warn',
           `the Product's access token ${shown(t.name)} (${t.scopes.map(shown).join(', ')}) ${when} — if it is the ${TOKEN_NAME} of a code repo, the Product-reading gates there will fail their checkout`,
           'make a new token that can read the Product and set it as YAD_PRODUCT_TOKEN on each code repo that used the old one (yad cannot see which token a variable holds)');
       }

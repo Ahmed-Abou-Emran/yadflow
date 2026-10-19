@@ -28925,7 +28925,8 @@ test('#345 product token: GitHub — repo secret, organisation secret, missing, 
   // The repo's own list unread: not known, never "missing".
   r = read([[/actions\/secrets/, 403]]);
   assert.equal(r.known, false);
-  assert.equal(tokenLine(r, { name: 'app' }).status, 'info');
+  assert.equal(tokenLine(r, { name: 'app' }).status, 'warn');
+  assert.match(tokenLine(r, { name: 'app' }).message, /is not known — GitHub refused/);
   // A full page without the name proves nothing.
   r = read([[/actions\/secrets/, 200, { secrets: Array.from({ length: PAGE }, (_, i) => ({ name: `S${i}` })) }]]);
   assert.equal(r.known, false);
@@ -28976,11 +28977,25 @@ test('#345 product token: a GitLab Product\'s access tokens that can clone it an
     { id: 1, name: 'ci-read', scopes: ['read_repository'], expires_at: '2026-11-01', active: true, revoked: false },
     { id: 2, name: 'far', scopes: ['read_repository'], expires_at: '2027-06-01', active: true },
     { id: 3, name: 'wrong-scope', scopes: ['read_api'], expires_at: '2026-10-20', active: true },
-    { id: 4, name: 'gone', scopes: ['api'], expires_at: '2026-10-20', active: false },
+    // Expired: GitLab lists it `active: false`, and it is still said (review 1). Revoked: gone on purpose.
+    { id: 4, name: 'lapsed', scopes: ['api'], expires_at: '2026-10-10', active: false },
+    { id: 7, name: 'revoked', scopes: ['api'], expires_at: '2026-10-20', active: false, revoked: true },
     { id: 5, name: 'no-expiry', scopes: ['api'], expires_at: null, active: true },
     { id: 6, name: 'edge', scopes: ['api'], expires_at: '2026-11-18', active: true },
   ]);
-  assert.deepEqual(r.soon.map((t) => [t.name, t.expires, t.days]), [['ci-read', '2026-11-01', 13], ['edge', '2026-11-18', 30]]);
+  assert.deepEqual(r.soon.map((t) => [t.name, t.expires, t.days]), [['ci-read', '2026-11-01', 13], ['lapsed', '2026-10-10', -9], ['edge', '2026-11-18', 30]]);
+  // A full page proves nothing about the next one.
+  assert.equal(read(Array.from({ length: PAGE }, (_, i) => ({ id: i, name: `t${i}`, scopes: ['api'], expires_at: '2030-01-01' }))).known, false);
+});
+
+test('#345 product token: a GitLab user namespace is not a group (no "could not be read")', () => {
+  const f = fakePlatform({ calls: [[/^projects\/.*\/variables/, 200, []], [/^groups\/someone\//, 404], [/^namespaces\/someone$/, 200, { kind: 'user' }]] });
+  const r = readTokenPlacement({ platform: 'gitlab', gitUrl: 'https://gitlab.com/someone/app.git' }, { runner: f.runner, env: ON });
+  assert.deepEqual(r.groups, []);
+  assert.match(tokenLine(r, { name: 'app' }).message, /is not set on the project or its groups/);
+  // A group 404 that is not a user's namespace stays "could not be read".
+  const g = fakePlatform({ calls: [[/^projects\/.*\/variables/, 200, []], [/^groups\/hidden\//, 404], [/^namespaces\/hidden$/, 404]] });
+  assert.match(tokenLine(readTokenPlacement({ platform: 'gitlab', gitUrl: 'https://gitlab.com/hidden/app.git' }, { runner: g.runner, env: ON }), { name: 'app' }).message, /the group hidden could not be read/);
 });
 
 test('#345 doctor: one product-token line per connected code repo, none for the Product\'s own repo or with no git_url', async () => {
@@ -28997,21 +29012,36 @@ test('#345 doctor: one product-token line per connected code repo, none for the 
     ] }));
     const f = fakePlatform({ calls: [
       [/^projects\/acme%2Fteam%2Fapi\/variables/, 200, []], [/^projects\/acme%2Fteam%2Fweb\/variables/, 200, []],
-      [/^groups\/acme%2Fteam\/variables/, 200, [{ key: 'YAD_PRODUCT_TOKEN', value: 'v', protected: false, environment_scope: '*' }]], [/^groups\/acme\/variables/, 200, []],
+      [/^groups\/acme%2Fteam\/variables/, 200, [{ key: 'YAD_PRODUCT_TOKEN', value: 'glpat-PLANTED', protected: false, environment_scope: '*' }]], [/^groups\/acme\/variables/, 200, []],
       [/^projects\/acme%2Fproduct\/access_tokens/, 200, [{ id: 9, name: 'prod-read', scopes: ['read_repository'], expires_at: '2026-10-25', active: true }]],
     ] });
     let checks = [];
     productTokenChecks(checks, T, { runner: f.runner, env: ON, today: '2026-10-19' });
     assert.deepEqual(checks.map((x) => [x.id, x.section, x.status]), [
-      ['product-token:api', 'product-token', 'warn'], ['product-token:web', 'product-token', 'warn'], ['product-token-expiry', 'product-token', 'warn'],
+      ['product-token:api', 'product-token', 'warn'], ['product-token:web', 'product-token', 'warn'], ['product-token-expiry:prod-read', 'product-token', 'warn'],
     ]);
     assert.match(checks[0].message, /comes from the group acme\/team, .*\(registered here: web\)/);
     assert.match(checks[2].message, /the Product's access token prod-read \(read_repository\) expires on 2026-10-25 \(in 6 day\(s\)\)/);
-    assert.doesNotMatch(JSON.stringify(checks), /"v"/);
+    assert.doesNotMatch(JSON.stringify(checks), /PLANTED|glpat/);
     // No git_url on the Product: nothing to check.
     fs.writeFileSync(path.join(T, '.sdlc/product.json'), JSON.stringify({ platform: 'gitlab' }));
     checks = [];
     productTokenChecks(checks, T, { runner: f.runner, env: ON });
     assert.deepEqual(checks, []);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+// Review 1: a "not known" line went to the printer as a status it had no arm for, and `yad doctor` crashed.
+// The real CLI, reads off (as the suite always runs), on a Product with a git_url and a connected repo.
+test('#345 doctor: the product-token section prints (reads off: not known, as a warning) through the real CLI', () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'yad-345-cli-'));
+  try {
+    fs.mkdirSync(path.join(T, '.sdlc'), { recursive: true });
+    fs.writeFileSync(path.join(T, '.sdlc/product.json'), JSON.stringify({ platform: 'gitlab', git_url: 'https://gitlab.com/acme/product.git' }));
+    fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'api', platform: 'gitlab', git_url: 'https://gitlab.com/acme/api.git' }] }));
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'bin/yad.mjs'), 'doctor'], { cwd: T, encoding: 'utf8', env: { ...process.env, YAD_PLATFORM_READ: '0', NO_COLOR: '1' } });
+    assert.doesNotMatch(`${r.stdout}${r.stderr}`, /yad failed/, r.stderr);
+    assert.match(r.stdout, /product-token/);
+    assert.match(r.stdout, /api: whether YAD_PRODUCT_TOKEN is set for its CI is not known — platform reads are turned off/);
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });

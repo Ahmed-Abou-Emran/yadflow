@@ -2271,7 +2271,7 @@ function productSource() {
 const recordFor = (url, p, branch = 'main') => JSON.stringify({ git_url: url, path: p, default_branch: branch }, null, 2) + '\n';
 // product-checkout reads which CI it is in (#345): a run of the suite inside CI must not change what these
 // tests see, so each run starts from "not in CI" and a test names the CI it wants.
-const CI_CLEAN = { GITHUB_ACTIONS: '', GITLAB_CI: '', YAD_PR_FORK: '', GITHUB_ACTOR: '', CI_MERGE_REQUEST_SOURCE_PROJECT_ID: '', CI_MERGE_REQUEST_PROJECT_ID: '' };
+const CI_CLEAN = { GITHUB_ACTIONS: '', GITLAB_CI: '', YAD_PR_FORK: '', GITHUB_ACTOR: '', CI_PROJECT_ID: '', CI_MERGE_REQUEST_SOURCE_PROJECT_ID: '', CI_MERGE_REQUEST_PROJECT_ID: '' };
 const runCheckout = (cwd, args, env = {}) => runGate(PRODUCT_CHECKOUT, cwd, args, { ...CI_CLEAN, ...env });
 
 test('product-checkout: clones the Product where the base record says, only with the secret (E120)', () => {
@@ -2363,8 +2363,10 @@ test('product-checkout: #345 a missing token warns loudly in CI, except on a for
     [{}, false, 'outside CI'],
     [{ GITHUB_ACTIONS: 'true', YAD_PR_FORK: 'false' }, true, 'a GitHub PR from this repo'],
     [{ GITHUB_ACTIONS: 'true', YAD_PR_FORK: 'true' }, false, 'a GitHub PR from a fork'],
-    [{ GITLAB_CI: 'true', CI_MERGE_REQUEST_SOURCE_PROJECT_ID: '7', CI_MERGE_REQUEST_PROJECT_ID: '7' }, true, 'a GitLab MR from this project'],
-    [{ GITLAB_CI: 'true', CI_MERGE_REQUEST_SOURCE_PROJECT_ID: '9', CI_MERGE_REQUEST_PROJECT_ID: '7' }, false, 'a GitLab MR from a fork'],
+    [{ GITLAB_CI: 'true', CI_PROJECT_ID: '7', CI_MERGE_REQUEST_SOURCE_PROJECT_ID: '7', CI_MERGE_REQUEST_PROJECT_ID: '7' }, true, 'a GitLab MR from this project'],
+    [{ GITLAB_CI: 'true', CI_PROJECT_ID: '9', CI_MERGE_REQUEST_SOURCE_PROJECT_ID: '9', CI_MERGE_REQUEST_PROJECT_ID: '7' }, false, 'a GitLab MR from a fork, in the fork\'s own pipeline'],
+    // A maintainer runs the fork's MR pipeline in the target project, which does get its variables (review 1).
+    [{ GITLAB_CI: 'true', CI_PROJECT_ID: '7', CI_MERGE_REQUEST_SOURCE_PROJECT_ID: '9', CI_MERGE_REQUEST_PROJECT_ID: '7' }, true, 'a fork\'s MR run in the target project'],
   ];
   for (const [env, warns, label] of cases) {
     const r = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: '', ...env });
@@ -2384,10 +2386,10 @@ test('product-checkout: #345 a missing token warns loudly in CI, except on a for
 
 // #345: with a token, one API call reads its expiry date. A fake `curl` first on PATH answers it, and an
 // https git_url is mapped to the local Product by a git `insteadOf`, so the clone itself still runs.
-function expiryRig({ host = 'github.com', code = '200', head = '', body = '{}', clones = true } = {}) {
+function expiryRig({ host = 'github.com', code = '200', head = '', body = '{}', clones = true, userinfo = '' } = {}) {
   const src = productSource();
   const rig = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-expiry-'));
-  const url = `https://${host}/org/product.git`;
+  const url = `https://${userinfo}${host}/org/product.git`;
   fs.writeFileSync(path.join(rig, 'gitconfig'), `[url "file://${clones ? src : `${src}-gone`}"]\n\tinsteadOf = ${url}\n`);
   fs.mkdirSync(path.join(rig, 'bin'));
   fs.writeFileSync(path.join(rig, 'head.txt'), head);
@@ -2446,13 +2448,32 @@ test('product-checkout: #345 GitLab reads expires_at with PRIVATE-TOKEN; no date
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /did not say when YAD_PRODUCT_TOKEN expires/);
   rig.done();
+  // A clone-only token may not use GitLab's API: said, and the clone goes on.
   rig = expiryRig({ host: 'gitlab.example.com', code: '403' });
   r = runCheckout(rig.T, [rig.base], { ...rig.env, GITLAB_CI: 'true' });
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /could not read YAD_PRODUCT_TOKEN's expiry date from gitlab\.example\.com \(HTTP 403\); going on with the clone/);
+  assert.match(r.out, /gitlab\.example\.com would not tell this token its own expiry date \(HTTP 403/);
   rig.done();
-  // Outside CI, a host that is not github.com has no known API: no call at all.
-  rig = expiryRig({ host: 'gitlab.example.com' });
+  rig = expiryRig({ host: 'gitlab.example.com', code: '500' });
+  r = runCheckout(rig.T, [rig.base], { ...rig.env, GITLAB_CI: 'true' });
+  assert.match(r.out, /could not read YAD_PRODUCT_TOKEN's expiry date from gitlab\.example\.com \(HTTP 500\); going on with the clone/);
+  rig.done();
+  // The host decides the API, not the CI it runs in (review 1): a GitLab Product from GitHub Actions...
+  rig = expiryRig({ host: 'gitlab.example.com', body: `{"expires_at":"${inDays(3)}"}` });
+  r = runCheckout(rig.T, [rig.base], { ...rig.env, GITHUB_ACTIONS: 'true' });
+  assert.match(fs.readFileSync(path.join(rig.rig, 'argv.txt'), 'utf8'), /^https:\/\/gitlab\.example\.com\/api\/v4\/personal_access_tokens\/self$/m);
+  assert.match(fs.readFileSync(path.join(rig.rig, 'sent-header.txt'), 'utf8'), /^PRIVATE-TOKEN: /m);
+  assert.match(r.out, /expires on/);
+  rig.done();
+  // ...and a github.com Product from GitLab CI, with a user in its url that never reaches the API host.
+  rig = expiryRig({ host: 'github.com', userinfo: 'x-access-token@', head: `github-authentication-token-expiration: ${inDays(60)} 00:00:00 UTC\r\n` });
+  r = runCheckout(rig.T, [rig.base], { ...rig.env, GITLAB_CI: 'true' });
+  assert.match(r.out, new RegExp(`expires on ${inDays(60)}\\.`));
+  assert.match(fs.readFileSync(path.join(rig.rig, 'argv.txt'), 'utf8'), /^https:\/\/api\.github\.com\/rate_limit$/m);
+  assert.match(fs.readFileSync(path.join(rig.rig, 'sent-header.txt'), 'utf8'), /^Authorization: Bearer /m);
+  rig.done();
+  // Outside CI, a host that names neither platform has no known API: no call at all.
+  rig = expiryRig({ host: 'git.example.com' });
   r = runCheckout(rig.T, [rig.base], rig.env);
   assert.equal(r.code, 0, r.out);
   assert.ok(!fs.existsSync(path.join(rig.rig, 'argv.txt')), 'no API call');

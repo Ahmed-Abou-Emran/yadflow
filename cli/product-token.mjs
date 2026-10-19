@@ -85,6 +85,13 @@ export function readTokenPlacement({ platform, gitUrl }, { runner = run, env = p
   for (let i = parts.length - 1; i >= 1; i--) {
     const g = parts.slice(0, i).join('/');
     const gr = api(runner, 'glab', host, `groups/${enc(g)}/variables?per_page=${PAGE}`);
+    // A user's own namespace (`someone/app`) is not a group and has no group variables: GitLab answers 404
+    // for it (review 1). A group the login cannot see answers 404 too, so a 404 is read as "no group here"
+    // only when GitLab says the namespace is a user's.
+    if (!gr.ok && gr.status === 404) {
+      const ns = api(runner, 'glab', host, `namespaces/${enc(g)}`);
+      if (ns.ok && ns.body?.kind === 'user') continue;
+    }
     if (!gr.ok || !Array.isArray(gr.body)) {
       groups.push({ path: g, set: null, vars: [], why: gr.ok ? 'GitLab answered with something yad could not read' : whyFailed(gr, { platform: 'gitlab', host, what: `the CI/CD variables of the group ${shown(g)}`, plural: true }) });
       continue;
@@ -110,7 +117,8 @@ const UNPROTECT = 'Settings → CI/CD → Variables: edit it, untick "Protect va
 // registered repos in that group.
 export function tokenLine(r, { name, others = () => [] } = {}) {
   const who = name;
-  if (!r.known) return { status: 'info', message: `${who}: whether ${TOKEN_NAME} is set for its CI is not known — ${r.why}` };
+  // A warn, as E70's "not known" is: doctor prints ok, warn and fail only (review 1).
+  if (!r.known) return { status: 'warn', message: `${who}: whether ${TOKEN_NAME} is set for its CI is not known — ${r.why}` };
   const defer = 'contract-check, lineage-check, epic-open and reconcile-debt-check cannot read the Product there and only defer';
   if (r.platform === 'github') {
     if (r.project.set) return { status: 'ok', message: `${who}: ${TOKEN_NAME} is set as an Actions secret` };
@@ -161,7 +169,9 @@ export function readExpiringProductTokens({ gitUrl }, { runner = run, env = proc
   const day = (d) => Date.parse(`${d}T00:00:00Z`) / 864e5;
   const soon = [];
   for (const tok of r.body) {
-    if (!tok || tok.active === false || tok.revoked === true) continue;
+    // An EXPIRED token is listed with `active: false`: kept, so doctor says it expired (review 1). Only a
+    // revoked one is gone on purpose.
+    if (!tok || tok.revoked === true) continue;
     const scopes = Array.isArray(tok.scopes) ? tok.scopes.filter((s) => typeof s === 'string') : [];
     if (!scopes.some((s) => s === 'read_repository' || s === 'api')) continue;
     const exp = typeof tok.expires_at === 'string' && /^\d{4}-\d{2}-\d{2}/.test(tok.expires_at) ? tok.expires_at.slice(0, 10) : null;
@@ -169,5 +179,7 @@ export function readExpiringProductTokens({ gitUrl }, { runner = run, env = proc
     const days = Math.round(day(exp) - day(today));
     if (days <= EXPIRY_WARN_DAYS) soon.push({ name: typeof tok.name === 'string' ? tok.name : `#${tok.id}`, expires: exp, days, scopes });
   }
-  return { ...base, known: true, soon, partial: r.body.length >= PAGE };
+  // A full page proves nothing about the tokens past it (review 1).
+  if (r.body.length >= PAGE) return unknown('partial', `${shown(base.repo)} has more than ${PAGE} access tokens, and yad reads one page`);
+  return { ...base, known: true, soon };
 }

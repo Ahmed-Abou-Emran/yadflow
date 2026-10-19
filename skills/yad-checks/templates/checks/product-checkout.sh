@@ -91,8 +91,10 @@ if [ -z "${YAD_PRODUCT_TOKEN:-}" ]; then
   # (head repo != this repo); GitLab names both projects. Outside CI nothing is known, and it is a note.
   _fork=""
   if [ "${GITHUB_ACTIONS:-}" = true ]; then _fork="${YAD_PR_FORK:-}"
-  elif [ "${GITLAB_CI:-}" = true ] && [ -n "${CI_MERGE_REQUEST_SOURCE_PROJECT_ID:-}" ]; then
-    if [ "${CI_MERGE_REQUEST_SOURCE_PROJECT_ID}" != "${CI_MERGE_REQUEST_PROJECT_ID:-}" ]; then _fork=true; else _fork=false; fi
+  elif [ "${GITLAB_CI:-}" = true ] && [ -n "${CI_MERGE_REQUEST_PROJECT_ID:-}" ]; then
+    # A pipeline that runs OUTSIDE the MR's target project (a fork's own pipeline) never gets the target's
+    # variables; a fork's MR pipeline a maintainer runs IN the target project does (review 1).
+    if [ "${CI_PROJECT_ID:-}" != "${CI_MERGE_REQUEST_PROJECT_ID}" ]; then _fork=true; else _fork=false; fi
   fi
   if [ -n "$url" ] && { [ "${GITHUB_ACTIONS:-}" = true ] || [ "${GITLAB_CI:-}" = true ]; } && [ "$_fork" != true ]; then
     warn "no YAD_PRODUCT_TOKEN secret — the Product is not checked out, so contract-check, lineage-check, epic-open and reconcile-debt-check cannot read it and only defer on this PR."
@@ -171,11 +173,19 @@ _host=""
 case "$url" in https://*) _h="${url#https://}"; _host="${_h%%/*}"; _host="${_host##*@}" ;; esac
 _api=""
 _kind=""
-if [ -n "$_host" ]; then
-  if [ "$_host" = github.com ]; then _api="https://api.github.com/rate_limit"; _kind=github
-  elif [ "${GITLAB_CI:-}" = true ]; then _api="https://${_host}/api/v4/personal_access_tokens/self"; _kind=gitlab
-  elif [ "${GITHUB_ACTIONS:-}" = true ]; then _api="https://${_host}/api/v3/rate_limit"; _kind=github
-  fi
+# Which API, from the Product's HOST first (review 1: a GitHub-run code repo can read a GitLab Product),
+# and only for a host that names neither platform, from the CI it runs in. Always the Product's own host
+# (or api.github.com / api.<sub>.ghe.com for GitHub's cloud): the token goes nowhere the clone does not.
+_hn="$(printf '%s' "${_host%%:*}" | tr '[:upper:]' '[:lower:]')"
+if [ -n "$_hn" ]; then
+  case "$_hn" in
+    github.com) _api="https://api.github.com/rate_limit"; _kind=github ;;
+    *.ghe.com) _api="https://api.${_hn}/rate_limit"; _kind=github ;;
+    gitlab.com|*gitlab*) _api="https://${_host}/api/v4/personal_access_tokens/self"; _kind=gitlab ;;
+    *) if [ "${GITLAB_CI:-}" = true ]; then _api="https://${_host}/api/v4/personal_access_tokens/self"; _kind=gitlab
+       elif [ "${GITHUB_ACTIONS:-}" = true ]; then _api="https://${_host}/api/v3/rate_limit"; _kind=github
+       fi ;;
+  esac
 fi
 if [ -n "$_api" ] && command -v curl >/dev/null 2>&1; then
   _tmp="$(mktemp -d)"
@@ -203,6 +213,10 @@ if [ -n "$_api" ] && command -v curl >/dev/null 2>&1; then
     fi
   elif [ "$_code" = 401 ]; then
     _rejected=1
+  elif [ "$_code" = 403 ] && [ "$_kind" = gitlab ]; then
+    # A clone-only token (read_repository) may not call GitLab's API at all: its expiry is then read by
+    # `yad doctor`, from the Product's own list of access tokens.
+    echo "note [product-checkout]: ${_host} would not tell this token its own expiry date (HTTP 403 — a token with only read_repository cannot use the API); \`yad doctor\` warns about the Product's access tokens that expire soon."
   else
     echo "note [product-checkout]: could not read YAD_PRODUCT_TOKEN's expiry date from ${_host} (${_code:+HTTP }${_code:-no answer}); going on with the clone."
   fi
