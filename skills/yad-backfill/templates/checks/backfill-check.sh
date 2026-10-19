@@ -61,7 +61,7 @@ resolve_base() {
 BASE="${1:-${SDLC_BASE:-$(resolve_base)}}"
 [ -n "${1:-}" ] || [ -n "${SDLC_BASE:-}" ] || echo "note [backfill]: no base given — diffing against '${BASE}'."
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
-  echo "FAIL [backfill]: base ref '${BASE}' not found — fetch full history / check the base branch."
+  echo "FAIL [backfill]: base ref '${BASE}' not found — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), and give a base that names a fetched branch (the first argument, or SDLC_BASE)."
   exit 1
 fi
 # What this branch changes is what MERGING it into BASE would change (#363 reviews 1, 3 and 4). A diff
@@ -76,7 +76,7 @@ fi
 # closed. No merge base at all (a shallow clone, unrelated history) fails closed too.
 _mbs="$(git merge-base --all "$BASE" HEAD 2>/dev/null)" || _mbs=""
 if [ -z "$_mbs" ]; then
-  echo "FAIL [backfill]: '${BASE}' and HEAD share no history — fetch full history (a shallow clone has no merge base) or check the base branch."
+  echo "FAIL [backfill]: '${BASE}' and HEAD share no history — a shallow clone has no merge base: check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), or give the branch this change targets as the base."
   exit 1
 fi
 _mb_count="$(printf '%s\n' "$_mbs" | wc -l | tr -d ' ')"
@@ -92,7 +92,7 @@ elif [ "$_mt" = 1 ]; then
   echo "FAIL [backfill]: this branch does not merge cleanly into ${BASE}, so what it changes there cannot be read. Merge ${BASE} into the branch, resolve the conflicts, then push again."
   exit 1
 elif [ "$_mt" != 129 ]; then
-  echo "FAIL [backfill]: git could not build the merge of this branch into ${BASE} (git merge-tree exit ${_mt}) — fetch the full history of both, then run again."
+  echo "FAIL [backfill]: git could not build the merge of this branch into ${BASE} (git merge-tree exit ${_mt}) — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
   exit 1
 elif [ "$_mb_count" != 1 ]; then
   echo "FAIL [backfill]: '${BASE}' and HEAD have ${_mb_count} merge bases, and this git (older than 2.38) cannot build the merge into ${BASE}. Merge ${BASE} into the branch, then push again."

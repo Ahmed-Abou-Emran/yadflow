@@ -97,6 +97,9 @@ test('spec-link gate: commit without a Task trailer fails', () => {
   const r = runGate(SPEC_LINK, T);
   assert.equal(r.code, 1, 'unlinked change must fail');
   assert.match(r.out, /has no 'Task:' trailer/);
+  // #351: the fix, the command that writes it, how to repair a commit already made, and who is exempt.
+  assert.match(r.out, /add one naming the task it implements, as 'Task: EP-<slug>-S<n>-T<NN>'\. `yad commit --task <id>` writes it/);
+  assert.match(r.out, /reword it \(git commit --amend, or git rebase -i main\) and push again\. A ci, chore, build or test commit needs no trailer\./);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -595,6 +598,7 @@ test('contract-check and backfill-check fail closed when the base shares no hist
     const r = runGate(gate, T, ['island']);
     assert.equal(r.code, 1, `${tag}: ${r.out}`);
     assert.match(r.out, new RegExp(`FAIL \\[${tag}\\]: 'island' and HEAD share no history`), `${tag}: ${r.out}`);
+    assert.match(r.out, /a shallow clone has no merge base: check the code out with full history \(GitHub: actions\/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0"\), or give the branch this change targets as the base\./, `${tag}: ${r.out}`);
   }
   fs.rmSync(T, { recursive: true, force: true });
 });
@@ -2943,7 +2947,7 @@ for (const g of GATES) {
     commit(T, g.subject || 'feat: add thing\n\nTask: EP-demo-S01-T01', { 'src/thing.js': 'x', ...(g.files || {}) });
     r = runGate(g.script, T);
     assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /keeps more than one Product holding EP-demo \(a b\) — the gate cannot tell which is meant/);
+    assert.match(r.out, /keeps more than one Product holding EP-demo \(a b\) — the gate cannot tell which is meant\. Set product-repo in the story's link\.md to one of them\./);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
@@ -3005,7 +3009,7 @@ for (const g of GATES) {
     try {
       const r = runGate(g.script, T);
       assert.equal(r.code, 1, r.out);
-      assert.match(r.out, /a folder the gate cannot enter to check where it really is — so it is not read/);
+      assert.match(r.out, /a folder the gate cannot enter to check where it really is — so it is not read\. Point product-repo in the story's link\.md \(or path in \.sdlc\/product-link\.json on the base\) at a folder the job can read\./);
     } finally {
       fs.chmodSync(path.join(T, 'product'), 0o755);
       fs.rmSync(T, { recursive: true, force: true });
@@ -3040,7 +3044,20 @@ for (const g of GATES) {
     });
     const r = runGate(g.script, T);
     assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product/);
+    assert.match(r.out, /inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product\. Point product-repo in the story's link\.md \(or path in \.sdlc\/product-link\.json on the base\) at the Product checkout, such as \.yad\/product\./);
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+
+  test(`${g.name} gate: a kept Product with no epics on the base says what to change (#351)`, () => {
+    const T = scaffoldRepo();
+    productFiles(T, 'our-product', () => fs.mkdirSync(path.join(T, 'our-product'), { recursive: true }), { settings: true });
+    onBase(T, {}); // the first spec: the PR's own product-repo is used
+    commit(T, g.subject || 'feat: add thing\n\nTask: EP-demo-S01-T01', {
+      'src/thing.js': 'x', ...(g.files || {}), 'specs/EP-demo-S01/link.md': linkFor(g, '../../our-product'),
+    });
+    const r = runGate(g.script, T);
+    assert.equal(r.code, 1, r.out);
+    assert.ok(r.out.includes("a Product this repo keeps, and main has no 'our-product/epics' folder — there is nothing on the base to read. Merge that Product's epics into main first, or point product-repo in the story's link.md (or path in .sdlc/product-link.json on the base) at the Product checkout."), r.out);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
@@ -3147,8 +3164,8 @@ for (const g of GATES.filter((x) => x.name !== 'contract-check')) {
       assert.doesNotMatch(r.out, /^PASS /m);
       // Refused for the missing epic itself, not for something that happens to follow from it.
       const why = {
-        'lineage-check': /link\.md has no 'epic:'/,
-        'epic-open': /link\.md has no valid product-repo\/epic metadata/,
+        'lineage-check': /link\.md has no 'epic:' \(cannot place it in a thread\)\. Set epic: EP-demo in it: a story's epic is the prefix of its id\./,
+        'epic-open': /specs\/EP-demo-S01\/link\.md has no valid epic: value \(EP-<slug>\)\. Set epic: EP-demo in it: a story's epic is the prefix of its id\./,
         'reconcile-debt': /says epic: <none>, but EP-demo-S01 is a story of EP-demo/,
       }[g.name];
       assert.match(r.out, why, `${JSON.stringify(fields)}:\n${r.out}`);
@@ -3239,7 +3256,7 @@ test('contract-check gate: deleting link.md with PART of a slice fails; a reache
   commit(T, 'feat: widen API\n\nContract-Change: yes', storySlice('EP-demo-S01', 'a'.repeat(64)));
   r = runGate(CONTRACT, T);
   assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /EP-demo-S01's slice belongs to EP-demo, which does not exist in the Product .* an orphan slice/);
+  assert.match(r.out, /EP-demo-S01's slice belongs to EP-demo, which does not exist in the Product .* an orphan slice\. Check the story id in the slice's folder name; if EP-demo is new, merge its Shape review PRs into the Product's default branch first\. A PR that only deletes the slice passes\./);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -3273,6 +3290,31 @@ test('reconcile-debt gate: a reached Product without the epic is an orphan, not 
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /epic EP-demo does not exist in the product repo \(orphan story link\)/);
   fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('epic-open gate: a link.md with no product-repo and no record says which to set (#351)', () => {
+  const T = scaffoldRepo();
+  commit(T, 'feat: add thing\n\nTask: EP-demo-S01-T01', {
+    'src/thing.js': 'x',
+    'specs/EP-demo-S01/link.md': linkMd({ story: 'EP-demo-S01', epic: 'EP-demo' }),
+  });
+  const r = runGate(EPIC_OPEN, T);
+  assert.equal(r.code, 1, r.out);
+  assert.ok(r.out.includes('specs/EP-demo-S01/link.md names no product-repo, and no .sdlc/product-link.json on main names the Product. Set product-repo in specs/EP-demo-S01/link.md (the yad-spec skill writes it), or run `yad check --fix --push` from the Product to write the record into this repo.'), r.out);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// #351: the same words in three gates, so all three are run.
+test('epic-open, lineage-check and reconcile-debt: an orphan story link says what to check (#351)', () => {
+  for (const [script, tag] of [[EPIC_OPEN, 'epic-open'], [LINEAGE, 'lineage-check'], [DEBT, 'reconcile-debt']]) {
+    const T = scaffoldRepo();
+    seedProductEpic(path.join(T, 'product'), 'EP-other');
+    linkedCommit(T, '../../product');
+    const r = runGate(script, T);
+    assert.equal(r.code, 1, `${tag}: ${r.out}`);
+    assert.match(r.out, new RegExp(`FAIL \\[${tag}\\]: \\w+ EP-demo-S01-T01 -> epic EP-demo does not exist in the product repo \\(orphan story link\\)\\. Check the story id in the Task trailer; if EP-demo is new, merge its Shape review PRs into the Product's default branch first\\.`), `${tag}: ${r.out}`);
+    fs.rmSync(T, { recursive: true, force: true });
+  }
 });
 
 for (const [name, script, tag] of [['spec-link', SPEC_LINK, 'spec-link'], ['lineage-check', LINEAGE, 'lineage-check'], ['epic-open', EPIC_OPEN, 'epic-open'], ['reconcile-debt', DEBT, 'reconcile-debt']]) {
@@ -3651,6 +3693,19 @@ test('build-test-lint gate: failing test script fails the gate', () => {
   });
   const r = runGate(BTL, T, []);
   assert.notEqual(r.code, 0, 'failing tests must fail the gate');
+  assert.match(r.out, /FAIL \[build\/test\/lint\]: 'npm run test' failed — the output above says why\. Run it on your machine, fix what it reports, and push again\./);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('build-test-lint gate: a failing or missing step is named, and the later steps do not run (#351)', () => {
+  const T = scaffoldRepo();
+  commit(T, 'chore: wire scripts', {
+    'package.json': JSON.stringify({ name: 'fixture', version: '0.0.0', scripts: { lint: 'node -e ""', test: 'node -e ""' } }),
+  });
+  const r = runGate(BTL, T, []);
+  assert.notEqual(r.code, 0, r.out);
+  assert.match(r.out, /FAIL \[build\/test\/lint\]: 'npm run build' failed .* package\.json must have a "build" script: a missing one fails here too\./);
+  assert.doesNotMatch(r.out, /\[build\/test\/lint\] test…/);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -4787,6 +4842,8 @@ test('ledger-guard: yad commit --manual passes the local hook, and the CI check 
     const ci = runGate(LEDGER_GUARD, repo, ['origin/main']);
     assert.equal(ci.code, 1, `the trailer changes nothing about the verdict\n${ci.out}`);
     assert.match(ci.out, /FAIL \[ledger-guard\]/);
+    // #351: a commit that undoes the change does not help; the FAIL says to rewrite the listed ones.
+    assert.match(ci.out, /a new commit that undoes the change does not help: rewrite the commits listed above \(git rebase -i origin\/main\) so each leaves those files as origin\/main has them, and force-push\./);
     const sha = String(git(repo, 'rev-parse', 'HEAD')).trim();
     assert.ok(ci.out.split('\n').includes(`  ${sha} Ledger-Override: ${why}`), `the reason is quoted after the sha, so no line starts with ::\n${ci.out}`);
     assert.doesNotMatch(ci.out, /^\s*::/m, 'the runner skips leading spaces');
@@ -5170,6 +5227,29 @@ test('ledger-guard: an unresolvable base ref FAILs closed (bridge on)', () => {
   enableVerified(T);
   commit(T, 'enable bridge', {});
   assert.equal(runGate(LEDGER_GUARD, T, ['origin/nope']).code, 1);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// #351: one text in eleven gates, so every copy is run — a fix in one arm and not its twin fails here.
+test('every gate that takes a base names the CI setting when the base is not found (#351)', () => {
+  const T = scaffoldRepo();
+  enableVerified(T);
+  commit(T, 'enable bridge', {});
+  const fix = 'check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0")';
+  const gates = [
+    [SPEC_LINK, 'spec-link'], [CONTRACT, 'contract-check'], [BACKFILL, 'backfill'], [LINEAGE, 'lineage-check'],
+    [EPIC_OPEN, 'epic-open'], [DEBT, 'reconcile-debt'], [COMMIT_MSG, 'commit-message'], [PRODUCT_CHECKOUT, 'product-checkout'],
+    [LEDGER_GUARD, 'ledger-guard'], [path.join(CHECKS, 'verified-commits.sh'), 'verified-commits'],
+  ];
+  for (const [script, tag] of gates) {
+    const r = runGate(script, T, ['origin/nope'], { SDLC_PLATFORM: 'github' });
+    assert.equal(r.code, 1, `${tag}: ${r.out}`);
+    assert.ok(r.out.includes(`FAIL [${tag}]: base ref 'origin/nope' not found — ${fix}, and give a base that names a fetched branch (the first argument, or SDLC_BASE).`), `${tag}: ${r.out}`);
+  }
+  let member;
+  try { member = execFileSync('node', [path.join(CHECKS, 'member-check.mjs'), 'origin/nope'], { cwd: T, env: GIT_ENV, stdio: 'pipe' }).toString(); }
+  catch (e) { member = (e.stdout || '').toString() + (e.stderr || '').toString(); }
+  assert.ok(member.includes(`FAIL [member-check]: cannot resolve the base ref origin/nope — ${fix}`), member);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -5674,7 +5754,16 @@ test('lineage-check: a chore with no parent PASSES, a defect with no parent FAIL
     linkedCommit(T, productConfig);
     const bad = runGate(LINEAGE, T, ['main']);
     assert.equal(bad.code, 1, bad.out);
-    assert.match(bad.out, /is type:defect but declares no 'parent:'/);
+    assert.match(bad.out, /is type:defect but declares no 'parent:' — a change-epic must thread to its predecessor\. Add parent: <the epic it changes> to epics\/EP-demo\/epic\.md in the Product \(the yad-change skill writes it\); `yad thread` lists the threads\./);
+
+    // A parent the Product does not have (#351): which field to fix, or what to merge first.
+    git(T, 'reset', '-q', '--hard', 'main');
+    fs.rmSync(path.join(productConfig, 'epics'), { recursive: true, force: true });
+    seedProductEpic(productConfig, 'EP-demo', { fm: { type: 'defect', parent: 'EP-gone' } });
+    linkedCommit(T, productConfig);
+    const orphan = runGate(LINEAGE, T, ['main']);
+    assert.equal(orphan.code, 1, orphan.out);
+    assert.match(orphan.out, /threads to 'EP-gone', but epics\/EP-gone\/ does not exist in the Product \(orphan thread\)\. Fix parent: in epics\/EP-demo\/epic\.md to an epic the Product has, or merge EP-gone's Shape review PRs into the Product's default branch first\./);
   } finally {
     fs.rmSync(T, { recursive: true, force: true });
     fs.rmSync(productConfig, { recursive: true, force: true });

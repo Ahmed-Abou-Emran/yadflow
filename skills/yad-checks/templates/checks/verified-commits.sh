@@ -76,7 +76,7 @@ BASE="${1:-${SDLC_BASE:-$(resolve_base)}}"
 
 # Fail closed if the base ref can't be resolved (shallow clone / wrong base branch / unfetched ref).
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
-  echo "FAIL [verified-commits]: base ref '${BASE}' not found — fetch full history / check the base branch."
+  echo "FAIL [verified-commits]: base ref '${BASE}' not found — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), and give a base that names a fetched branch (the first argument, or SDLC_BASE)."
   exit 1
 fi
 RANGE="${BASE}..HEAD"
@@ -114,13 +114,18 @@ case "$platform" in
     ;;
 esac
 
-# 0 when the platform marks the commit's signature verified.
+# 0 when the platform marks the commit's signature verified. On GitHub a failed API call sets
+# sig_api_error=1, so the FAIL can tell "not signed" from "could not ask" (#351). GitLab answers an
+# unsigned commit with a 404, which `curl -f` cannot tell from a refused token, so it stays one case.
+sig_api_error=0
 signature_verified() {
   local sha v body
   sha="$1"
+  sig_api_error=0
   case "$platform" in
     github)
       v="$(gh api "repos/{owner}/{repo}/commits/${sha}" --jq '.commit.verification.verified' 2>/dev/null || echo api-error)"
+      [ "$v" != "api-error" ] || sig_api_error=1
       [ "$v" = "true" ]
       ;;
     gitlab)
@@ -172,7 +177,16 @@ while IFS= read -r sha; do
       # falls through to FAIL below.
       echo "WARN [verified-commits]: ${short} unsigned merge commit — introduces no content of its own (covered by verified parents); signature waived. (Self-hosted GitLab does not sign UI merge commits; on a platform that signs its merges an unsigned content-free merge is unusual but still harmless.)"
     else
-      echo "FAIL [verified-commits]: ${short} signature missing/unverified — sign commits (GPG/SSH key registered on ${platform}), or the signature API was unreachable (GitLab: set GITLAB_TOKEN/SDLC_API_TOKEN with read_api)."
+      if [ "$sig_api_error" = 1 ]; then
+        echo "FAIL [verified-commits]: ${short} — the job could not ask GitHub for the commit's signature (gh api failed). The job needs GH_TOKEN set to the workflow's github.token, as the yad workflows set it; then run it again."
+      else
+        resign="sign commits with a GPG or SSH key added to your ${platform} account (git config commit.gpgsign true), then re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' ${BASE}, and force-push."
+        if [ "$platform" = gitlab ]; then
+          echo "FAIL [verified-commits]: ${short} signature missing/unverified — ${resign} If the commits are signed, the job could not read GitLab's signature API: set a GITLAB_TOKEN (or SDLC_API_TOKEN) CI/CD variable with the read_api scope."
+        else
+          echo "FAIL [verified-commits]: ${short} signature missing/unverified — ${resign}"
+        fi
+      fi
       rc=1
     fi
   fi

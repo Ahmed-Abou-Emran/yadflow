@@ -18,10 +18,21 @@ package_manager="$(yad_detect_package_manager "$package_manager_spec")"
 run_with_words="$(yad_package_manager_command "$package_manager_spec" "$package_manager")"
 read -r -a run_with <<< "$run_with_words"
 
+# One step of the gate. A failing step used to end the job under `set -e` with only the tool's own
+# output; this names the step, the command to run by hand, and the missing-script case (#351).
+run_step() {
+  local step="$1"
+  shift
+  if ! "${run_with[@]}" run --silent "$step" "$@"; then
+    echo "FAIL [build/test/lint]: '${run_with_words} run ${step}' failed — the output above says why. Run it on your machine, fix what it reports, and push again. package.json must have a \"${step}\" script: a missing one fails here too."
+    exit 1
+  fi
+}
+
 echo "[build/test/lint] lint…"
-"${run_with[@]}" run --silent lint
+run_step lint
 echo "[build/test/lint] build…"
-"${run_with[@]}" run --silent build
+run_step build
 
 # Worker cap: when YAD_TEST_MAX_WORKERS is set AND the repo's test script is jest/vitest (the
 # runners that accept --maxWorkers), forward it to bound CI test concurrency. For any other runner
@@ -39,6 +50,6 @@ fi
 echo "[build/test/lint] test…"
 # Intentional word-splitting: $extra is empty, `-- --maxWorkers=N` (npm), or `--maxWorkers=N` (pnpm).
 # shellcheck disable=SC2086
-"${run_with[@]}" run --silent test $extra
+run_step test $extra
 
 echo "PASS [build/test/lint]: lint, build, and tests all green."

@@ -10616,6 +10616,8 @@ test('verified-commits gate: an unsigned content-free merge is signature-waived;
   r = runFrom(base);
   assert.equal(r.code, 1, 'an evil merge with no signature must fail closed');
   assert.match(r.out, new RegExp(`FAIL \\[verified-commits\\]: ${evilSha} signature missing/unverified`), r.out);
+  // On GitLab an unsigned commit and a refused token look the same (a 404), so both fixes are named (#351).
+  assert.match(r.out, /re-sign the commits already made: .* If the commits are signed, the job could not read GitLab's signature API: set a GITLAB_TOKEN \(or SDLC_API_TOKEN\) CI\/CD variable with the read_api scope\./, r.out);
 
   fs.rmSync(bin, { recursive: true, force: true });
   fs.rmSync(T, { recursive: true, force: true });
@@ -10640,6 +10642,16 @@ test('verified-commits gate: the signature is now the whole gate — a Verified 
     assert.equal(r.code, 1, r.out);
     assert.match(r.out, /PASS \[verified-commits\]: \w+ signature verified by github/);
     assert.match(r.out, new RegExp(`FAIL \\[verified-commits\\]: ${bad} signature missing/unverified`));
+    // #351: the FAIL says how to re-sign what is already committed, and no GitLab token advice on GitHub.
+    assert.match(r.out, /re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' \S+, and force-push\./);
+    assert.doesNotMatch(r.out, /GITLAB_TOKEN/);
+
+    // A gh that cannot answer is "could not ask", not "unsigned" (#351).
+    fs.writeFileSync(path.join(bin, 'gh'), '#!/usr/bin/env bash\nexit 1\n');
+    const r2 = runGate(T, { SDLC_PLATFORM: 'github', PATH: `${bin}:${process.env.PATH}` });
+    assert.equal(r2.code, 1, r2.out);
+    assert.match(r2.out, new RegExp(`FAIL \\[verified-commits\\]: ${bad} — the job could not ask GitHub for the commit's signature \\(gh api failed\\)\\. The job needs GH_TOKEN`));
+    assert.doesNotMatch(r2.out, /signature missing\/unverified/);
   } finally {
     fs.rmSync(bin, { recursive: true, force: true });
     fs.rmSync(T, { recursive: true, force: true });

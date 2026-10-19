@@ -65,7 +65,7 @@ BASE="${1:-${SDLC_BASE:-$(resolve_base)}}"
 # Fail CLOSED if the base ref can't be resolved (shallow clone / wrong base branch / unfetched ref).
 # Never let an undiffable range silently report "no surface change" — that would green-light a bypass.
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
-  echo "FAIL [contract-check]: base ref '${BASE}' not found — fetch full history / check the base branch."
+  echo "FAIL [contract-check]: base ref '${BASE}' not found — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), and give a base that names a fetched branch (the first argument, or SDLC_BASE)."
   exit 1
 fi
 # Two readings (issue #363). The TRAILER, and the slice files the branch's own commits touch, are read
@@ -84,7 +84,7 @@ RANGE="${BASE}..HEAD"
 # closed. No merge base at all (a shallow clone, unrelated history) fails closed too.
 _mbs="$(git merge-base --all "$BASE" HEAD 2>/dev/null)" || _mbs=""
 if [ -z "$_mbs" ]; then
-  echo "FAIL [contract-check]: '${BASE}' and HEAD share no history — fetch full history (a shallow clone has no merge base) or check the base branch."
+  echo "FAIL [contract-check]: '${BASE}' and HEAD share no history — a shallow clone has no merge base: check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), or give the branch this change targets as the base."
   exit 1
 fi
 _mb_count="$(printf '%s\n' "$_mbs" | wc -l | tr -d ' ')"
@@ -100,7 +100,7 @@ elif [ "$_mt" = 1 ]; then
   echo "FAIL [contract-check]: this branch does not merge cleanly into ${BASE}, so what it changes there cannot be read. Merge ${BASE} into the branch, resolve the conflicts, then push again."
   exit 1
 elif [ "$_mt" != 129 ]; then
-  echo "FAIL [contract-check]: git could not build the merge of this branch into ${BASE} (git merge-tree exit ${_mt}) — fetch the full history of both, then run again."
+  echo "FAIL [contract-check]: git could not build the merge of this branch into ${BASE} (git merge-tree exit ${_mt}) — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
   exit 1
 elif [ "$_mb_count" != 1 ]; then
   echo "FAIL [contract-check]: '${BASE}' and HEAD have ${_mb_count} merge bases, and this git (older than 2.38) cannot build the merge into ${BASE}. Merge ${BASE} into the branch, then push again."
@@ -378,7 +378,7 @@ CANDS
       case "$prod" in /*) _pc="$prod" ;; *) _pc="./$prod" ;; esac
       _phys="$(cd -P "$_pc" 2>/dev/null && pwd -P)" || _phys=""
       if [ -z "$_phys" ]; then
-        prod_fail="product-repo resolves to '${prod}', a folder the gate cannot enter to check where it really is — so it is not read."
+        prod_fail="product-repo resolves to '${prod}', a folder the gate cannot enter to check where it really is — so it is not read. Point product-repo in the story's link.md (or path in .sdlc/product-link.json on the base) at a folder the job can read."
         return 0
       fi
       # Not inside this repo's own git folder (review 7). git never lists `.git/` as tracked, yet a PR
@@ -391,7 +391,7 @@ CANDS
         _p="$_phys"
         while :; do
           if [ "$_p" -ef "$_gd" ]; then
-            prod_fail="product-repo resolves to '${prod}', inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product."
+            prod_fail="product-repo resolves to '${prod}', inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product. Point product-repo in the story's link.md (or path in .sdlc/product-link.json on the base) at the Product checkout, such as .yad/product."
             return 0
           fi
           case "$_p" in /|'') break ;; esac
@@ -425,7 +425,7 @@ KEPT
   [ -n "$_kept_here" ] || return 0
   if [ -n "$product_rel" ]; then _what="product-repo '${product_rel}' reaches nothing"; else _what="link.md names no product-repo"; fi
   if [ "$(printf '%s' "$_kept_here" | grep -c .)" -gt 1 ]; then
-    prod_fail="${_what}, and ${BASE} keeps more than one Product holding ${_epic_of} ($(printf '%s' "$_kept_here" | tr '\n' ' ' | sed -E 's/ +$//')) — the gate cannot tell which is meant."
+    prod_fail="${_what}, and ${BASE} keeps more than one Product holding ${_epic_of} ($(printf '%s' "$_kept_here" | tr '\n' ' ' | sed -E 's/ +$//')) — the gate cannot tell which is meant. Set product-repo in the story's link.md to one of them."
     return 0
   fi
   _k="$(printf '%s' "$_kept_here" | head -1)"
@@ -481,7 +481,7 @@ KEPT
 base_product() {
   _r="$1"; _e="${_r:+$_r/}epics"
   if [ "$(git cat-file -t "${BASE}:${_e}" 2>/dev/null)" != tree ]; then
-    prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and ${BASE} has no '${_e}' folder — there is nothing on the base to read."
+    prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and ${BASE} has no '${_e}' folder — there is nothing on the base to read. Merge that Product's epics into ${BASE} first, or point product-repo in the story's link.md (or path in .sdlc/product-link.json on the base) at the Product checkout."
     return 0
   fi
   # (awk reads to the end rather than stopping at the first hit: stopping left `tr` writing into a
@@ -510,7 +510,7 @@ base_product() {
            GIT_INDEX_FILE="${_arch_dir}.idx" git ls-files -z -- ':(glob)**/.gitattributes' |
              GIT_INDEX_FILE="${_arch_dir}.idx" xargs -0 git update-index --force-remove -- &&
            GIT_WORK_TREE="${_arch_dir}/${_e}" GIT_INDEX_FILE="${_arch_dir}.idx" git checkout-index -a -f; } >/dev/null 2>&1; then
-      prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and '${_e}' could not be read from ${BASE}."
+      prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and '${_e}' could not be read from ${BASE} — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
       return 0
     fi
     _arch_key="x$_r"
@@ -970,7 +970,7 @@ STORYSURF
       echo "note [contract-check]: ${story}'s slice belongs to ${epic}, which the Product does not have, and this only removes it — allowed."
       continue
     fi
-    echo "FAIL [contract-check]: ${story}'s slice belongs to ${epic}, which does not exist in the Product (${prod}/epics/) — an orphan slice."
+    echo "FAIL [contract-check]: ${story}'s slice belongs to ${epic}, which does not exist in the Product (${prod}/epics/) — an orphan slice. Check the story id in the slice's folder name; if ${epic} is new, merge its Shape review PRs into the Product's default branch first. A PR that only deletes the slice passes."
     rc=1
     continue
   elif [ -z "$_base_rel" ] && [ -z "$only_removes" ] && { [ -z "$prod" ] || [ ! -d "$prod" ]; }; then

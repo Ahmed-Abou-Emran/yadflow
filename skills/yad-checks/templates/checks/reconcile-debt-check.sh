@@ -60,7 +60,7 @@ BASE="${1:-${SDLC_BASE:-$(resolve_base)}}"
 [ -n "${1:-}" ] || [ -n "${SDLC_BASE:-}" ] || echo "note [reconcile-debt]: no base given — diffing against '${BASE}'."
 
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
-  echo "FAIL [reconcile-debt]: base ref '${BASE}' not found — fetch full history / check the base branch."
+  echo "FAIL [reconcile-debt]: base ref '${BASE}' not found — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), and give a base that names a fetched branch (the first argument, or SDLC_BASE)."
   exit 1
 fi
 RANGE="${BASE}..HEAD"
@@ -217,7 +217,7 @@ CANDS
       case "$prod" in /*) _pc="$prod" ;; *) _pc="./$prod" ;; esac
       _phys="$(cd -P "$_pc" 2>/dev/null && pwd -P)" || _phys=""
       if [ -z "$_phys" ]; then
-        prod_fail="product-repo resolves to '${prod}', a folder the gate cannot enter to check where it really is — so it is not read."
+        prod_fail="product-repo resolves to '${prod}', a folder the gate cannot enter to check where it really is — so it is not read. Point product-repo in the story's link.md (or path in .sdlc/product-link.json on the base) at a folder the job can read."
         return 0
       fi
       # Not inside this repo's own git folder (review 7). git never lists `.git/` as tracked, yet a PR
@@ -230,7 +230,7 @@ CANDS
         _p="$_phys"
         while :; do
           if [ "$_p" -ef "$_gd" ]; then
-            prod_fail="product-repo resolves to '${prod}', inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product."
+            prod_fail="product-repo resolves to '${prod}', inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product. Point product-repo in the story's link.md (or path in .sdlc/product-link.json on the base) at the Product checkout, such as .yad/product."
             return 0
           fi
           case "$_p" in /|'') break ;; esac
@@ -264,7 +264,7 @@ KEPT
   [ -n "$_kept_here" ] || return 0
   if [ -n "$product_rel" ]; then _what="product-repo '${product_rel}' reaches nothing"; else _what="link.md names no product-repo"; fi
   if [ "$(printf '%s' "$_kept_here" | grep -c .)" -gt 1 ]; then
-    prod_fail="${_what}, and ${BASE} keeps more than one Product holding ${_epic_of} ($(printf '%s' "$_kept_here" | tr '\n' ' ' | sed -E 's/ +$//')) — the gate cannot tell which is meant."
+    prod_fail="${_what}, and ${BASE} keeps more than one Product holding ${_epic_of} ($(printf '%s' "$_kept_here" | tr '\n' ' ' | sed -E 's/ +$//')) — the gate cannot tell which is meant. Set product-repo in the story's link.md to one of them."
     return 0
   fi
   _k="$(printf '%s' "$_kept_here" | head -1)"
@@ -320,7 +320,7 @@ KEPT
 base_product() {
   _r="$1"; _e="${_r:+$_r/}epics"
   if [ "$(git cat-file -t "${BASE}:${_e}" 2>/dev/null)" != tree ]; then
-    prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and ${BASE} has no '${_e}' folder — there is nothing on the base to read."
+    prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and ${BASE} has no '${_e}' folder — there is nothing on the base to read. Merge that Product's epics into ${BASE} first, or point product-repo in the story's link.md (or path in .sdlc/product-link.json on the base) at the Product checkout."
     return 0
   fi
   # (awk reads to the end rather than stopping at the first hit: stopping left `tr` writing into a
@@ -349,7 +349,7 @@ base_product() {
            GIT_INDEX_FILE="${_arch_dir}.idx" git ls-files -z -- ':(glob)**/.gitattributes' |
              GIT_INDEX_FILE="${_arch_dir}.idx" xargs -0 git update-index --force-remove -- &&
            GIT_WORK_TREE="${_arch_dir}/${_e}" GIT_INDEX_FILE="${_arch_dir}.idx" git checkout-index -a -f; } >/dev/null 2>&1; then
-      prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and '${_e}' could not be read from ${BASE}."
+      prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and '${_e}' could not be read from ${BASE} — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
       return 0
     fi
     _arch_key="x$_r"
@@ -524,7 +524,7 @@ while IFS= read -r sha; do
   # A Product that WAS reached with no such epic is an orphan story link, as lineage-check and epic-open
   # say — not "not reachable" (E117 review 2).
   if [ ! -d "$ep_dir" ]; then
-    echo "FAIL [reconcile-debt]: ${short} ${task} -> epic ${epic} does not exist in the product repo (orphan story link)."
+    echo "FAIL [reconcile-debt]: ${short} ${task} -> epic ${epic} does not exist in the product repo (orphan story link). Check the story id in the Task trailer; if ${epic} is new, merge its Shape review PRs into the Product's default branch first."
     rc=1
     continue
   fi
