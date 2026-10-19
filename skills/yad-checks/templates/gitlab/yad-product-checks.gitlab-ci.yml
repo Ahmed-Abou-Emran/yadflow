@@ -10,11 +10,24 @@
 # the gate can tell the two apart. Commit subjects are always Conventional-Commits.
 # Job names are yad-product-prefixed so they coexist with any code-repo fragment in one pipeline; jobs use
 # `needs: []` and no `stage:` so a foreign `stages:` list can neither break nor reorder them.
-default:
-  image: node:20
-  tags: [$YAD_RUNNER_TAGS]
+#
+# `image:`/`tags:` live on the .yad_product_mr_only anchor below — NOT a top-level `default:`. An included
+# top-level `default:` merges into the HOST root pipeline: it would set this image and tag on every one of
+# the Product's own jobs, and if the root already sets a top-level `image:`, GitLab rejects the whole
+# config ("image is defined in top-level and 'default:' entry"). The anchor scopes them to these jobs.
 
 .yad_product_mr_only:
+  image: node:${YAD_NODE_VERSION}
+  variables:
+    # A project/group CI/CD variable overrides this YAML value, so the Node line can be changed in project
+    # settings without editing the managed fragment (a current 20, 22 or 24 line). A shell-executor runner
+    # ignores `image:` — Node must then be on the runner host's PATH, and this value has no effect.
+    YAD_NODE_VERSION: "22"
+  # Runner selection: set the YAD_RUNNER_TAGS CI/CD variable (e.g. `dind_runner`) to route these jobs on
+  # instances whose runners are tag-locked (run_untagged: false) — it lives in project Settings → CI/CD →
+  # Variables, so it survives every `yad` sync. When unset, current GitLab (>=15) runs the jobs untagged;
+  # older versions may strand them — set a real tag if so. Single value only: `tags: [$VAR]` is one tag.
+  tags: [$YAD_RUNNER_TAGS]
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 

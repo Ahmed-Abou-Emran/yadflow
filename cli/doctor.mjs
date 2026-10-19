@@ -743,39 +743,65 @@ export function projectChecks(checks, root, { headCount = null } = {}) {
   return { productConfig, registry };
 }
 
-// GitLab CI runner tags: the wired fragments run docker-image jobs. On instances whose runners are
-// all tag-locked (run_untagged: false), an untagged image job matches no runner and sits `pending`
-// forever — silently blocking the gates (issue #50). A current fragment carries
-// `tags: [$YAD_RUNNER_TAGS]`; warn on any wired GitLab fragment that sets an `image:` but has no
-// `tags:` (an old install, or one hand-reverted by a sync). Pure local read — no API calls.
+// GitLab CI runner tags and Node line: the wired fragments run docker-image jobs. On instances whose
+// runners are all tag-locked (run_untagged: false), an untagged image job matches no runner and sits
+// `pending` forever — silently blocking the gates (issue #50). A current fragment carries
+// `tags: [$YAD_RUNNER_TAGS]`; warn on any wired GitLab fragment that sets an `image:` but has no `tags:`
+// (an old install, or one hand-reverted by a sync). A current fragment also takes its Node line from the
+// `YAD_NODE_VERSION` CI/CD variable; one that still names a fixed `node:<n>` image is an install from
+// before that (#364), whose Node line can only be changed by editing a file `yad` rewrites. Pure local
+// read — no API calls, so neither the variables' values nor the runner's executor are known here.
 export function ciTagsChecks(checks, root, productConfig, registry) {
-  const untagged = (p) => {
-    try {
-      const txt = fs.readFileSync(p, 'utf8');
-      return /^\s*image:/m.test(txt) && !/^\s*tags:/m.test(txt);
-    } catch { return false; } // absent fragment is not this check's concern
-  };
+  const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } }; // absent: not this check's concern
+  // A plain update replaces an outdated copy but leaves a hand-edited (`modified`) one alone — and a copy
+  // edited to fit a runner is the case #364 is about, so the hint names both (review 1).
+  const UPDATE = 'run `yad update` (if `yad check` lists the file as `modified`, move your change into the `YAD_RUNNER_TAGS` / `YAD_NODE_VERSION` CI/CD variables, then run `yad update --overwrite-local` — it replaces every hand-edited managed file, keeping a `.yad-orig` copy of each)';
   const fragments = [];
   if (productConfig?.platform === 'gitlab' && isVerifiedLedger(productConfig)) {
     fragments.push(
       { scope: 'product', file: '.gitlab/ci/yad-gate-sync.yml', path: path.join(root, '.gitlab/ci/yad-gate-sync.yml') },
       { scope: 'product', file: '.gitlab/ci/yad-verified-commits.yml', path: path.join(root, '.gitlab/ci/yad-verified-commits.yml') },
       { scope: 'product', file: '.gitlab/ci/yad-product-checks.yml', path: path.join(root, '.gitlab/ci/yad-product-checks.yml') },
+      { scope: 'product', file: '.gitlab/ci/yad-update-guard.yml', path: path.join(root, '.gitlab/ci/yad-update-guard.yml') },
       // Its old name (E123), while it is still there — `renamed:` says to run `yad update`.
       { scope: 'product', file: '.gitlab/ci/yad-hub-checks.yml', path: path.join(root, '.gitlab/ci/yad-hub-checks.yml') },
     );
   }
+  // The Pages job `yad docs sync --wire` writes for a GitLab Pages target. Only that command rewrites it,
+  // and only a file that carries its header is ours (a team's own file is left to the team).
+  const docsRel = pagesWorkflowPath(wiredPagesPlatform(readJSON(path.join(root, PROJECT_FILES.docsConfig), null)));
+  if (docsRel.startsWith('.gitlab/')) {
+    fragments.push({ scope: 'product', file: docsRel, path: path.join(root, docsRel), ours: (t) => t.startsWith('# yad-managed — built by `yad docs sync --wire`'),
+      fix: 'run `yad docs sync --wire` and commit the file (it rewrites the whole file, so re-apply any change your team made to it)' });
+  }
   for (const repo of Array.isArray(registry?.repos) ? registry.repos : []) {
     if (!isPlainObject(repo) || repo.platform !== 'gitlab' || !repo.path) continue;
-    fragments.push({ scope: forTerminal(repo.name), repo: true, file: '.gitlab/ci/yad-checks.yml', path: path.join(path.resolve(root, repo.path), '.gitlab/ci/yad-checks.yml') });
+    for (const file of ['.gitlab/ci/yad-checks.yml', '.gitlab/ci/yad-update-guard.yml']) {
+      fragments.push({ scope: forTerminal(repo.name), repo: true, file, path: path.join(path.resolve(root, repo.path), file) });
+    }
   }
+  // A repo kept at the Product's own root (a monorepo) shares its files: one warning per file (review 1).
+  const seen = new Set();
   for (const f of fragments) {
-    if (untagged(f.path)) {
+    const at = path.resolve(f.path);
+    if (seen.has(at)) continue;
+    seen.add(at);
+    const txt = read(f.path);
+    if (txt === null || (f.ours && !f.ours(txt))) continue;
+    // The id cannot tell the Product from a repo named `product`; this key can (E124 review 1).
+    const extra = { product: f.scope === 'product' && !f.repo };
+    if (/^\s*image:/m.test(txt) && !/^\s*tags:/m.test(txt)) {
       check(checks, `ci-tags:${f.scope}`, 'project', 'warn',
         `${f.scope}: ${f.file} runs a docker job with no \`tags:\` [YAD-CI-001]`,
-        'tag-locked runners (run_untagged: false) will strand it at `pending` — run `yad update`, then set the `YAD_RUNNER_TAGS` CI/CD variable',
-        // The id cannot tell the Product from a repo named `product`; this key can (E124 review 1).
-        { product: f.scope === 'product' && !f.repo });
+        `tag-locked runners (run_untagged: false) will strand it at \`pending\` — ${f.fix || UPDATE}, then set the \`YAD_RUNNER_TAGS\` CI/CD variable`,
+        extra);
+    }
+    const pinned = txt.match(/^\s*image:\s*["']?node:(\d[\w.-]*)/m);
+    if (pinned) {
+      check(checks, `ci-node:${f.scope}`, 'project', 'warn',
+        `${f.scope}: ${f.file} runs a fixed \`node:${forTerminal(pinned[1])}\` image [YAD-CI-002]`,
+        `${f.fix || UPDATE}; the Node line then comes from the \`YAD_NODE_VERSION\` CI/CD variable (default 22), set in project settings so it survives every sync`,
+        extra);
     }
   }
 }

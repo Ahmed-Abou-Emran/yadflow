@@ -1425,17 +1425,51 @@ test('E123 skill rename: yad-hub-bridge (and the older sdlc-hub-bridge) become y
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
+// Issue #364: every docker job takes its Node line from the YAD_NODE_VERSION CI/CD variable, so a team
+// can change it in project settings instead of editing a file `yad` rewrites. A fixed `node:<n>` image
+// is the old shape. The Pages job `yad docs sync --wire` writes is held to the same rule.
+const GITLAB_IMAGE_FRAGMENTS = [
+  'skills/yad-checks/templates/gitlab/yad-checks.gitlab-ci.yml',
+  'skills/yad-checks/templates/gitlab/yad-verified-commits.gitlab-ci.yml',
+  'skills/yad-checks/templates/gitlab/yad-update-guard.gitlab-ci.yml',
+  'skills/yad-checks/templates/gitlab/yad-product-checks.gitlab-ci.yml',
+  'skills/yad-checks/templates/gitlab/.gitlab-ci.yml',
+  'skills/yad-product-bridge/templates/gitlab/yad-gate-sync.gitlab-ci.yml',
+];
+
 // Every GitLab fragment that runs a docker-image job must carry `tags: [$YAD_RUNNER_TAGS]` so a
 // tag-locked instance can route it (issue #50). Guards against a future revert dropping the tag.
 test('gitlab fragments declare tags: [$YAD_RUNNER_TAGS] on their docker jobs', () => {
-  for (const rel of [
-    'skills/yad-checks/templates/gitlab/yad-checks.gitlab-ci.yml',
-    'skills/yad-checks/templates/gitlab/yad-verified-commits.gitlab-ci.yml',
-    'skills/yad-product-bridge/templates/gitlab/yad-gate-sync.gitlab-ci.yml',
-  ]) {
+  for (const rel of GITLAB_IMAGE_FRAGMENTS) {
     const txt = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     assert.ok(/^\s*image:/m.test(txt), `${rel}: expected an image: job`);
     assert.ok(txt.includes('tags: [$YAD_RUNNER_TAGS]'), `${rel}: missing tags: [$YAD_RUNNER_TAGS]`);
+  }
+});
+
+test('#364: gitlab docker jobs take node:${YAD_NODE_VERSION} (default 22), never a fixed node image', async () => {
+  const { pagesWorkflow } = await import('./docs.mjs');
+  const shipped = fs.readdirSync(path.join(ROOT, 'skills'), { recursive: true }).map(String)
+    .filter((f) => /templates\/gitlab\/.*\.yml$/.test(f))
+    .map((f) => `skills/${f}`)
+    .filter((rel) => /^\s*image:/m.test(fs.readFileSync(path.join(ROOT, rel), 'utf8')));
+  assert.deepEqual(shipped.sort(), [...GITLAB_IMAGE_FRAGMENTS].sort(), 'every shipped GitLab file with a docker job is listed here');
+  const texts = GITLAB_IMAGE_FRAGMENTS.map((rel) => [rel, fs.readFileSync(path.join(ROOT, rel), 'utf8')]);
+  texts.push(['pagesWorkflow(gitlab)', pagesWorkflow('gitlab')]);
+  for (const [rel, txt] of texts) {
+    const images = [...txt.matchAll(/^\s*image:\s*(.*)$/gm)].map((m) => m[1].trim());
+    assert.ok(images.length, `${rel}: expected an image:`);
+    for (const img of images) assert.equal(img, 'node:${YAD_NODE_VERSION}', `${rel}: image must come from YAD_NODE_VERSION`);
+    assert.match(txt, /YAD_NODE_VERSION:\s*"22"/, `${rel}: needs the YAD_NODE_VERSION default`);
+    assert.ok(txt.includes('tags: [$YAD_RUNNER_TAGS]'), `${rel}: missing tags: [$YAD_RUNNER_TAGS]`);
+  }
+});
+
+// An included top-level `default:` merges into the HOST root pipeline: it sets the image and tag on the
+// Product's own jobs, and GitLab rejects the whole config when the root also sets a top-level `image:`.
+test('#364: included gitlab fragments set no top-level default: (it would leak into the host pipeline)', () => {
+  for (const rel of GITLAB_IMAGE_FRAGMENTS.filter((r) => !r.endsWith('/.gitlab-ci.yml'))) {
+    assert.doesNotMatch(fs.readFileSync(path.join(ROOT, rel), 'utf8'), /^default:/m, `${rel}: top-level default:`);
   }
 });
 
@@ -11728,6 +11762,65 @@ test('doctor: untagged GitLab fragment warns with YAD-CI-001; tagged is silent',
   r = await doctorOn(T);
   assert.ok(r.checks.some((x) => x.id === 'ci-tags:backend' && x.status === 'warn' && /YAD-CI-001/.test(x.message)), 'untagged repo fragment must warn');
   fs.rmSync(T, { recursive: true, force: true });
+});
+
+// #364: a wired fragment from before the YAD_NODE_VERSION variable names a fixed `node:<n>` image, so its
+// Node line can be changed only by editing a file `yad` rewrites. Every GitLab fragment doctor reads is
+// judged — the update-guard ones too, which the tags check used to skip — and the Pages job, whose fix is
+// `yad docs sync --wire`, not `yad update`.
+test('doctor: #364 a fixed node image warns YAD-CI-002 on every wired GitLab fragment; a current one is silent', async () => {
+  const { T } = scaffold();
+  const repos = JSON.parse(fs.readFileSync(path.join(T, '.sdlc/repos.json'), 'utf8'));
+  repos.repos[0].platform = 'gitlab';
+  fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify(repos));
+  fs.writeFileSync(path.join(T, '.sdlc/hub.json'), JSON.stringify({ platform: 'gitlab', bridge_enabled: true, roster: [] }));
+  await reconcile(T, { fix: true });
+  const { pagesWorkflow } = await import('./docs.mjs');
+  fs.writeFileSync(path.join(T, '.sdlc/docs.json'), JSON.stringify({ target: 'gitlab-pages' }));
+  fs.mkdirSync(path.join(T, '.gitlab/ci'), { recursive: true });
+  fs.writeFileSync(path.join(T, '.gitlab/ci/yad-docs.yml'), pagesWorkflow('gitlab'));
+
+  let r = await doctorOn(T);
+  assert.deepEqual(r.checks.filter((x) => /YAD-CI-00[12]/.test(x.message)).map((x) => x.message), [], 'current fragments are silent');
+
+  const pin = (f) => fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('image: node:${YAD_NODE_VERSION}', 'image: node:20'));
+  const untag = (f) => fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace(/^\s*tags: \[\$YAD_RUNNER_TAGS\]\n/m, ''));
+  const guard = path.join(T, 'demo/backend/.gitlab/ci/yad-update-guard.yml');
+  pin(guard); untag(guard);
+  pin(path.join(T, '.gitlab/ci/yad-gate-sync.yml'));
+  const docs = path.join(T, '.gitlab/ci/yad-docs.yml');
+  pin(docs); untag(docs);
+  r = await doctorOn(T);
+  const node = r.checks.filter((x) => x.id.startsWith('ci-node:'));
+  assert.ok(node.every((x) => x.status === 'warn' && /YAD-CI-002/.test(x.message)));
+  assert.ok(node.some((x) => x.id === 'ci-node:backend' && x.message.includes('yad-update-guard.yml') && /yad update/.test(x.hint)), 'repo update-guard');
+  // A plain update leaves a hand-edited copy alone, so the hint names the way out of that too (review 1).
+  assert.ok(node.every((x) => x.message.includes('yad-docs.yml') || /--overwrite-local/.test(x.hint)), 'the hint covers a modified copy');
+  assert.ok(node.some((x) => x.id === 'ci-node:product' && x.message.includes('yad-gate-sync.yml')), 'product gate-sync');
+  const docsNode = node.find((x) => x.message.includes('yad-docs.yml'));
+  assert.ok(docsNode && /yad docs sync --wire/.test(docsNode.hint) && !/yad update/.test(docsNode.hint), 'the Pages job names its own fix');
+  assert.ok(r.checks.some((x) => x.id === 'ci-tags:backend' && x.message.includes('yad-update-guard.yml')), 'update-guard tags are read');
+  assert.ok(r.checks.some((x) => x.id === 'ci-tags:product' && x.message.includes('yad-docs.yml') && /yad docs sync --wire/.test(x.hint)), 'Pages tags are read');
+
+  // A Pages file without our header is the team's own: not judged.
+  fs.writeFileSync(docs, 'pages:\n  image: node:18\n  script: [x]\n');
+  r = await doctorOn(T);
+  assert.ok(!r.checks.some((x) => /yad-docs\.yml/.test(x.message)), 'a team-owned Pages file is left alone');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+// #364 review 1: a repo kept at the Product's own root shares its `.gitlab/ci/` files, so one file is one
+// warning — not one as the Product's and one again as the repo's.
+test('doctor: #364 a GitLab file shared by the Product and a repo at its root warns once', async () => {
+  const { ciTagsChecks } = await import('./doctor.mjs');
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'yad-364-mono-'));
+  try {
+    fs.mkdirSync(path.join(T, '.gitlab/ci'), { recursive: true });
+    fs.writeFileSync(path.join(T, '.gitlab/ci/yad-update-guard.yml'), 'job:\n  image: node:20\n  script: [x]\n');
+    const checks = [];
+    ciTagsChecks(checks, T, { platform: 'gitlab', ledger: 'verified' }, { repos: [{ name: 'mono', platform: 'gitlab', path: '.' }] });
+    assert.deepEqual(checks.map((x) => x.id).sort(), ['ci-node:product', 'ci-tags:product']);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
 test('doctor: corrupt repos.json fails with YAD-STATE-001', async () => {

@@ -17,9 +17,13 @@ yad-product-verified-commits:
   # project Settings → CI/CD → Variables, so it survives every `yad` sync. When unset, current
   # GitLab (>=15) runs the job untagged; older versions may strand it — set a real tag if so.
   tags: [$YAD_RUNNER_TAGS]
-  image: node:20
+  image: node:${YAD_NODE_VERSION}
   variables:
     GIT_DEPTH: "0" # full history so the gate can diff against the target branch
+    # A project/group CI/CD variable overrides this YAML value, so the Node line can be changed in project
+    # settings without editing the managed fragment (a current 20, 22 or 24 line). A shell-executor runner
+    # ignores `image:` — Node must then be on the runner host's PATH, and this value has no effect.
+    YAD_NODE_VERSION: "22"
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   script:

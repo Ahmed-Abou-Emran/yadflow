@@ -5,6 +5,9 @@ stages: [spec-link, contract-check, build-test-lint, verified-commits]
 
 default:
   image: node:${YAD_NODE_VERSION}
+  # Runner selection on tag-locked instances (run_untagged: false): set the YAD_RUNNER_TAGS CI/CD variable.
+  # When unset, current GitLab (>=15) runs the jobs untagged.
+  tags: [$YAD_RUNNER_TAGS]
 
 .mr_only:
   rules:
