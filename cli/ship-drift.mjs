@@ -87,19 +87,6 @@ function logRecords(dir, args, counter) {
   return out;
 }
 
-// Did merge commit `m` bring a change to the folder? True when any merged-in side changed it since the
-// point it left the first parent — so a merge whose result differs from a side branch only because the
-// base moved on in that folder is not this folder's (review 3), and a merge that reached the default
-// branch through another branch, or off its first-parent line, still is (review 4).
-function mergeTouches(dir, m, spec) {
-  const [first, ...sides] = m.parents;
-  return sides.some((side) => {
-    const base = git(dir, ['merge-base', '--end-of-options', first, side]).out.trim();
-    if (!/^[0-9a-f]{40,64}$/.test(base)) return true; // no common history: it brought everything
-    return git(dir, ['diff', '--quiet', '--no-renames', '--end-of-options', base, side, ...spec]).status === 1;
-  });
-}
-
 // One repo's merged work, read from its clone. `{ read: true, ref, sha, dir, shared, tasks: Map(task ->
 // evidence), possible, skipped }` or `{ read: false, why }` — a repo that cannot be read says so, and is
 // never "nothing merged".
@@ -118,45 +105,46 @@ export function readRepoMerges(root, repo) {
   const found = defaultRef(dir, branch);
   const ref = found?.ref;
   if (!found) return { read: false, why: branch ? `no branch ${forTerminal(branch)} in the clone` : 'no default_branch in repos.json' };
-  // A repo folder inside a shared checkout (the monorepo layout) reads only its own folder's history: the
-  // whole history would credit every other folder's tasks to it too (review 1). The folder is named as it
-  // is on disk (its true letter case) and matched literally (review 2). Git's default history
-  // simplification still shows the trailer commits of a merged side branch; a merge commit is read in a
-  // second, first-parent pass, so only a merge that brought THIS folder's change counts — `--full-history`
-  // also kept a merge whose result differs from the side branch in another folder (review 3).
+  // A shallow clone holds only its newest commits: what merged before its edge is not there, and reading it
+  // would be an all-clear over history it does not have (review 5). Said, not read.
+  const shallow = git(dir, ['rev-parse', '--is-shallow-repository']);
+  if (!shallow.ok || shallow.out.trim() !== 'false') return { read: false, why: shallow.ok ? 'a shallow clone — run `git fetch --unshallow` in it, then run again' : 'git could not tell whether it is a shallow clone' };
+  // A repo folder inside a shared checkout (the monorepo layout) reads only its own folder's NON-MERGE
+  // commits: their `Task:` trailers and task IDs in their subjects (what `yad commit` writes). The whole
+  // history would credit every other folder's tasks to it (review 1); a merge commit cannot be told to
+  // belong to one folder without edge cases that kept turning up — shallow edges, criss-cross merges, a
+  // stacked branch carrying another task's work — so a merge's title is not read for a folder (the user's
+  // decision, 2026-10-19, review 5), and the output says so. The folder is named as it is on disk (its true
+  // letter case) and matched literally (review 2).
   let only = null;
   if (judged.inside) {
     try { only = path.relative(fs.realpathSync.native(judged.inside), fs.realpathSync.native(dir)).split(path.sep).join('/'); } catch { return { read: false, why: 'its folder could not be resolved' }; }
   }
   const counter = { skipped: 0 };
   const spec = only ? ['--', `:(top,literal)${only}`] : ['--'];
-  // A folder: its own non-merge commits, then the merges that name a task and brought it a change (review
-  // 4). A whole repo: every commit, as it is.
   const records = logRecords(dir, [...(only ? ['--no-merges'] : []), '--end-of-options', found.full, ...spec], counter);
-  const allMerges = only ? logRecords(dir, ['--merges', '--end-of-options', found.full, '--'], counter) : [];
-  if (!records || !allMerges) return { read: false, why: `git could not read ${forTerminal(ref)}` };
-  const named = (m) => m.trailers.split('\x1e').some((v) => TASK_ID_RE.test(v.trim()))
-    || mergedBranches(m.subject).some((b) => TASK_ID_RE.test(taskFromBranch(b) || ''));
-  const merges = allMerges.filter((m) => named(m) && mergeTouches(dir, m, spec));
+  if (!records) return { read: false, why: `git could not read ${forTerminal(ref)}` };
   const tasks = new Map();
   const possible = [];
   const add = (task, ev) => { if (!tasks.has(task)) tasks.set(task, ev); };
   // The Product's own checkpoint commits name a story in their subject; they are yad's records, not merged
   // work (review 3).
   const ownRecord = (subject) => judged.state === 'product' && /^chore\(product\):/.test(subject);
-  for (const { sha, date, parents, subject, trailers } of [...records, ...merges]) {
+  for (const { sha, date, parents, subject, trailers } of records) {
     const isMerge = parents.length > 1;
     let hadTask = false;
     for (const v of trailers.split('\x1e').map((s) => s.trim())) {
       if (TASK_ID_RE.test(v)) { add(v, { sha, date, via: 'trailer' }); hadTask = true; }
     }
-    for (const b of isMerge ? mergedBranches(subject) : []) {
+    const brought = isMerge ? mergedBranches(subject) : [];
+    for (const b of brought) {
       const branchTask = taskFromBranch(b);
       if (branchTask && TASK_ID_RE.test(branchTask)) { add(branchTask, { sha, date, via: 'merge commit' }); hadTask = true; }
     }
-    // A merge's own subject is read only for the branches it brought in, never for an ID in its "into …"
-    // part (review 4); any other commit's subject may carry a full task ID (a squash titled with its task).
-    if (!isMerge && !/^Revert\b/i.test(subject) && !ownRecord(subject)) {
+    // A subject may carry a full task ID: a squash titled with its task, or a merge titled with its pull
+    // request (review 5). A "Merge branch 'x' into 'y'" subject is read only for the branches it brought
+    // in, never for an ID in its "into …" part (review 4).
+    if (!brought.length && !/^Merge (?:remote-tracking )?branch(?:es)? '/.test(subject) && !/^Revert\b/i.test(subject) && !ownRecord(subject)) {
       for (const t of subject.match(TASK_IN_TEXT) || []) { add(t, { sha, date, via: 'task ID in the subject' }); hadTask = true; }
     }
     if (hadTask || ownRecord(subject)) continue;
@@ -166,7 +154,7 @@ export function readRepoMerges(root, repo) {
     if (tag) possible.push({ sha, tag: `s${Number(tag[1].slice(1))}`, via: `short tag ${tag[1].toLowerCase()}` });
   }
   const sha = git(dir, ['rev-parse', '--verify', '--quiet', '--end-of-options', found.full]).out.trim();
-  return { read: true, ref, sha, dir, shared: !!only, tasks, possible, skipped: counter.skipped };
+  return { read: true, ref, sha, dir, shared: !!only, tasks, possible, skipped: counter.skipped, ...(only ? { mergesUnread: true } : {}) };
 }
 
 // The task branches merged INTO the default branch that the platform knows of, when it answers. Adds to
@@ -255,11 +243,19 @@ export function shipDrift(root, { platform = true, epics = null, runner, env = p
       const story = typeof fm.id === 'string' && idOk(fm.id) ? fm.id : fileId;
       return { fm, fileId, story };
     }).filter((x) => idOk(x.story));
+    // Two files claiming one story ID (an `id:` copied by hand): each falls back to its own file name; a
+    // clash that remains is not compared, and is said (review 5).
+    const claims = new Map();
+    for (const x of files) claims.set(x.story, (claims.get(x.story) || 0) + 1);
+    for (const x of files) if (claims.get(x.story) > 1 && idOk(x.fileId)) x.story = x.fileId;
+    const seenIds = new Map();
+    for (const x of files) seenIds.set(x.story, (seenIds.get(x.story) || 0) + 1);
     // Its story IDs are known even when its ledger is not: a merged task of it is never "no such story".
     for (const x of files) knownIds.add(x.story);
     let ships;
     try { ships = readShips(epicRoot(root, epic)); } catch { unreadEpics.push(epic); continue; }
     for (const { fm, fileId, story } of files) {
+      if (seenIds.get(story) > 1) { if (!uncompared.includes(story)) uncompared.push(story); continue; }
       let repos = declaredRepos(fm);
       let fallback = false;
       // A story that names no repo was never compared (review 3): with one registered repo it is that one;
@@ -291,7 +287,8 @@ export function shipDrift(root, { platform = true, epics = null, runner, env = p
         : addPlatformMerges(repo, m, { runner, env, authCache });
     }
     const partial = pl.partial || (m.read && m.skipped > 0);
-    const notes = [pl.note, m.read && m.skipped ? `${m.skipped} commit(s) could not be read` : null].filter(Boolean);
+    const notes = [pl.note, m.read && m.skipped ? `${m.skipped} commit(s) could not be read` : null,
+      m.mergesUnread ? 'merge-commit titles are not read for a folder in a shared checkout — a task seen only in one is not found' : null].filter(Boolean);
     read.set(repo.name, m);
     reposOut.push({ repo: repo.name, read: m.read, ...(m.read ? { ref: m.ref, sha: m.sha } : { why: m.why }), ...(notes.length ? { note: notes.join('; ') } : {}), ...(partial ? { partial: true } : {}) });
   }
@@ -301,7 +298,6 @@ export function shipDrift(root, { platform = true, epics = null, runner, env = p
   }
 
   const findings = [];
-  const knownStories = knownIds;
   for (const s of stories) {
     let everyRepoHasWork = s.repos.length > 0;
     for (const repoName of s.repos) {
@@ -349,7 +345,7 @@ export function shipDrift(root, { platform = true, epics = null, runner, env = p
     for (const [task, ev] of m.tasks) {
       const story = storyOf(task);
       const epic = story.replace(/-S\d+$/, '');
-      if (knownStories.has(story) || !knownEpics.has(epic) || (epics && !epics.has(epic))) continue;
+      if (knownIds.has(story) || !knownEpics.has(epic) || (epics && !epics.has(epic))) continue;
       findings.push({ kind: 'no-story', repo: repoName, sha: shaOf(ev.sha), task, epic });
     }
   }

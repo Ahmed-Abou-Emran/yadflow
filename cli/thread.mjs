@@ -208,14 +208,14 @@ export async function runReconcile(root, { action = 'check', thread = null, runn
         else (r.partial ? warn : info)(`${forTerminal(r.repo)}: read ${forTerminal(r.ref)} at ${short(r.sha)} (this clone's view — nothing fetched)${r.note ? `; ${forTerminal(r.note)}` : ''}`);
       }
       for (const e of drift.unreadEpics) warn(`${e}: its build ledger could not be read — \`yad doctor\` says why`);
-      for (const st of drift.uncompared) warn(`${st}: names no repo, and the Product registers more than one — not compared; add \`repos: [...]\` to the story`);
+      for (const st of drift.uncompared) warn(`${st}: not compared — it names no repo while the Product registers more than one (add \`repos: [...]\`), or two story files claim its ID`);
       for (const f of drift.findings) {
         if (f.kind === 'merged-no-ship') {
           const where = [short(f.sha), f.pr != null ? `PR/MR ${f.pr}` : null].filter(Boolean).join(', ');
           warn(`${f.story}-${f.task} merged in ${forTerminal(f.repo)} (${where || 'no commit named'}, by ${f.via}) — no ship record`);
           hand(forTerminal(f.fix));
         } else if (f.kind === 'looks-shipped') {
-          info(`${f.story}: ${f.fallback ? `the one registered repo (${f.repos.map(forTerminal).join(', ')}), which it names by default,` : `every repo it names (${f.repos.map(forTerminal).join(', ')})`} has merged work, but its status is ${forTerminal(f.status || 'unset')} — if no task is left, set \`status: shipped\` (\`yad checkpoint\` commits it with the ledger)`);
+          info(`${f.story}: ${f.fallback ? `the one registered repo (${f.repos.map(forTerminal).join(', ')}), used because it names none,` : `every repo it names (${f.repos.map(forTerminal).join(', ')})`} has merged work, but its status is ${forTerminal(f.status || 'unset')} — if no task is left, set \`status: shipped\` (\`yad checkpoint\` commits it with the ledger)`);
         } else if (f.kind === 'no-story') {
           warn(`${f.task} merged in ${forTerminal(f.repo)} (${short(f.sha) || 'no commit named'}) — ${f.epic} has no story ${f.task.replace(/-T\d+$/, '')}; a typo in its Task trailer, or a story file missing`);
         } else {
