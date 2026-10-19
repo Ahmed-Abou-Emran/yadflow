@@ -146,8 +146,16 @@ default branch. (local mode keeps `yad gate sync` as the local writer.)
      case set the variable to a real tag. The variable lives in project settings, so it survives
      every `yad` sync. Single value only — `tags: [$VAR]` is one tag equal to the whole variable,
      not a comma-split.
+   - **The Node line** (#364): the job runs `image: node:${YAD_NODE_VERSION}`, `22` by default; set a
+     `YAD_NODE_VERSION` CI/CD variable to change it without editing the managed fragment. A
+     **shell-executor** runner ignores `image:`: the job then runs on the runner host, which needs
+     `bash`, `git`, `curl` and Node with `npx` on the runner user's `PATH`. The job also installs a
+     pinned `glab` with `dpkg -i` and `jq` (and `git-lfs` when the Product uses LFS) into
+     `/usr/local/bin`, so a shell runner must be a Debian-family host whose runner user may do that —
+     otherwise use a docker executor for this job. `yad doctor` warns on a fragment that still runs a
+     fixed `node:<n>` image (`YAD-CI-002`); `yad update` replaces it.
    - **Git LFS needs nothing extra.** For a Product that uses Git LFS, the runner installs LFS git
-     hooks that fail without `git-lfs`, and the job's `node:20` image has none — so the job downloads a
+     hooks that fail without `git-lfs`, and the job's node image has none — so the job downloads a
      pinned `git-lfs` itself before its checkout (#327; a Product without LFS skips it). A
      `before_script` added by hand to install `git-lfs` can be removed after `yad update`.
 3. Commit the workflow to the Product. GitHub needs nothing else — the ephemeral `github.token` reads the

@@ -192,12 +192,26 @@ Copy from this skill's `templates/`:
   - The legacy standalone `templates/gitlab/.gitlab-ci.yml` is retained only for a clean greenfield repo
     that prefers a single self-contained file; the include path above is the default.
   - **Tag-locked runners** (`run_untagged: false`, common on self-hosted): the fragment's jobs run a
-    docker image, so set a `YAD_RUNNER_TAGS` CI/CD variable (e.g. `dind_runner`) to route them — the
-    `default:` block emits `tags: [$YAD_RUNNER_TAGS]`. When unset, current GitLab (≥15) drops the
+    docker image, so set a `YAD_RUNNER_TAGS` CI/CD variable (e.g. `dind_runner`) to route them — every
+    GitLab fragment's jobs carry `tags: [$YAD_RUNNER_TAGS]`. When unset, current GitLab (≥15) drops the
     empty-expanded tag so the jobs run untagged (gitlab.com shared runners); older versions may
     strand them `pending`, in which case set the variable to a real tag. The variable lives in
     project settings, so it survives every `yad` sync. Single value only — `tags: [$VAR]` is one tag
     equal to the whole variable, not a comma-split.
+  - **The Node line** (#364): every GitLab job runs `image: node:${YAD_NODE_VERSION}`, `22` by default.
+    Set a `YAD_NODE_VERSION` CI/CD variable (a current `20`, `22` or `24` line) to change it — a
+    project variable wins over the fragment's value, so the fragment itself is never edited.
+  - **Shell-executor runners** ignore `image:`. The jobs then run on the runner host as they are, so
+    the host needs `bash`, `git` and Node (any current 20, 22 or 24 line — for example from nvm) on the
+    runner user's `PATH`; `YAD_NODE_VERSION` has no effect there. Point `YAD_RUNNER_TAGS` at that
+    runner's tag.
+  - **Do not hand-edit the fragments to fit a runner.** They are managed bytes: `yad check` reports a
+    hand-edited one as `modified`, and a plain `yad update` leaves it alone — so it never receives a
+    fix again. Both runner settings above are CI/CD variables, so no edit is needed: move the
+    customisation into them, then run `yad update --overwrite-local` to restore the fragment (it keeps
+    a `.yad-orig` copy of the edited one first). `yad doctor` warns when a wired
+    fragment has no `tags:` (`YAD-CI-001`) or still runs a fixed `node:<n>` image (`YAD-CI-002`, an
+    install from before the variable — `yad update` replaces it).
 
 - Ensure `<repo>/package.json` defines `lint`, `build`, `test` scripts (see `references/check-gates.md`
   for the canonical scripts). **Only ADD a missing script; never overwrite an existing one.**

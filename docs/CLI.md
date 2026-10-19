@@ -239,7 +239,7 @@ these values, match the new one:
 | `yad history show` | a top-level key (renamed) | `hubWhy` | `productConfigWhy` (why the Product's settings could not be read) |
 
 One key was **added** beside them, so it does not move the number: `product` (`true` or `false`) on each
-`items[]` entry and `commits[]` entry of `yad check` / `yad update`, and on each `ci-tags:*` check of
+`items[]` entry and `commits[]` entry of `yad check` / `yad update`, and on each `ci-tags:*` and `ci-node:*` check of
 `yad doctor`. It says whether the item, commit or check is the Product's own. Read it rather than
 comparing `scope`, `label` or the id with `product`: a connected code repo may itself be named `product`,
 and then those say the same thing for both.
