@@ -129,7 +129,16 @@ test('yad build: start → step → trust → ship → done, and every reader ag
     r = yad(P, 'next', 'EP-l', '--json');
     assert.equal(r.code, 0, r.out);
     const flat = JSON.stringify(json(r));
-    assert.match(flat, /"shipped":true/, `yad next sees the api lane shipped: ${flat.slice(0, 400)}`);
+    assert.match(flat, /Build — every story\/repo lane is shipped or skipped/, flat.slice(0, 600));
+    assert.match(flat, /"repo":"api"[^}]*"shipped":true|"shipped":true[^}]*"repo":"api"/, flat.slice(0, 600));
+    // What yad checkpoint would commit: the Build ledgers and the story's status line, nothing else.
+    r = yad(P, 'checkpoint', '--dry-run', '--json');
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(json(r).files.sort(), [
+      'epics/EP-l/.sdlc/build-log/EP-l-S01-T01-api.json', 'epics/EP-l/.sdlc/build-log/EP-l-S01-T02-api.json',
+      'epics/EP-l/.sdlc/build-state/EP-l-S01.json', ...fs.readdirSync(path.join(dir, '.sdlc/trust-log')).map((n) => `epics/EP-l/.sdlc/trust-log/${n}`),
+      'epics/EP-l/stories/EP-l-S01.md',
+    ].sort());
     r = yad(P, 'doctor', '--json');
     const lanesWarn = JSON.stringify(json(r)).match(/lane:[^"]*|step:no-record[^"]*/g) || [];
     assert.deepEqual(lanesWarn, [], 'doctor finds nothing wrong with the lanes');
@@ -233,4 +242,20 @@ test('parseTaskIds and planDone: task lines in their usual forms; a retro ship c
   assert.deepEqual(planDone({ story: 'S', declared: ['api', 'ops'], owed: { api: ['T01', 'T02'], ops: null }, ships }).missing, ['api/T02']);
   assert.deepEqual(planDone({ story: 'S', declared: ['api', 'ops'], owed: { api: ['T01'], ops: null }, ships }).unreadable, ['ops']);
   assert.equal(planDone({ story: 'S', declared: ['api', 'ops'], skipped: ['ops'], owed: { api: ['T01'] }, ships }).shipped, true);
+});
+
+test('yad build done: a repo the story owes with no lane is refused, so yad next and the status never disagree', () => {
+  const { W, P, dir } = workspace({ tasks: '- T01 one\n' });
+  try {
+    // Shipped by hand in api, with no lane: done would set shipped while yad next still reads it in Build.
+    let r = yad(P, 'skip', 'EP-l', 'EP-l-S01', '--repo', 'web', '--reason', 'no UI change');
+    assert.equal(r.code, 0, r.out);
+    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'd'.repeat(40));
+    assert.equal(r.code, 0, r.out);
+    r = yad(P, 'build', 'done', 'EP-l-S01');
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /EP-l-S01 has no lane in api, so `yad next` would still read it in Build/);
+    assert.match(r.out, /yad checkpoint --retro-ship/);
+    assert.notEqual((fs.readFileSync(path.join(dir, 'stories/EP-l-S01.md'), 'utf8').match(/^status:\s*(\S+)/m) || [])[1], 'shipped');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });

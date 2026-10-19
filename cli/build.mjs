@@ -271,6 +271,7 @@ export async function buildTrust(root, { story, repo, step, verdict, signals = {
   const lane = liveLane(bs, story, repo);
   const entry = trustEntry({ story, repo, step, verdict, signals, ranBy, note, date: today, lane, uid: randomBytes(4).toString('hex') });
   const res = writeTrustRun(ctx.epicDir, entry);
+  if (!res.written) throw err(CODE, `a trust run named ${path.basename(res.file)} is already there`, 'run it again: a new uid is drawn each time');
   ok(`trust run ${entry.uid} recorded: ${story} / ${repo} / ${step} — ${verdict}`);
   info(`close the step with it: yad build step ${story} --repo ${repo} ${step} done --run ${entry.uid}`);
   hand('commit with `yad checkpoint --push`');
@@ -329,7 +330,8 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
   const where = registeredRepo(root, repo);
   let ship;
   const usable = where.platform && (runner !== run || platformReady(where.platform));
-  if (pr && pr !== true && usable) {
+  if (usable && (!pr || pr === true)) throw err(CODE, '--pr <n> is required', `the merged PR/MR the ship is read from: yad build ship ${story} --task ${task} --repo ${repo} --pr <n>`);
+  if (usable) {
     const got = readMergedPr(where.platform, pr, { cwd: where.checkout || root, runner });
     if (!got.ok) throw err(CODE, `could not read PR #${pr} in ${repo}: ${got.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, or pass --merge-commit <sha> and --approver <login>`);
     if (!got.merged) throw err(CODE, `PR #${pr} in ${repo} is not merged`, 'a ship is recorded once the PR/MR merges');
@@ -401,11 +403,17 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
     if (plan.missing.length) warn(`no ship yet for: ${plan.missing.join(', ')}`);
     throw err(CODE, `${story} is not shipped yet`, plan.missing.length ? `record each with \`yad build ship ${story} --task <T> --repo <r> --pr <n>\`` : 'make each repo\'s tasks.md readable on its default branch, then run this again');
   }
-  // Every lane's earlier steps must be done: the review step is the last, and a lane is not walked out of order.
+  // Every owed repo has a lane, and every lane's earlier steps are done: `yad next` reads a repo with no
+  // lane as still owed, so a story marked shipped without one would read shipped in one place and in-build
+  // in another. A pre-tracking story (shipped before the Build ledger) takes `yad checkpoint --retro-ship`.
+  const noLane = ctx.entry.repos.filter((r) => !skipped.includes(r) && !(isPlainObject(bs.repos[r]) && Array.isArray(bs.repos[r].steps)));
+  if (noLane.length) {
+    throw err(CODE, `${story} has no lane in ${noLane.join(', ')}, so \`yad next\` would still read it in Build`,
+      `\`yad build start ${story} --repo <r>\` and close its steps with \`yad build step\`; a story shipped before the Build ledger existed is recorded with \`yad checkpoint --retro-ship\` instead`);
+  }
   const open = [];
   for (const repo of ctx.entry.repos.filter((r) => !skipped.includes(r))) {
     const lane = bs.repos[repo];
-    if (!isPlainObject(lane) || !Array.isArray(lane.steps)) continue;
     for (const s of lane.steps) if (s?.id !== REVIEW_STEP && !isPassed(s)) open.push(`${repo}/${s.id}`);
   }
   if (open.length) {
@@ -415,7 +423,6 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
   let changedLanes = 0;
   for (const repo of ctx.entry.repos.filter((r) => !skipped.includes(r))) {
     const lane = bs.repos[repo];
-    if (!isPlainObject(lane) || !Array.isArray(lane.steps)) continue;
     const steps = lane.steps.map((s) => (s?.id === REVIEW_STEP && !isPassed(s) ? (changedLanes++, { ...s, status: 'done', closed: { by, date: today, via: 'human' } }) : s));
     bs.repos[repo] = { ...lane, currentStep: REVIEW_STEP, steps };
   }

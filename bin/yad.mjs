@@ -245,6 +245,16 @@ ${c.bold('Build helpers')}
   yad commit --type <t> -m <subject> [--manual --reason <why>]
                                        Commit by convention (trailers, atomic guard); --manual is
                                        the door past the Product's ledger hook, reason recorded
+  yad build start <story> --repo <r>   ${c.dim('(on the Product)')} Begin a story's Build lane in one repo
+  yad build step <story> --repo <r> <step> in_progress|in_review|done|blocked [--reason] [--run <uid>]
+                                       Move the lane's current step; done records how it closed
+  yad build trust <story> --repo <r> <step> --verdict <v> [--signal k=v]
+                                       Record a step run's trust entry (prints its uid); --uid <uid>
+                                       --verdict <v> finalizes one already recorded
+  yad build ship <story> --task <T> --repo <r> --pr <n>
+                                       Record a ship from the MERGED PR/MR (merge commit, checks,
+                                       approvers); not \`yad ship\`, which commits and opens the PR
+  yad build done <story>               Every task shipped: status shipped, review step closed
   yad run checks [--title <text>] [--body <file>] [--base <ref>] [--no-build] [--no-fetch]
                                        Run every PR/MR gate here before you push, as CI would: this
                                        repo's own checks/ scripts against origin/<default>, with the
@@ -916,11 +926,9 @@ async function main() {
       if (noProduct()) break;
       // Every --signal is name=value.
       const signals = {};
-      for (const sgl of o.signal || []) {
-        const eq = sgl.indexOf('=');
-        if (eq < 1) { refuse(`--signal ${sgl}: expected name=value`, '--signal checks=pass'); return; }
-        signals[sgl.slice(0, eq)] = sgl.slice(eq + 1);
-      }
+      const badSignal = (o.signal || []).find((sgl) => sgl.indexOf('=') < 1);
+      if (badSignal) { refuse(`--signal ${badSignal}: expected name=value`, '--signal checks=pass'); break; }
+      for (const sgl of o.signal || []) signals[sgl.slice(0, sgl.indexOf('='))] = sgl.slice(sgl.indexOf('=') + 1);
       if (action === 'start') result = await commands.buildStart(o.dir, { story, repo: o.repo, today });
       else if (action === 'step') result = await commands.buildStep(o.dir, { story, repo: o.repo, step: a3, to: a4, reason: o.reason, via: o.via || 'human', run: o.run || null, today });
       else if (action === 'trust') result = await commands.buildTrust(o.dir, { story, repo: o.repo, step: a3, verdict: o.verdict, signals, ranBy: o['ran-by'] || 'human', note: o.note || null, uid: o.uid || null, today });
