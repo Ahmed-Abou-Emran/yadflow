@@ -2471,6 +2471,16 @@ test('#365 review 5: a merge titled with its pull request\'s task ID counts in a
     g('checkout', '-q', 'main');
     g('merge', '-q', '--no-ff', '-m', 'feat(queue): add the queue EP-shop-S02-T01 (#12)', 'topic');
     assert.deepEqual(kinds(shipDrift(T, { platform: false }), 'merged-no-ship').map((f) => [f.story, f.task]), [['EP-shop-S02', 'T01']]);
+    // git's own "Merge commit/tag '...' into <branch>" subjects name the TARGET in their "into" part: not read.
+    g('checkout', '-q', '-b', 'side');
+    g('commit', '-q', '--allow-empty', '-m', 'side work');
+    g('checkout', '-q', 'main');
+    g('checkout', '-q', '-b', 'feat/EP-shop-S03-T01-x');
+    g('merge', '-q', '--no-ff', '-m', "Merge commit 'abc1234' into feat/EP-shop-S03-T01-x", 'side');
+    g('checkout', '-q', 'main');
+    g('merge', '-q', '--ff-only', 'feat/EP-shop-S03-T01-x');
+    assert.equal(g('log', '-1', '--format=%P').split(' ').length, 2, 'a real merge commit is on main');
+    assert.ok(!kinds(shipDrift(T, { platform: false }), 'merged-no-ship').some((f) => f.story === 'EP-shop-S03'), 'the into-part is not read');
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 

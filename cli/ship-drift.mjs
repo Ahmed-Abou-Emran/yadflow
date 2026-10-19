@@ -88,7 +88,7 @@ function logRecords(dir, args, counter) {
 }
 
 // One repo's merged work, read from its clone. `{ read: true, ref, sha, dir, shared, tasks: Map(task ->
-// evidence), possible, skipped }` or `{ read: false, why }` — a repo that cannot be read says so, and is
+// evidence), possible, skipped, mergesUnread? }` (`mergesUnread`: a folder, whose merge titles are not read) or `{ read: false, why }` — a repo that cannot be read says so, and is
 // never "nothing merged".
 export function readRepoMerges(root, repo) {
   const judged = judgeRepo(root, repo);
@@ -144,7 +144,7 @@ export function readRepoMerges(root, repo) {
     // A subject may carry a full task ID: a squash titled with its task, or a merge titled with its pull
     // request (review 5). A "Merge branch 'x' into 'y'" subject is read only for the branches it brought
     // in, never for an ID in its "into …" part (review 4).
-    if (!brought.length && !/^Merge (?:remote-tracking )?branch(?:es)? '/.test(subject) && !/^Revert\b/i.test(subject) && !ownRecord(subject)) {
+    if (!brought.length && !/^Merge (?:remote-tracking branch|branch(?:es)?|commit|tag)s? '/.test(subject) && !/^Revert\b/i.test(subject) && !ownRecord(subject)) {
       for (const t of subject.match(TASK_IN_TEXT) || []) { add(t, { sha, date, via: 'task ID in the subject' }); hadTask = true; }
     }
     if (hadTask || ownRecord(subject)) continue;
