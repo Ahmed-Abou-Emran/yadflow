@@ -4497,7 +4497,6 @@ test('pr-template gate: #343 when the full description cannot be read, the cut b
     [mrApiRig(T, { code: '401' }), /answered HTTP 401 to the job token/, {}],
     [mrApiRig(T, { json: { iid: 42 } }), /answered the job token without a description yad could read/, {}],
     [mrApiRig(T, { code: 'fail' }), /answered HTTP 000 to the job token|answered nothing to the job token/, {}],
-    [mrApiRig(T, { code: '401' }), /answered HTTP 401 to GITLAB_TOKEN/, { GITLAB_TOKEN: 't' }],
     [mrApiRig(T), /this is not a merge request pipeline/, { CI_MERGE_REQUEST_IID: '' }],
   ]) {
     const r = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...rig.env, ...extra });
@@ -4507,6 +4506,20 @@ test('pr-template gate: #343 when the full description cannot be read, the cut b
     assert.match(r.out, /Set a GITLAB_TOKEN CI\/CD variable/);
     rig.done();
   }
+  // A variable that is set but refused: the advice is to fix it, not to set it again (review 2).
+  const refused = mrApiRig(T, { code: '403' });
+  const rr = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...refused.env, SDLC_API_TOKEN: 't' });
+  assert.equal(rr.code, 1, rr.out);
+  assert.match(rr.out, /answered HTTP 403 to GITLAB_TOKEN/);
+  assert.match(rr.out, /is set but was refused: give it the read_api scope/);
+  assert.doesNotMatch(rr.out, /Set a GITLAB_TOKEN/);
+  refused.done();
+  // A branch pipeline has no MR project: it is not a fork (review 2).
+  const branch = mrApiRig(T);
+  const rbp = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...branch.env, CI_MERGE_REQUEST_PROJECT_ID: '', CI_MERGE_REQUEST_IID: '' });
+  assert.match(rbp.out, /this is not a merge request pipeline/);
+  assert.doesNotMatch(rbp.out, /runs in a fork/);
+  branch.done();
   // A fork's pipeline cannot read the target's MR: told so, not sent to set a variable (review 1).
   const fork = mrApiRig(T, { code: '404' });
   const rf = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...fork.env, CI_PROJECT_ID: '9' });
