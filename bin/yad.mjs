@@ -245,6 +245,14 @@ ${c.bold('Build helpers')}
   yad commit --type <t> -m <subject> [--manual --reason <why>]
                                        Commit by convention (trailers, atomic guard); --manual is
                                        the door past the Product's ledger hook, reason recorded
+  yad run checks [--title <text>] [--body <file>] [--base <ref>] [--no-build] [--no-fetch]
+                                       Run every PR/MR gate here before you push, as CI would: this
+                                       repo's own checks/ scripts against origin/<default>, with the
+                                       Product's default branch written where CI checks it out (and
+                                       removed after). Signatures are checked with git; the platform's
+                                       Verified badge is judged in CI. install-deps runs npm ci (it
+                                       replaces node_modules); --no-build skips it and build/test/lint.
+                                       Exit 1 on any FAIL
   yad open-pr [--repo <name>] [--title <text>]
                                        Open a task PR/MR against the repo's DEFAULT branch (never a
                                        hardcoded main; --base overrides) — stage-aware on the Product: a
@@ -392,6 +400,7 @@ function parseArgs(argv) {
     else if (a === '--me') o.me = true;
     else if (a === '--no-push') o.noPush = true;
     else if (a === '--no-fetch') o.noFetch = true;
+    else if (a === '--no-build') o.noBuild = true;
     else if (a === '--push') o.push = true;
     else if (a === '--allow-branch') o.allowBranch = true;
     else if (a === '--overwrite-local') o.overwriteLocal = true;
@@ -478,6 +487,7 @@ const ACTIONS = {
   hook: { known: ['ledger-guard'] },
   toolbox: { known: ['list', 'check', 'add', 'remove'], default: 'list' },
   member: { known: ['add', 'list', 'remove'], default: 'list' },
+  run: { known: ['checks'] },
 };
 // E80 — how each command finds its folder. A PRODUCT command works on the Product; a REPO command works
 // on the code repo it runs in and reads the Product beside it. The rest take their folder as given:
@@ -488,7 +498,7 @@ const PRODUCT_CMDS = new Set([
   'capture', 'claims', 'assign', 'unassign', 'owners', 'fold', 'tidy', 'index', 'history', 'repo',
   'risk-map', 'codeowners', 'docs', 'thread', 'reconcile', 'member', 'standup',
 ]);
-const REPO_CMDS = new Set(['commit', 'open-pr', 'ship', 'review']);
+const REPO_CMDS = new Set(['commit', 'open-pr', 'ship', 'review', 'run']);
 // The Product commands that WRITE its files without first checking it is one. Run from a code repo they
 // wrote an epic, a dial or the module into it; they refuse instead (E80). The rest either only read, or
 // already refuse a folder that is not a Product.
@@ -889,6 +899,12 @@ async function main() {
     case 'commit':
       result = await commands.runCommit(o.dir, { type: o.type, message: o.message, task: o.task, ai: o.ai, contractChange: o.contractChange, dryRun: o.dryRun, force: o.force, manual: o.manual, reason: o.reason });
       break;
+    case 'run': {
+      const [, action] = o._;
+      if (action !== 'checks') { refuse(`unknown run action: ${action ?? '(none)'} (checks)`, '`yad run checks` runs every pull request gate here before you push'); break; }
+      result = await commands.runChecks(o.dir, { product: o.product, base: o.base, title: o.title, body: o.body, build: !o.noBuild, fetch: !o.noFetch });
+      break;
+    }
     case 'open-pr':
       result = await commands.runOpenPr(o.dir, { repo: o.repo, product: o.product, platform: o.platform, base: o.base, title: o.title || o.message, task: o.task, risk: o.risk, contractChange: o.contractChange });
       break;
