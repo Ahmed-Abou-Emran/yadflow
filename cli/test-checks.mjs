@@ -4499,7 +4499,7 @@ test('pr-template gate: #343 when the full description cannot be read, the cut b
     [{ code: '404' }, {}, /answered HTTP 404 to the job token/, /set a GITLAB_TOKEN CI\/CD variable/],
     [{ code: '401' }, { GITLAB_TOKEN: 't' }, /answered HTTP 401 to GITLAB_TOKEN/, /the GITLAB_TOKEN variable was not accepted \(expired, revoked, or not a valid token here\)/],
     [{ code: '403' }, { SDLC_API_TOKEN: 't' }, /answered HTTP 403 to SDLC_API_TOKEN/, /the SDLC_API_TOKEN variable was refused: give it the read_api scope/],
-    [{ code: '404' }, { GITLAB_TOKEN: 't' }, /answered HTTP 404 to GITLAB_TOKEN/, /user cannot see this project/],
+    [{ code: '404' }, { GITLAB_TOKEN: 't' }, /answered HTTP 404 to GITLAB_TOKEN/, /user cannot see the merge request's project/],
     [{ code: '502' }, { GITLAB_TOKEN: 't' }, /answered HTTP 502 to GITLAB_TOKEN/, null],
     [{ code: 'fail' }, {}, /answered nothing to the job token/, null],
     [{ json: { iid: 42 } }, {}, /answered the job token without a description yad could read/, null],

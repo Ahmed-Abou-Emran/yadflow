@@ -147,7 +147,7 @@ if [ "${GITLAB_CI:-}" = true ] && { [ "${CI_MERGE_REQUEST_DESCRIPTION_IS_TRUNCAT
         case "$_code" in
           401) ADVICE="the ${_with} variable was not accepted (expired, revoked, or not a valid token here) — renew or replace it" ;;
           403) ADVICE="the ${_with} variable was refused: give it the read_api scope" ;;
-          404) ADVICE="the ${_with} variable's user cannot see this project — use a token of a member with Reporter access or more" ;;
+          404) ADVICE="the ${_with} variable's user cannot see the merge request's project — use a token of a member with Reporter access or more" ;;
         esac
       else
         case "$_code" in
