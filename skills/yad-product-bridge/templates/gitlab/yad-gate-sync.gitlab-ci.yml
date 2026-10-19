@@ -65,7 +65,12 @@ yad-gate-sync:
   # project Settings → CI/CD → Variables, so it survives every `yad` sync. When unset, current
   # GitLab (>=15) runs the job untagged; older versions may strand it — set a real tag if so.
   tags: [$YAD_RUNNER_TAGS]
-  image: node:20
+  image: node:${YAD_NODE_VERSION}
+  variables:
+    # A project/group CI/CD variable overrides this YAML value, so the Node line can be changed in project
+    # settings without editing the managed fragment (a current 20, 22 or 24 line). A shell-executor runner
+    # ignores `image:` — Node must then be on the runner host's PATH, and this value has no effect.
+    YAD_NODE_VERSION: "22"
   rules:
     # Merge path: branch pipeline on the default branch whose merge commit names a review branch.
     # Squash/fast-forward merges may omit the branch name — those advance on the next scheduled sweep.
@@ -73,17 +78,17 @@ yad-gate-sync:
     # Scheduled sweep: the only path that picks up bare approvals (advances merged reviews it finds).
     - if: $CI_PIPELINE_SOURCE == "schedule" && $SDLC_GATE_SYNC == "true"
   script:
-    # Pinned glab binary (node:20 has no glab). Alternative: image registry.gitlab.com/gitlab-org/cli.
+    # Pinned glab binary (the node image has no glab). Alternative: image registry.gitlab.com/gitlab-org/cli.
     - GLAB_VERSION=1.55.0
     - curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_amd64.deb" -o /tmp/glab.deb && dpkg -i /tmp/glab.deb
-    # Pinned jq binary (node:20 has none, and `glab api` has NO built-in --jq like `gh api` does —
+    # Pinned jq binary (the node image has none, and `glab api` has NO built-in --jq like `gh api` does —
     # it errors "unknown flag: --jq"). We fetch raw JSON from glab and filter it through real jq;
     # jq streams glab's concatenated per-page --paginate arrays natively.
     - JQ_VERSION=1.7.1
     - curl -fsSL "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-amd64" -o /usr/local/bin/jq && chmod +x /usr/local/bin/jq
     # Pinned git-lfs, ONLY for a Product that uses Git LFS (issue #327). The runner clones an LFS repo
     # with its own git-lfs and installs LFS git hooks (post-checkout, pre-push, …) that exit with an
-    # error when git-lfs is missing — and node:20 has none. So the `git checkout` below failed, and so
+    # error when git-lfs is missing — and the node image has none. So the `git checkout` below failed, and so
     # would the push of the advance. A Product without LFS skips the download. Only the clone's own
     # signs count (its hooks, its .git/config, its .gitattributes) — never a global git setting.
     # The download is checked against the release's published SHA-256 (sha256sums.asc) before it is

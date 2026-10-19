@@ -173,7 +173,12 @@ export function pagesWorkflow(platform) {
 # Edit the skill, not this file.
 pages:
   stage: deploy
-  image: node:20
+  # Set the YAD_RUNNER_TAGS / YAD_NODE_VERSION CI/CD variables to route this job to a tag-locked runner or
+  # change its Node line; a shell-executor runner ignores \`image:\` and needs Node on its host.
+  tags: [$YAD_RUNNER_TAGS]
+  image: node:\${YAD_NODE_VERSION}
+  variables:
+    YAD_NODE_VERSION: "22"
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
