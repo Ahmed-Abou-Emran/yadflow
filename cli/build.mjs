@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { ok, info, hand, warn, run, readJSON, readJSONStrict, writeJSON, isPlainObject, exists } from './lib.mjs';
-import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter } from './epic-state.mjs';
+import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, nextAction } from './epic-state.mjs';
 import { DEFAULT_LIFECYCLE, laneOrder, laneAuthorSteps } from './lifecycle.mjs';
 import { epicFiles, PROJECT_FILES } from './manifest.mjs';
 import { err } from './errors.mjs';
@@ -202,12 +202,16 @@ const closeReview = (s, { by, date }) => {
 // ---- the commands ----------------------------------------------------------------------------------
 
 // The story's file, found the way `epicStories` finds the story: by its frontmatter `id`, else its name.
+// One file, named for the story: `yad tidy` and the seal name a story by its file, so a file named other
+// than its id would be shipped here and never folded there.
 function storyFileOf(epicDir, story) {
   const dir = path.join(epicDir, 'stories');
-  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.md')).sort()) {
-    if ((readFrontmatter(path.join(dir, f)).id || f.replace(/\.md$/, '')) === story) return path.join(dir, f);
-  }
-  throw err(CODE, `no story file for ${story}`, 'check the story id');
+  const claim = fs.readdirSync(dir).filter((n) => n.endsWith('.md')).sort()
+    .filter((f) => (readFrontmatter(path.join(dir, f)).id || f.replace(/\.md$/, '')) === story);
+  if (!claim.length) throw err(CODE, `no story file for ${story}`, 'check the story id');
+  if (claim.length > 1) throw err(CODE, `${claim.length} story files claim ${story}: ${claim.join(', ')}`, 'keep one');
+  if (claim[0] !== `${story}.md`) throw err(CODE, `${story} is in stories/${claim[0]}, not stories/${story}.md`, `rename it to ${story}.md: yad tidy and the epic seal read a story by its file name`);
+  return path.join(dir, claim[0]);
 }
 
 // The status a Build write moves the story from must be one it can place; refused before anything is
@@ -231,7 +235,7 @@ function storyContext(root, story) {
   const review = ledger.state.steps.find((s) => s?.id === 'stories-review');
   const file = path.join(epicFiles(epicDir).buildStateDir, `${story}.json`);
   return {
-    epic, epicDir, entry, file,
+    epic, epicDir, entry, file, ledger,
     storiesPassed: ['done', 'satisfied'].includes(stepStatus(review)),
     buildState: readJSONStrict(file, null),
     storyFile: storyFileOf(epicDir, story),
@@ -316,6 +320,11 @@ function registeredRepo(root, repo) {
   const dir = meta?.path ? path.resolve(root, meta.path) : null;
   const checkout = dir && exists(path.join(dir, '.git')) ? dir : null;
   const remote = checkout ? run('git', ['remote', 'get-url', 'origin'], { cwd: checkout }).stdout : '';
+  // The folder must be the registered repo: a stale path to another clone would read that repo's PR #n.
+  if (checkout && meta?.git_url && remote) {
+    const norm = (u) => String(u).trim().toLowerCase().replace(/\.git$/, '').replace(/^[a-z]+:\/\/(?:[^@/]+@)?/, '').replace(/^[^@/]+@/, '').replace(':', '/');
+    if (norm(remote) !== norm(meta.git_url)) throw err(CODE, `${meta.path} is a clone of ${remote}, not ${meta.git_url}`, `fix the path of ${repo} in .sdlc/repos.json, or clone it with \`yad repo clone ${repo}\``);
+  }
   const named = typeof meta?.default_branch === 'string' && meta.default_branch ? meta.default_branch : null;
   if (named && (named.startsWith('-') || !run('git', ['check-ref-format', '--branch', named]).ok)) {
     throw err(CODE, `.sdlc/repos.json names a default_branch for ${repo} git cannot use: ${named}`, 'fix default_branch in .sdlc/repos.json');
@@ -330,14 +339,17 @@ export function readMergedPr(platform, n, { cwd, runner = run } = {}) {
     if (!r.ok) return { ok: false, reason: r.stderr || 'glab api merge_requests failed' };
     let mr; try { mr = JSON.parse(r.stdout); } catch { return { ok: false, reason: 'unreadable glab answer' }; }
     // The gates that passed: the job names of the MR's head pipeline that succeeded.
+    // One page of up to 100 jobs; jobs of a child or downstream pipeline are not listed here.
     let checks = [];
+    let checksRead = false;
     const pid = mr.head_pipeline?.id;
     if (pid) {
       const j = runner('glab', ['api', `projects/:id/pipelines/${pid}/jobs?per_page=100`], { cwd });
-      if (j.ok) { try { checks = [...new Set((JSON.parse(j.stdout) || []).filter((x) => x?.status === 'success').map((x) => x.name).filter(Boolean))].sort(); } catch { /* none */ } }
+      if (j.ok) { try { checks = [...new Set((JSON.parse(j.stdout) || []).filter((x) => x?.status === 'success').map((x) => x.name).filter(Boolean))].sort(); checksRead = true; } catch { /* unreadable */ } }
     }
     return {
-      ok: true, merged: mr.state === 'merged', mergeCommit: mr.merge_commit_sha || mr.squash_commit_sha || null,
+      // A fast-forward merge has no merge commit: the MR's head is what landed.
+      ok: true, merged: mr.state === 'merged', mergeCommit: mr.merge_commit_sha || mr.squash_commit_sha || (mr.state === 'merged' ? mr.sha : null) || null, checksRead,
       mergedAt: mr.merged_at || null, branch: mr.source_branch || null, url: mr.web_url || null, body: mr.description || '', checks,
     };
   }
@@ -349,7 +361,7 @@ export function readMergedPr(platform, n, { cwd, runner = run } = {}) {
     .filter((c) => (c.conclusion || c.state || '').toUpperCase() === 'SUCCESS')
     .map((c) => c.name || c.context).filter(Boolean))].sort();
   return {
-    ok: true, merged: pr.state === 'MERGED', mergeCommit: pr.mergeCommit?.oid || null, mergedAt: pr.mergedAt || null,
+    ok: true, merged: pr.state === 'MERGED', mergeCommit: pr.mergeCommit?.oid || null, mergedAt: pr.mergedAt || null, checksRead: true,
     branch: pr.headRefName || null, url: pr.url || null, body: pr.body || '', checks,
   };
 }
@@ -373,8 +385,11 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
   let ship;
   // Read from the platform only in the repo's own checkout: from anywhere else `gh pr view <n>` reads that
   // folder's repo — the Product's own PR #n.
-  const usable = where.platform && where.checkout && !(mergeCommit && mergeCommit !== true) && (runner !== run || platformReady(where.platform));
-  if (where.platform && !where.checkout && !(mergeCommit && mergeCommit !== true)) {
+  const readable = where.platform && where.checkout && (runner !== run || platformReady(where.platform));
+  const byHand = (mergeCommit && mergeCommit !== true) || approvers.length;
+  if (readable && byHand) throw err(CODE, `the ship is read from PR #${pr || '?'} on ${where.platform}`, '--merge-commit and --approver are for a repo whose platform cannot be read; drop them');
+  const usable = readable;
+  if (where.platform && !where.checkout && !byHand) {
     throw err(CODE, `${repo} is not checked out here, so its PR cannot be read`, `\`yad repo clone ${repo}\` fetches it; or record it by hand with --merge-commit <sha> and --approver <login>`);
   }
   if (usable && (!pr || pr === true)) throw err(CODE, '--pr <n> is required', `the merged PR/MR the ship is read from: yad build ship ${story} --task ${task} --repo ${repo} --pr <n>`);
@@ -382,9 +397,14 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     const got = readMergedPr(where.platform, pr, { cwd: where.checkout, runner });
     if (!got.ok) throw err(CODE, `could not read PR #${pr} in ${repo}: ${got.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, or pass --merge-commit <sha> and --approver <login>`);
     if (!got.merged) throw err(CODE, `PR #${pr} in ${repo} is not merged`, 'a ship is recorded once the PR/MR merges');
+    if (!got.mergeCommit) throw err(CODE, `PR #${pr} in ${repo} is merged, but the platform names no merge commit`, 'record it by hand once you know the commit: --merge-commit <sha> (on a repo whose platform cannot be read)');
     // The PR's branch names the task it carries (`feat/EP-x-S01-T01-…`): the ship is never put on another.
-    const named = (String(got.branch || '').match(/(EP-[a-z0-9-]+-S\d+-T\d+)/i) || [])[1];
-    if (named && named.toLowerCase() !== `${story}-${task}`.toLowerCase()) throw err(CODE, `PR #${pr} is from ${got.branch}, which is ${named}, not ${story}-${task}`, 'check --task and --pr');
+    const want = `${story}-${task}`.toLowerCase();
+    const br = String(got.branch || '').toLowerCase();
+    const at = br.indexOf(want);
+    const exact = at >= 0 && (at === 0 || /[/_-]/.test(br[at - 1])) && (at + want.length === br.length || /[/_-]/.test(br[at + want.length]) && !/^-?\d/.test(br.slice(at + want.length)));
+    if (!exact && /-s\d+-t\d+/.test(br)) throw err(CODE, `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, 'check --task and --pr');
+    if (!exact) warn(`PR #${pr} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${story}-${task}`);
     const pull = prReader(where.platform, pr, { cwd: where.checkout, runner });
     const seen = new Set();
     const engineerReview = [];
@@ -393,6 +413,7 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
       seen.add(a.name);
       engineerReview.push({ approver: a.name, engagement: a.engagement === 'verified' ? 'verified' : 'none' });
     }
+    if (got.checksRead === false) warn(`could not read the checks of PR #${pr} — gates is left empty`);
     if (!pull.ok) warn(`could not read the approvals of PR #${pr} (${pull.reason}) — engineer_review is left empty; \`yad review reconcile\` fills it later`);
     ship = {
       story, task, repo, branch: got.branch, pr: got.url || `#${pr}`, mergeCommit: got.mergeCommit, gates: got.checks,
@@ -426,6 +447,8 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
 
 export async function buildDone(root, { story, today, fetch = true } = {}) {
   const ctx = storyContext(root, story);
+  // The epic is in Build — what featureStatus asks too: a reopened stories review takes it out again.
+  if (nextAction(ctx.ledger).kind !== 'build') throw err(CODE, `${ctx.epic} is not in Build (its Shape chain is not finished)`, `\`yad next ${ctx.epic}\` says what is open`);
   storyStatusOk(ctx, story);
   const bs = lanes(ctx.buildState, story);
   const skipped = ctx.entry.repos.filter((r) => isPlainObject(bs.repos[r]) && bs.repos[r].status === 'skipped' && !laneStarted(bs.repos[r]));
@@ -441,7 +464,7 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
     const branch = where.defaultBranch || (head.startsWith('origin/') ? head.slice(7) : 'main');
     // A stale copy could miss a task added since: a failed fetch refuses, unless --no-fetch asked for the copy.
     if (fetch && !run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: where.checkout }).ok) {
-      throw err(CODE, `could not fetch ${branch} in ${repo} to read the tasks it owes`, 'check the network and your login, or pass --no-fetch to read the last fetched copy');
+      throw err(CODE, `could not fetch ${branch} in ${repo} to read the tasks it owes`, `check the network and your login, and that ${branch} is ${repo}'s default branch (default_branch in .sdlc/repos.json); or pass --no-fetch to read the last fetched copy`);
     }
     const shown = run('git', ['show', `refs/remotes/origin/${branch}:specs/${story}/tasks.md`], { cwd: where.checkout });
     if (!shown.ok) { owed[repo] = null; why[repo] = `no specs/${story}/tasks.md on origin/${branch}`; continue; }
@@ -468,12 +491,13 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
   const open = [];
   for (const repo of ctx.entry.repos.filter((r) => !skipped.includes(r))) {
     const lane = bs.repos[repo];
-    for (const s of lane.steps) if (s?.id !== REVIEW_STEP && !isPassed(s)) open.push(`${repo}/${s.id}`);
+    for (const s of lane.steps) if (s?.id !== REVIEW_STEP && !isPassed(s)) open.push(`${repo}/${s?.id ?? '?'}`);
   }
   // Any other lane on disk (a repo the story does not declare, a name in another case) is read by `yad next`
   // too: one not finished would keep the story in Build there.
-  const stray = Object.entries(bs.repos).filter(([r, l]) => !ctx.entry.repos.includes(r) && isPlainObject(l)
-    && !(l.status === 'skipped' && !laneStarted(l)) && !(Array.isArray(l.steps) && l.steps.length && l.steps.every(isPassed)));
+  if (bs.story !== story) throw err(CODE, `build-state/${story}.json says story: ${bs.story}`, `set it to ${story}: yad next matches a lane to its story by that field`);
+  const stray = Object.entries(bs.repos).filter(([r, l]) => !ctx.entry.repos.includes(r)
+    && !(isPlainObject(l) && ((l.status === 'skipped' && !laneStarted(l)) || (Array.isArray(l.steps) && l.steps.length && l.steps.every(isPassed)))));
   if (stray.length) throw err(CODE, `build-state/${story}.json has a lane the story does not declare: ${stray.map(([r]) => r).join(', ')}`, '`yad doctor` reports it; remove it from the file, or add the repo to the story');
   const review = ctx.entry.repos.filter((r) => !skipped.includes(r)).filter((r) => bs.repos[r].steps.some((s) => s?.id === REVIEW_STEP && stepStatus(s) === 'blocked'));
   if (review.length) throw err(CODE, `${REVIEW_STEP} is blocked in ${review.join(', ')}`, `clear the halt first: \`yad build step ${story} --repo <r> ${REVIEW_STEP} in_progress\``);
@@ -488,9 +512,19 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
     bs.repos[repo] = { ...lane, currentStep: REVIEW_STEP, steps };
   }
   // The status line first: a refusal there leaves the lanes as they were, so the two never part.
+  const storyText = fs.readFileSync(ctx.storyFile, 'utf8');
   const moved = setBuildStatus(ctx.storyFile, 'shipped');
-  if (moved.unknown || readStoryStatus(ctx.storyFile) !== 'shipped') throw err(CODE, `could not set status: shipped in ${path.relative(ctx.epicDir, ctx.storyFile)}`, 'set it by hand, then run this again');
-  if (changedLanes) writeJSON(ctx.file, bs);
+  if (moved.unknown || readFrontmatter(ctx.storyFile).status !== 'shipped') {
+    fs.writeFileSync(ctx.storyFile, storyText);
+    throw err(CODE, `could not set status: shipped in ${path.relative(ctx.epicDir, ctx.storyFile)}`, 'make it one plain `status:` line, then run this again');
+  }
+  // A lane write that fails puts the status line back, so the two never part.
+  try {
+    if (changedLanes || !ctx.buildState?.story) writeJSON(ctx.file, bs);
+  } catch (e) {
+    fs.writeFileSync(ctx.storyFile, storyText);
+    throw e;
+  }
   ok(`${story} is shipped${changedLanes ? ` — ${REVIEW_STEP} closed in ${changedLanes} lane${changedLanes > 1 ? 's' : ''}` : ''}`);
   if (sealedEpic(root, ctx.epic)) info(`${ctx.epic} is now sealed: every story shipped — new work there needs a change epic (yad-change)`);
   hand('commit with `yad checkpoint --push`');

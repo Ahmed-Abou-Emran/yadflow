@@ -228,7 +228,7 @@ test('yad build ship: reads the merged PR, refuses an unmerged one or another ta
     answer = view({ state: 'OPEN', headRefName: 'feat/EP-l-S01-T02-x' });
     await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T02', repo: 'api', pr: '8', today: '2026-10-19', runner, prReader }), /PR #8 in api is not merged/);
     answer = view({ headRefName: 'feat/EP-l-S01-T03-x' });
-    await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T02', repo: 'api', pr: '9', today: '2026-10-19', runner, prReader }), /is EP-l-S01-T03, not EP-l-S01-T02/);
+    await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T02', repo: 'api', pr: '9', today: '2026-10-19', runner, prReader }), /feat\/EP-l-S01-T03-x, which names another task than EP-l-S01-T02/);
     answer = view();
     await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', pr: '7', today: '2026-10-19', runner, prReader }), /already has a ship in api/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
@@ -273,22 +273,26 @@ const setStory = (dir, fm, name = 'EP-l-S01.md') => {
 test('yad build done: the status line moves from any Shape value, and a value it cannot place is refused before anything is written (#346 review 1)', () => {
   const { W, P, dir } = workspace({ tasks: '- T01 one\n' });
   try {
-    // A story nobody ran sync-status on still says draft; a file named other than its id is found by id.
-    setStory(dir, 'id: EP-l-S01\nepic: EP-l\nstatus: "draft" # authored\nrepos: [api, web]', 'EP-l-S01-checkout.md');
+    // A file named other than its id is refused: yad tidy and the seal read a story by its file name.
+    setStory(dir, 'id: EP-l-S01\nepic: EP-l\nstatus: draft\nrepos: [api, web]', 'EP-l-S01-checkout.md');
+    let r = yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    assert.match(r.out, /EP-l-S01 is in stories\/EP-l-S01-checkout\.md, not stories\/EP-l-S01\.md/);
+    fs.rmSync(path.join(dir, 'stories/EP-l-S01-checkout.md'));
+    // A story nobody ran sync-status on still says draft, here quoted with a comment.
+    setStory(dir, 'id: EP-l-S01\nepic: EP-l\nstatus: "draft" # authored\nrepos: [api, web]');
     yad(P, 'skip', 'EP-l', 'EP-l-S01', '--repo', 'web', '--reason', 'no UI change');
     yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
     walk(P);
-    let r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'e'.repeat(40));
+    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'e'.repeat(40));
     assert.equal(r.code, 0, r.out);
     r = yad(P, 'build', 'done', 'EP-l-S01');
     assert.equal(r.code, 0, r.out);
-    assert.match(fs.readFileSync(path.join(dir, 'stories/EP-l-S01-checkout.md'), 'utf8'), /^status: shipped$/m);
+    assert.match(fs.readFileSync(story(dir), 'utf8'), /^status: shipped$/m);
     assert.match(r.out, /EP-l is now sealed/);
 
     // A value no Build write can move on: refused, the lanes untouched.
     const file = path.join(dir, '.sdlc/build-state/EP-l-S01.json');
     const lanesBefore = fs.readFileSync(file, 'utf8');
-    fs.rmSync(path.join(dir, 'stories/EP-l-S01-checkout.md'));
     setStory(dir, 'id: EP-l-S01\nepic: EP-l\nstatus: ready-for-build\nrepos: [api, web]');
     const bs = JSON.parse(lanesBefore);
     bs.repos.api.steps.find((s) => s.id === 'engineer-review').status = 'todo';
@@ -352,5 +356,34 @@ test('yad build ship: a repo not checked out is never read through the Product; 
     fs.writeFileSync(path.join(dir, '.sdlc/state.json'), JSON.stringify(st));
     r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T02', '--repo', 'api', '--merge-commit', 'a'.repeat(40));
     assert.match(r.out, /the stories review has not passed/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build done: a shipped status written another way is rewritten; two status lines or two files are refused; the epic must be in Build (#346 review 2)', () => {
+  const { W, P, dir } = workspace({ tasks: '- T01 one\n' });
+  try {
+    yad(P, 'skip', 'EP-l', 'EP-l-S01', '--repo', 'web', '--reason', 'no UI change');
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    walk(P);
+    yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'e'.repeat(40));
+    setStory(dir, 'id: EP-l-S01\nepic: EP-l\nstatus: approved\nstatus: approved\nrepos: [api, web]');
+    let r = yad(P, 'build', 'done', 'EP-l-S01');
+    assert.match(r.out, /which a Build write cannot move on/);
+    fs.writeFileSync(path.join(dir, 'stories/EP-l-S01-copy.md'), '---\nid: EP-l-S01\nstatus: approved\n---\n');
+    r = yad(P, 'build', 'done', 'EP-l-S01');
+    assert.match(r.out, /2 story files claim EP-l-S01/);
+    fs.rmSync(path.join(dir, 'stories/EP-l-S01-copy.md'));
+    setStory(dir, 'id: EP-l-S01\nepic: EP-l\nstatus: "shipped" # by hand\nrepos: [api, web]');
+    r = yad(P, 'build', 'done', 'EP-l-S01');
+    assert.equal(r.code, 0, r.out);
+    assert.match(fs.readFileSync(story(dir), 'utf8'), /^status: shipped$/m, 'rewritten as the seal and tidy read it');
+    assert.match(r.out, /EP-l is now sealed/);
+    // A reopened stories review takes the epic out of Build.
+    const st = JSON.parse(fs.readFileSync(path.join(dir, '.sdlc/state.json'), 'utf8'));
+    st.steps.find((x) => x.id === 'stories-review').status = 'in_review';
+    st.currentStep = 'stories-review';
+    fs.writeFileSync(path.join(dir, '.sdlc/state.json'), JSON.stringify(st));
+    r = yad(P, 'build', 'done', 'EP-l-S01');
+    assert.match(r.out, /EP-l is not in Build/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });

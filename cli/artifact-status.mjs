@@ -74,21 +74,29 @@ export function setFrontmatterStatus(file, status) {
 // for a value this cannot place (the caller refuses rather than leave the line behind).
 const BUILD_LADDER = { draft: 0, 'in-review': 0, approved: 0, 'in-build': 1, shipped: 2 };
 export const statusValue = (raw) => String(raw ?? '').replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+// Two `status:` lines are read differently by different readers (the first by epic-open.sh, the last by
+// parseFrontmatter), so a block with two is never read or written here.
+const statusLines = (block) => [...block.matchAll(/^status:\s*(.*)$/gm)];
 export function readStoryStatus(file) {
   if (!fs.existsSync(file)) return null;
   const fm = fs.readFileSync(file, 'utf8').match(FRONTMATTER_BLOCK);
-  const raw = fm ? (fm[1].match(/^status:\s*(.*)$/m) || [])[1] : undefined;
-  return raw === undefined ? null : statusValue(raw);
+  const lines = fm ? statusLines(fm[1]) : [];
+  return lines.length === 1 ? statusValue(lines[0][1]) : null;
 }
 export function setBuildStatus(file, status) {
   if (!['in-build', 'shipped'].includes(status) || !fs.existsSync(file)) return { prior: null, unknown: true };
   const text = fs.readFileSync(file, 'utf8');
   const fm = text.match(FRONTMATTER_BLOCK);
-  const raw = fm ? (fm[1].match(/^status:\s*(.*)$/m) || [])[1] : undefined;
-  if (raw === undefined) return { prior: null, unknown: true };
-  const prior = statusValue(raw);
+  const lines = fm ? statusLines(fm[1]) : [];
+  if (lines.length !== 1) return { prior: null, unknown: true };
+  const prior = statusValue(lines[0][1]);
   if (!(prior in BUILD_LADDER)) return { prior, unknown: true };
-  if (BUILD_LADDER[status] <= BUILD_LADDER[prior]) return { prior, changed: false };
+  // Already there, and written as every reader reads it (no quotes, no comment): nothing to do. Written
+  // another way (`"shipped"`, `shipped # done`), the line is rewritten, because the epic seal and
+  // `yad tidy` compare the raw value.
+  if (BUILD_LADDER[status] < BUILD_LADDER[prior]) return { prior, changed: false };
+  if (BUILD_LADDER[status] === BUILD_LADDER[prior] && lines[0][0] === `status: ${status}`) return { prior, changed: false };
+  if (BUILD_LADDER[status] === BUILD_LADDER[prior] && prior !== status) return { prior, changed: false };
   const block = fm[1].replace(/^status:\s*.*$/m, () => `status: ${status}`);
   fs.writeFileSync(file, text.replace(fm[1], () => block));
   return { prior, changed: true };
