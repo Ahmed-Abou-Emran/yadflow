@@ -4414,6 +4414,140 @@ test('pr-template gate: product rejects an artifact change (epics/**) on a non-r
 const GITLAB_TPL = path.join(ROOT, 'skills/yad-pr-template/templates/gitlab/merge_request_templates/Default.md');
 const PRODUCT_GITLAB_TPL = path.join(ROOT, 'skills/yad-pr-template/templates/product/gitlab/merge_request_templates/Default.md');
 
+// #343 — in GitLab CI a description that reached the cut is read again in full from the MR API, and
+// that is what the gate checks. A fake `curl` first on PATH answers it; node decodes the JSON.
+function mrApiRig(T, { code = '200', json = null } = {}) {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-mrapi-'));
+  fs.writeFileSync(path.join(bin, 'answer.json'), json === null ? '' : JSON.stringify(json));
+  fs.writeFileSync(path.join(bin, 'curl'), `#!/usr/bin/env bash
+out=""; hfile=""
+printf '%s\\n' "$@" > "${bin}/argv.txt"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -H) case "$2" in @*) hfile="\${2#@}" ;; esac; shift ;;
+  esac
+  shift
+done
+[ -z "$hfile" ] || { cp "$hfile" "${bin}/sent-header.txt"; dirname "$hfile" > "${bin}/tmpdir.txt"; }
+${code === 'fail' ? 'printf 000; exit 28' : `cp "${bin}/answer.json" "$out"
+printf '%s' "${code}"`}
+`, { mode: 0o755 });
+  const env = {
+    PATH: `${bin}:${process.env.PATH}`, GITLAB_CI: 'true', CI_API_V4_URL: 'https://gitlab.example.com/api/v4',
+    CI_PROJECT_ID: '7', CI_MERGE_REQUEST_PROJECT_ID: '7', CI_MERGE_REQUEST_IID: '42', CI_MERGE_REQUEST_DESCRIPTION_IS_TRUNCATED: '',
+    GITLAB_TOKEN: '', SDLC_API_TOKEN: '', CI_JOB_TOKEN: 'job-tok',
+  };
+  return { bin, env, done: () => fs.rmSync(bin, { recursive: true, force: true }) };
+}
+const LONG_VALID = '## Summary\nx\n\n## Impact & Risk\n- **Risk level:** low\n\n' + 'narrative '.repeat(400) + '\n\n## Checklist\n- [ ] done\n';
+
+test('pr-template gate: #343 in GitLab CI a cut description is read in full from the MR API and passes', () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-prtpl-'));
+  const cut = body(T, LONG_VALID.slice(0, 2700));
+  const rig = mrApiRig(T, { json: { iid: 42, description: LONG_VALID } });
+  const r = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...rig.env, GITLAB_TOKEN: 'glpat-s3cret' });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /read it in full from the merge request API/);
+  assert.doesNotMatch(r.out, /TRUNCATED/);
+  // This GitLab's own API, the MR's target project; the token in a header file, never on curl's argv.
+  const argv = fs.readFileSync(path.join(rig.bin, 'argv.txt'), 'utf8');
+  assert.match(argv, /^https:\/\/gitlab\.example\.com\/api\/v4\/projects\/7\/merge_requests\/42$/m);
+  assert.doesNotMatch(argv, /s3cret/);
+  assert.match(fs.readFileSync(path.join(rig.bin, 'sent-header.txt'), 'utf8'), /^PRIVATE-TOKEN: glpat-s3cret$/m);
+  assert.doesNotMatch(r.out, /s3cret/);
+  // Nothing is left behind: not the header file, not the MR's text (review 1).
+  assert.ok(!fs.existsSync(fs.readFileSync(path.join(rig.bin, 'tmpdir.txt'), 'utf8').trim()), 'the temp folder is gone');
+  rig.done();
+  // SDLC_API_TOKEN is the other name for it.
+  const alt = mrApiRig(T, { json: { description: LONG_VALID } });
+  assert.equal(runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...alt.env, SDLC_API_TOKEN: 'alt-tok' }).code, 0);
+  assert.match(fs.readFileSync(path.join(alt.bin, 'sent-header.txt'), 'utf8'), /^PRIVATE-TOKEN: alt-tok$/m);
+  alt.done();
+  // GitLab's own flag says it was cut, whatever the length (review 1).
+  const flagged = mrApiRig(T, { json: { description: LONG_VALID } });
+  const short = body(T, '## Summary\nx\n');
+  assert.equal(runGate(PR_TEMPLATE, T, ['--profile', 'code', short], { ...flagged.env, CI_MERGE_REQUEST_DESCRIPTION_IS_TRUNCATED: 'true' }).code, 0);
+  flagged.done();
+  // The Product's own MRs run the same gate.
+  const PRODUCT_LONG = fs.readFileSync(PRODUCT_GITLAB_TPL, 'utf8').replace('## Artifact under review', `${'narrative '.repeat(300)}\n\n## Artifact under review`);
+  const prod = mrApiRig(T, { json: { description: PRODUCT_LONG } });
+  const pr = runGate(PR_TEMPLATE, T, ['--profile', 'product', '--head', 'review/EP-demo', body(T, PRODUCT_LONG.slice(0, 2700))], prod.env);
+  assert.equal(pr.code, 0, pr.out);
+  prod.done();
+  // No variable: the job's own token is tried.
+  const job = mrApiRig(T, { json: { description: LONG_VALID } });
+  assert.equal(runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], job.env).code, 0);
+  assert.match(fs.readFileSync(path.join(job.bin, 'sent-header.txt'), 'utf8'), /^JOB-TOKEN: job-tok$/m);
+  job.done();
+  // The full description is checked, not trusted: one that really lacks a section still fails.
+  const bad = mrApiRig(T, { json: { description: LONG_VALID.replace('## Checklist', '## Notes') } });
+  const rb = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], bad.env);
+  assert.equal(rb.code, 1, rb.out);
+  assert.match(rb.out, /missing section '## Checklist'/);
+  assert.doesNotMatch(rb.out, /TRUNCATED/, 'the full text was read: the cut is not the reason');
+  bad.done();
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('pr-template gate: #343 when the full description cannot be read, the cut body is checked and the note says why', () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-prtpl-'));
+  const cut = body(T, LONG_VALID.slice(0, 2700));
+  // [answer, extra env, the reason, the advice — or null when no token change can help] (reviews 2, 3)
+  const cases = [
+    [{ code: '401' }, {}, /answered HTTP 401 to the job token/, /set a GITLAB_TOKEN CI\/CD variable/],
+    [{ code: '404' }, {}, /answered HTTP 404 to the job token/, /set a GITLAB_TOKEN CI\/CD variable/],
+    [{ code: '401' }, { GITLAB_TOKEN: 't' }, /answered HTTP 401 to GITLAB_TOKEN/, /the GITLAB_TOKEN variable was not accepted \(expired, revoked, or not a valid token here\)/],
+    [{ code: '403' }, { SDLC_API_TOKEN: 't' }, /answered HTTP 403 to SDLC_API_TOKEN/, /the SDLC_API_TOKEN variable was refused: give it the read_api scope/],
+    [{ code: '404' }, { GITLAB_TOKEN: 't' }, /answered HTTP 404 to GITLAB_TOKEN/, /user cannot see the merge request's project/],
+    [{ code: '502' }, { GITLAB_TOKEN: 't' }, /answered HTTP 502 to GITLAB_TOKEN/, null],
+    [{ code: 'fail' }, {}, /answered nothing to the job token/, null],
+    [{ json: { iid: 42 } }, {}, /answered the job token without a description yad could read/, null],
+    [{}, { CI_MERGE_REQUEST_IID: '' }, /this is not a merge request pipeline/, null],
+    [{ code: '404' }, { CI_PROJECT_ID: '9' }, /answered HTTP 404 to the job token/, /this pipeline runs in a fork, which cannot read the target project's merge request/],
+    // A fork: the note only for a refusal; a timeout is said as it is (review 4); its own variable gets
+    // the token advice.
+    [{ code: 'fail' }, { CI_PROJECT_ID: '9' }, /answered nothing to the job token/, null],
+    [{ code: '401' }, { CI_PROJECT_ID: '9', GITLAB_TOKEN: 't' }, /answered HTTP 401 to GITLAB_TOKEN/, /renew or replace it/],
+  ];
+  for (const [answer, extra, why, advice] of cases) {
+    const rig = mrApiRig(T, answer);
+    const r = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...rig.env, ...extra });
+    const label = `${JSON.stringify(answer)} ${JSON.stringify(extra)}:\n${r.out}`;
+    assert.equal(r.code, 1, label);
+    assert.match(r.out, /TRUNCATED at 2700/, label);
+    assert.match(r.out, why, label);
+    if (advice) assert.match(r.out, advice, label);
+    else assert.doesNotMatch(r.out, /could not be read instead: [^\n]* — /, `${label}\n(no advice expected)`);
+    if (!advice || !/runs in a fork/.test(advice.source)) assert.doesNotMatch(r.out, /runs in a fork/, label);
+    if (!advice || !/set a GITLAB_TOKEN/.test(advice.source)) assert.doesNotMatch(r.out, /set a GITLAB_TOKEN/i, label);
+    assert.match(r.out, /move the required sections above the cutoff/, label);
+    rig.done();
+  }
+  // A branch pipeline (no MR project) is not a fork, though CI_PROJECT_ID is set (review 2). A gate run
+  // in one is told it is not an MR pipeline, and nothing about forks.
+  const branch = mrApiRig(T);
+  const rbp = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...branch.env, CI_PROJECT_ID: '9', CI_MERGE_REQUEST_PROJECT_ID: '', CI_MERGE_REQUEST_IID: '' });
+  assert.equal(rbp.code, 1, rbp.out);
+  assert.match(rbp.out, /could not be read instead: this is not a merge request pipeline\.$/m);
+  branch.done();
+  // No temp folder at all: a FAIL that says so, never a silent exit (review 3).
+  // A `mktemp` that fails, first on PATH (macOS's own falls back past a missing TMPDIR; GNU's does not).
+  const noTmp = mrApiRig(T);
+  fs.writeFileSync(path.join(noTmp.bin, 'mktemp'), '#!/usr/bin/env bash\necho "mktemp: cannot create temp file" >&2\nexit 1\n', { mode: 0o755 });
+  const rt = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], noTmp.env);
+  assert.equal(rt.code, 1, rt.out);
+  assert.match(rt.out, /FAIL \[pr-template\]: no temp folder to write to/);
+  noTmp.done();
+  // Below the cut, or outside GitLab CI: no call at all.
+  const quiet = mrApiRig(T, { json: { description: LONG_VALID } });
+  runGate(PR_TEMPLATE, T, ['--profile', 'code', body(T, '## Summary\nshort\n')], quiet.env);
+  runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...quiet.env, GITLAB_CI: '' });
+  assert.ok(!fs.existsSync(path.join(quiet.bin, 'argv.txt')), 'no API call');
+  quiet.done();
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
 test('pr-template gate: names the 2700-character GitLab truncation when a section falls past the cutoff', () => {
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-prtpl-'));
   // What GitLab actually hands CI: the first 2700 characters of a longer description whose
