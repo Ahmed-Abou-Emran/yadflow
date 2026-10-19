@@ -12,6 +12,7 @@ are built and why each rule exists, see the skill's own reference,
 
 ## Contents
 
+- [Run the gates on your machine](#run-the-gates-on-your-machine)
 - [Words used on this page](#words-used-on-this-page)
 - [How to read a gate's output](#how-to-read-a-gates-output)
 - [Which gates run where](#which-gates-run-where)
@@ -24,6 +25,30 @@ are built and why each rule exists, see the skill's own reference,
 - Gates on the Product: [ledger-guard](#ledger-guard) · [member-check](#member-check)
 - Helper steps: [product-checkout](#product-checkout) · [install-deps](#install-deps)
 - [Commit trailers the gates read](#commit-trailers-the-gates-read)
+
+## Run the gates on your machine
+
+`yad run checks` runs every gate on this page on your machine, before you push, so a failure shows up
+without waiting for CI. Run it inside the repo whose change you want to check:
+
+```sh
+yad run checks --body pr-description.md
+```
+
+- It runs this repo's own `checks/` scripts, as CI does, against `origin/<default branch>`.
+- The Product-reading gates read the Product's **default branch**, as CI does: `yad` writes it from
+  your Product clone to where CI would check it out, and removes it after. Your unmerged Product edits
+  are not seen.
+- Every gate runs, including the package install and build/test/lint (`--no-build` skips those two),
+  then a summary. The exit code is 1 when any gate fails.
+- Give the pull request text with `--title "<title>"` and `--body <file>`. A branch of one commit uses
+  its subject as the title. On GitLab it warns when the description is 2700 characters or longer —
+  GitLab cuts the text CI gets there (see [pr-template](#pr-template)).
+- Three things are judged only in CI, and the output says so: the platform's **Verified** badge (here,
+  git checks each commit's signature), `member-check` when a member file changes (it needs the pull
+  request's author), and anything that depends on CI secrets.
+
+See [`docs/CLI.md`](CLI.md#commands) for every flag.
 
 ## Words used on this page
 

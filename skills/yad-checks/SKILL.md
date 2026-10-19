@@ -294,7 +294,10 @@ it. Branch protection is what makes the CI gates hold a merge at all: point the 
 `docs/branch-protection.md`.
 
 ### Step 3 — `run` (run the gates now)
-From inside the repo, run each gate against `base` and report PASS/FAIL per gate:
+From inside the repo, run `yad run checks` (add `--body <file>` holding the PR/MR description, and
+`--title` when the branch has more than one commit). It runs every installed gate as CI does — the
+Product's default branch where CI checks it out, every gate even after one fails — and prints a summary;
+report PASS/FAIL per gate from it (`--json` lists each gate's FAIL lines). One gate by hand:
 ```
 bash checks/spec-link.sh "<base>"
 bash checks/contract-check.sh "<base>"
