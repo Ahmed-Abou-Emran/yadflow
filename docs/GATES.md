@@ -127,7 +127,8 @@ yad run checks --body pr-description.md
   [verified-commits](#verified-commits) by git's own signature check. Your unmerged Product edits are
   not seen, as CI does not see them. A run removes only what it wrote: a folder already there (yours,
   another run's, or one a killed run left) is read as it is and kept — remove it to read the default
-  branch. Two runs at once in one repo can disturb each other; the output says so when it happens.
+  branch. Two runs at once in one repo can disturb each other (the Product copy, `node_modules`); a Product copy
+  that disappears while the gates read it is reported.
 - Every gate runs, including the package install and build/test/lint (`--no-build` skips those two),
   then a summary. The exit code is 1 when a gate fails or the run is refused, and 130 when it is
   stopped with Ctrl-C.

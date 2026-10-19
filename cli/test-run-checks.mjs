@@ -479,6 +479,11 @@ test('removeParents and removeCopy: only the folders a run made, and only while 
     assert.ok(!fs.existsSync(dest), 'the copy goes');
     assert.ok(!fs.existsSync(path.join(top, 'c')), 'an empty folder the run made goes');
     assert.ok(fs.existsSync(path.join(top, 'stray.txt')), 'a folder with a file in it stays');
+    // On Windows, Node 18/20 report what mkdir made in the long \\?\ form; it is read as path.join writes it.
+    const { plainPath } = await import('../cli/run-checks.mjs');
+    assert.equal(plainPath('\\\\?\\C:\\r\\.yad', path.win32), 'C:\\r\\.yad');
+    assert.equal(plainPath('\\\\?\\UNC\\srv\\share\\r\\.yad', path.win32), '\\\\srv\\share\\r\\.yad');
+    assert.equal(plainPath('C:\\r\\.yad', path.win32), 'C:\\r\\.yad');
     // A `created` that is not above dest removes nothing.
     fs.mkdirSync(path.join(T, 'e', 'f'), { recursive: true });
     removeParents(path.join(T, 'e', 'f', 'g'), path.join(T, 'other'));

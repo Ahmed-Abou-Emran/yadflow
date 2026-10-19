@@ -103,6 +103,10 @@ function readRecord(repoRoot, base) {
 
 // Remove a copy this run wrote: `dest` itself (it did not exist before), then each folder this run made on
 // the way to it, from the inside out, only while it is empty — a file someone put there meanwhile stays.
+// What mkdirSync({ recursive }) reports it made, in the form path.join gives: on Windows, Node 18 and 20
+// report it in the long `\\?\C:\…` form, which would never match `dest`.
+export const plainPath = (p, P = path) => (typeof p === 'string' && p ? P.resolve(p.replace(/^\\\\\?\\UNC\\/, '\\\\').replace(/^\\\\\?\\/, '')) : p);
+
 export function removeCopy(dest, created) {
   fs.rmSync(dest, { recursive: true, force: true });
   removeParents(dest, created);
@@ -150,7 +154,7 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
   let top;
   let created;
   try {
-    top = fs.mkdirSync(path.dirname(dest), { recursive: true });
+    top = plainPath(fs.mkdirSync(path.dirname(dest), { recursive: true }));
     fs.mkdirSync(dest);
     created = top || dest;
   } catch (e) {
@@ -158,7 +162,7 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
     if (e.code === 'EEXIST') {
       let isDir = false;
       try { isDir = fs.lstatSync(dest).isDirectory(); } catch { /* gone again */ }
-      return isDir ? alreadyThere : { placed: false, note: `a file is where the Product's folder goes (${rel}) — move it, or point path in .sdlc/product-link.json elsewhere` };
+      return isDir ? { ...alreadyThere, note: [...notes, alreadyThere.note].join('; ') } : { placed: false, note: [...notes, `a file is where the Product's folder goes (${rel}) — move it, or point path in .sdlc/product-link.json elsewhere`].join('; ') };
     }
     return { placed: false, note: [...notes, `could not make ${rel} (${e.message}) — the Product-reading gates may read what product-repo in a link.md reaches on this machine`].join('; ') };
   }
