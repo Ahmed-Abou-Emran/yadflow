@@ -82,12 +82,51 @@ GITLAB_DESC_LIMIT=2700
 # locale-independent way: every byte that is NOT a continuation byte (0x80-0xBF) starts one.
 RAW_CHARS="$(LC_ALL=C tr -d '\200-\277' < "$BODY" | wc -c | tr -d '[:space:]')"
 
+# #343: the cut is GitLab's, not the author's, so in GitLab CI a description that reached it is read again
+# IN FULL from the MR API, and that is what the gate checks. Needs a token that can read the MR: the
+# GITLAB_TOKEN (or SDLC_API_TOKEN) CI/CD variable verified-commits already asks for, else the job's own
+# CI_JOB_TOKEN, which some GitLab versions let read it. The token goes to curl in a header file, never
+# on its command line, and only to this GitLab's own API ($CI_API_V4_URL). JSON is decoded by node,
+# which every yad job image has; without node, curl, a token or an answer, the cut body is checked as
+# before and the note below says how to get the full one read.
+FULL_READ=""
+FULL_WHY=""
+_fd=""
+if [ "${GITLAB_CI:-}" = true ] && [ "$RAW_CHARS" -ge "$GITLAB_DESC_LIMIT" ]; then
+  if [ -z "${CI_API_V4_URL:-}" ] || [ -z "${CI_MERGE_REQUEST_PROJECT_ID:-}" ] || [ -z "${CI_MERGE_REQUEST_IID:-}" ]; then
+    FULL_WHY="this is not a merge request pipeline"
+  elif ! command -v curl >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+    FULL_WHY="curl or node is not on this runner"
+  else
+    _fd="$(mktemp -d)"
+    _tok="${GITLAB_TOKEN:-${SDLC_API_TOKEN:-}}"
+    ( umask 077
+      if [ -n "$_tok" ]; then printf 'PRIVATE-TOKEN: %s\n' "$_tok"; else printf 'JOB-TOKEN: %s\n' "${CI_JOB_TOKEN:-}"; fi > "$_fd/h" )
+    _code="$(curl -sS --max-time 20 -o "$_fd/mr.json" -w '%{http_code}' -H @"$_fd/h" -- \
+      "${CI_API_V4_URL}/projects/${CI_MERGE_REQUEST_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}" 2>/dev/null)" || _code=""
+    rm -f "$_fd/h"
+    if [ "$_code" = 200 ] && node -e '
+      const fs = require("fs");
+      let d;
+      try { d = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).description; } catch { process.exit(3); }
+      if (typeof d !== "string") process.exit(3);
+      fs.writeFileSync(process.argv[2], d);
+    ' "$_fd/mr.json" "$_fd/full.md" 2>/dev/null; then
+      BODY="$_fd/full.md"
+      FULL_READ=1
+      echo "note [pr-template]: the description reached GitLab's ${GITLAB_DESC_LIMIT}-character CI cut, so the gate read it in full from the merge request API."
+    else
+      FULL_WHY="the merge request API answered ${_code:+HTTP }${_code:-nothing}$([ -n "$_tok" ] && printf '' || printf ' to the job token')"
+    fi
+  fi
+fi
+
 # The Review Companion injects a `<!-- yad:trailer --> … <!-- /yad:trailer -->` briefing block (and
 # `<!-- yad:noblock -->` notes) into the description. Strip those before the template check so the
 # AI-generated prose can never hide a required section heading or be mistaken for the `Risk level:`
 # value (the trailer is prepended, so an unstripped "risk level" mention would win `head -1`).
 STRIPPED="$(mktemp)"
-trap 'rm -f "$STRIPPED"' EXIT
+trap 'rm -f "$STRIPPED"; [ -z "$_fd" ] || rm -rf "$_fd"' EXIT
 sed '/<!-- yad:trailer -->/,/<!-- \/yad:trailer -->/d; /<!-- yad:noblock -->/d' "$BODY" > "$STRIPPED"
 BODY="$STRIPPED"
 
@@ -155,8 +194,9 @@ else
   check_code_body
 fi
 
-if [ "$rc" != 0 ] && [ "$RAW_CHARS" -ge "$GITLAB_DESC_LIMIT" ]; then
+if [ "$rc" != 0 ] && [ "$RAW_CHARS" -ge "$GITLAB_DESC_LIMIT" ] && [ -z "$FULL_READ" ]; then
   echo "NOTE [pr-template]: the description this gate read is ${RAW_CHARS} characters. On GitLab the gate reads \$CI_MERGE_REQUEST_DESCRIPTION, which is TRUNCATED at ${GITLAB_DESC_LIMIT} — a section below that cutoff is invisible here even though the MR shows it."
+  [ -z "$FULL_WHY" ] || echo "NOTE [pr-template]: the full description could not be read instead: ${FULL_WHY}. Set a GITLAB_TOKEN CI/CD variable (read_api, masked) so the gate reads the whole description."
   echo "NOTE [pr-template]: if the missing section IS in your description, move the required sections above the cutoff (reorder, never delete) and push the long narrative to the end."
 fi
 

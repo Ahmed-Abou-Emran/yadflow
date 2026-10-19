@@ -4414,6 +4414,86 @@ test('pr-template gate: product rejects an artifact change (epics/**) on a non-r
 const GITLAB_TPL = path.join(ROOT, 'skills/yad-pr-template/templates/gitlab/merge_request_templates/Default.md');
 const PRODUCT_GITLAB_TPL = path.join(ROOT, 'skills/yad-pr-template/templates/product/gitlab/merge_request_templates/Default.md');
 
+// #343 — in GitLab CI a description that reached the cut is read again in full from the MR API, and
+// that is what the gate checks. A fake `curl` first on PATH answers it; node decodes the JSON.
+function mrApiRig(T, { code = '200', json = null } = {}) {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-mrapi-'));
+  fs.writeFileSync(path.join(bin, 'answer.json'), json === null ? '' : JSON.stringify(json));
+  fs.writeFileSync(path.join(bin, 'curl'), `#!/usr/bin/env bash
+out=""; hfile=""
+printf '%s\\n' "$@" > "${bin}/argv.txt"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -H) case "$2" in @*) hfile="\${2#@}" ;; esac; shift ;;
+  esac
+  shift
+done
+[ -z "$hfile" ] || cp "$hfile" "${bin}/sent-header.txt"
+cp "${bin}/answer.json" "$out"
+printf '%s' "${code}"
+`, { mode: 0o755 });
+  const env = {
+    PATH: `${bin}:${process.env.PATH}`, GITLAB_CI: 'true', CI_API_V4_URL: 'https://gitlab.example.com/api/v4',
+    CI_MERGE_REQUEST_PROJECT_ID: '7', CI_MERGE_REQUEST_IID: '42', GITLAB_TOKEN: '', SDLC_API_TOKEN: '', CI_JOB_TOKEN: 'job-tok',
+  };
+  return { bin, env, done: () => fs.rmSync(bin, { recursive: true, force: true }) };
+}
+const LONG_VALID = '## Summary\nx\n\n## Impact & Risk\n- **Risk level:** low\n\n' + 'narrative '.repeat(400) + '\n\n## Checklist\n- [ ] done\n';
+
+test('pr-template gate: #343 in GitLab CI a cut description is read in full from the MR API and passes', () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-prtpl-'));
+  const cut = body(T, LONG_VALID.slice(0, 2700));
+  const rig = mrApiRig(T, { json: { iid: 42, description: LONG_VALID } });
+  const r = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...rig.env, GITLAB_TOKEN: 'glpat-s3cret' });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /read it in full from the merge request API/);
+  assert.doesNotMatch(r.out, /TRUNCATED/);
+  // This GitLab's own API, the MR's target project; the token in a header file, never on curl's argv.
+  const argv = fs.readFileSync(path.join(rig.bin, 'argv.txt'), 'utf8');
+  assert.match(argv, /^https:\/\/gitlab\.example\.com\/api\/v4\/projects\/7\/merge_requests\/42$/m);
+  assert.doesNotMatch(argv, /s3cret/);
+  assert.match(fs.readFileSync(path.join(rig.bin, 'sent-header.txt'), 'utf8'), /^PRIVATE-TOKEN: glpat-s3cret$/m);
+  assert.doesNotMatch(r.out, /s3cret/);
+  rig.done();
+  // No variable: the job's own token is tried.
+  const job = mrApiRig(T, { json: { description: LONG_VALID } });
+  assert.equal(runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], job.env).code, 0);
+  assert.match(fs.readFileSync(path.join(job.bin, 'sent-header.txt'), 'utf8'), /^JOB-TOKEN: job-tok$/m);
+  job.done();
+  // The full description is checked, not trusted: one that really lacks a section still fails.
+  const bad = mrApiRig(T, { json: { description: LONG_VALID.replace('## Checklist', '## Notes') } });
+  const rb = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], bad.env);
+  assert.equal(rb.code, 1, rb.out);
+  assert.match(rb.out, /missing section '## Checklist'/);
+  assert.doesNotMatch(rb.out, /TRUNCATED/, 'the full text was read: the cut is not the reason');
+  bad.done();
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('pr-template gate: #343 when the full description cannot be read, the cut body is checked and the note says why', () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-prtpl-'));
+  const cut = body(T, LONG_VALID.slice(0, 2700));
+  for (const [rig, why] of [
+    [mrApiRig(T, { code: '401' }), /answered HTTP 401 to the job token/],
+    [mrApiRig(T, { json: { iid: 42 } }), /answered HTTP 200 to the job token/],
+  ]) {
+    const r = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], rig.env);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /TRUNCATED at 2700/);
+    assert.match(r.out, why);
+    assert.match(r.out, /Set a GITLAB_TOKEN CI\/CD variable/);
+    rig.done();
+  }
+  // Below the cut, or outside GitLab CI: no call at all.
+  const quiet = mrApiRig(T, { json: { description: LONG_VALID } });
+  runGate(PR_TEMPLATE, T, ['--profile', 'code', body(T, '## Summary\nshort\n')], quiet.env);
+  runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...quiet.env, GITLAB_CI: '' });
+  assert.ok(!fs.existsSync(path.join(quiet.bin, 'argv.txt')), 'no API call');
+  quiet.done();
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
 test('pr-template gate: names the 2700-character GitLab truncation when a section falls past the cutoff', () => {
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-prtpl-'));
   // What GitLab actually hands CI: the first 2700 characters of a longer description whose
