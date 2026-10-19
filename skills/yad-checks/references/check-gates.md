@@ -4,6 +4,9 @@ The gates are the production-safety core of Build (Phase 3 build plan §C). They
 deliberately small, separate, and CI-agnostic: plain bash in `checks/`, invoked by whatever CI the
 repo uses. Each reads conventions established by earlier steps — it invents nothing.
 
+For people, `docs/GATES.md` in the yadflow repo lists every gate's rules, exemptions and failure
+messages, with what to change for each. When a gate's rule or message changes, update that page too.
+
 ## What each gate reads (the convention map)
 
 | Gate | Reads | Source step |

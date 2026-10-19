@@ -61,7 +61,7 @@ BASE="${1:-${SDLC_BASE:-$(resolve_base)}}"
 
 # Fail closed if the base ref can't be resolved (shallow clone / wrong base branch / unfetched ref).
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
-  echo "FAIL [spec-link]: base ref '${BASE}' not found — fetch full history / check the base branch."
+  echo "FAIL [spec-link]: base ref '${BASE}' not found — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), and give a base that names a fetched branch (the first argument, or SDLC_BASE)."
   exit 1
 fi
 RANGE="${BASE}..HEAD"
@@ -99,7 +99,7 @@ while IFS= read -r sha; do
     continue
   fi
   if [ -z "$task" ]; then
-    echo "FAIL [spec-link]: ${short} '${subject}' has no 'Task:' trailer"
+    echo "FAIL [spec-link]: ${short} '${subject}' has no 'Task:' trailer — add one naming the task it implements, as 'Task: EP-<slug>-S<n>-T<NN>'. \`yad commit --task <id>\` writes it, and reads the id from a branch named like feat/EP-<slug>-S01-T01-<words> when no --task is given. For a commit already made, reword it (git commit --amend, or git rebase -i ${BASE}) and force-push. A ci, chore, build or test commit needs no trailer."
     rc=1
     continue
   fi
@@ -122,7 +122,7 @@ while IFS= read -r sha; do
   if [ -f "specs/${story}/link.md" ]; then
     echo "PASS [spec-link]: ${short} ${task} -> specs/${story}/link.md${note}"
   else
-    echo "FAIL [spec-link]: ${short} ${task} references specs/${story}/ but link.md is missing."
+    echo "FAIL [spec-link]: ${short} ${task} references specs/${story}/ but link.md is missing — run the yad-spec skill for ${story} in this repo (it writes specs/${story}/link.md), or fix the story id in the Task trailer."
     rc=1
   fi
 done <<EOF

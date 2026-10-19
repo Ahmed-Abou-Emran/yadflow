@@ -233,7 +233,8 @@ The record is worth trusting because people approve what goes into it.
 - **Checks on every change.** Each change must name its task (spec-link). A contract change must be
   declared and locked again (contract-check). Commits must carry a signature that GitHub or GitLab
   marks as verified (verified-commits; it is skipped, with a warning, when there is no platform).
-  To make these checks block a merge, see [branch protection](docs/branch-protection.md).
+  To make these checks block a merge, see [branch protection](docs/branch-protection.md). Every
+  check's rules, exemptions and failure messages are listed in [CI gates](docs/GATES.md).
 - **Pair review.** The `yad-pair-review` skill walks you through a change one risky part at a time.
   It asks you questions and keeps a private log of how your reviewing improves. It never blocks a
   merge by itself.
@@ -281,6 +282,7 @@ The record is worth trusting because people approve what goes into it.
   - [every `yad` command](docs/CLI.md#commands)
   - [working together: capture, claims, owners, fold](docs/CLI.md#working-together-capture-claims-owners-and-fold)
   - [troubleshooting and error codes](docs/CLI.md#troubleshooting-yad-doctor--error-codes)
+  - [every CI gate: rules, exemptions and failures](docs/GATES.md)
   - [all 38 skills](docs/SKILLS.md)
   - [the by-hand walkthrough](docs/WALKTHROUGH.md)
 - **Upgrade:** [staying up to date](docs/CLI.md#staying-up-to-date) ·

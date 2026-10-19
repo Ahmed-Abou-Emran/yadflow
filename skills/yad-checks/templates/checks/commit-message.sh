@@ -92,7 +92,7 @@ BASE="${ARGS[0]:-${SDLC_BASE:-$(resolve_base)}}"
 
 # Fail closed if the base ref can't be resolved (shallow clone / wrong base branch / unfetched ref).
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
-  echo "FAIL [commit-message]: base ref '${BASE}' not found — fetch full history / check the base branch."
+  echo "FAIL [commit-message]: base ref '${BASE}' not found — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), and give a base that names a fetched branch (the first argument, or SDLC_BASE)."
   exit 1
 fi
 RANGE="${BASE}..HEAD"

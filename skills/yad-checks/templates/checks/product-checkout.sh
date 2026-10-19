@@ -65,7 +65,7 @@ resolve_base() {
 BASE="${1:-${SDLC_BASE:-$(resolve_base)}}"
 [ -n "${1:-}" ] || [ -n "${SDLC_BASE:-}" ] || echo "note [product-checkout]: no base given — reading the record from '${BASE}'."
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
-  echo "FAIL [product-checkout]: base ref '${BASE}' not found — fetch full history / check the base branch."
+  echo "FAIL [product-checkout]: base ref '${BASE}' not found — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), and give a base that names a fetched branch (the first argument, or SDLC_BASE)."
   exit 1
 fi
 

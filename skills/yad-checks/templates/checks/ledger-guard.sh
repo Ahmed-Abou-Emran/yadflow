@@ -166,7 +166,7 @@ resolve_base() {
 BASE="${1:-${SDLC_BASE:-$(resolve_base)}}"
 [ -n "${1:-}" ] || [ -n "${SDLC_BASE:-}" ] || echo "note [ledger-guard]: no base given — diffing against '${BASE}'."
 if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
-  echo "FAIL [ledger-guard]: base ref '${BASE}' not found — fetch full history / check the base branch."
+  echo "FAIL [ledger-guard]: base ref '${BASE}' not found — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), and give a base that names a fetched branch (the first argument, or SDLC_BASE)."
   exit 1
 fi
 RANGE="${BASE}..HEAD"
@@ -358,7 +358,7 @@ for sha in $commits; do
 done
 
 if [ "$violations" -gt 0 ]; then
-  echo "FAIL [ledger-guard]: ${violations} commit(s) change CI-owned gate files without a verified gate-bot signature. The ledger is CI-owned — let CI sync the gate; do not commit .sdlc/*.json or reviews/*.md yourself."
+  echo "FAIL [ledger-guard]: ${violations} commit(s) change CI-owned gate files without a verified gate-bot signature. The ledger is CI-owned — let CI sync the gate; do not commit .sdlc/*.json or reviews/*.md yourself. Every commit in the range is checked, so a new commit that undoes the change does not help: rewrite your own commits listed above (git rebase -i ${BASE}) so each leaves those files as ${BASE} has them, and force-push."
   if [ "${#overrides[@]}" -gt 0 ]; then
     echo "note [ledger-guard]: these commits carry a Ledger-Override trailer — the reason a person gave for committing past the local hook (\`yad commit --manual\` writes it). It is quoted for the reviewer and does not change the verdict:"
     printf '%s\n' "${overrides[@]}"

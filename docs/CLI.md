@@ -2090,6 +2090,9 @@ script and entry back beside them.
 
 ## Troubleshooting (`yad doctor` + error codes)
 
+**A CI check failed on a pull request?** Every gate's rules, exemptions and failure messages, with what
+to change for each, are in [CI gates](GATES.md).
+
 ### The `shape` section — is this project on the right file shape?
 
 `yad doctor` reports what shape your state files are in, against the shape this release writes, one
