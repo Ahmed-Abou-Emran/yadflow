@@ -241,11 +241,6 @@ export function writeRetroShip(epicDir, { story, repo, task = 'retro', mergeComm
   }, lockOpts);
 }
 
-// Find the ship matching `match(ship)` across loose shards (authoritative until folded) then the
-// folded file, apply `update(ship)`, and write back ONLY the file that holds it. Returns
-// { found, where, file, ship }; found:false writes nothing (the caller warns). The find and the
-// write-back are one locked span: a fold running between them would move the ship into the folded
-// file and delete the shard this call is about to rewrite, resurrecting the deleted shard.
 // Record a ship (`yad build ship`, #346): one shard per (story, task, repo), refused when that ship is
 // already recorded, or when another repo's ship shares its file name (`safe()` folds `api.v2` and `api_v2`
 // into one name, and writing the second would overwrite the first). The guard, the collision check and the
@@ -281,6 +276,10 @@ export function writeTrustRun(epicDir, entry, lockOpts = {}) {
 export function updateTrustRun(epicDir, match, update, lockOpts = {}) {
   return withLedgerLock(trustLogLock(epicDir), () => {
     const f = epicFiles(epicDir);
+    // Both copies when a half-applied tidy left the run in each: readers take the folded one then.
+    const foldedObj = readJSONStrict(f.trustLog, null);
+    const run = Array.isArray(foldedObj?.runs) ? foldedObj.runs.find(match) : null;
+    if (run) { update(run); writeJSON(f.trustLog, foldedObj); }
     for (const { name, obj } of readShardDir(f.trustLogDir)) {
       if (match(obj)) {
         update(obj);
@@ -289,17 +288,15 @@ export function updateTrustRun(epicDir, match, update, lockOpts = {}) {
         return { found: true, where: 'shard', file, run: obj };
       }
     }
-    const foldedObj = readJSONStrict(f.trustLog, null);
-    const run = Array.isArray(foldedObj?.runs) ? foldedObj.runs.find(match) : null;
-    if (run) {
-      update(run);
-      writeJSON(f.trustLog, foldedObj);
-      return { found: true, where: 'folded', file: f.trustLog, run };
-    }
-    return { found: false };
+    return run ? { found: true, where: 'folded', file: f.trustLog, run } : { found: false };
   }, lockOpts);
 }
 
+// Find the ship matching `match(ship)` across loose shards (authoritative until folded) then the
+// folded file, apply `update(ship)`, and write back ONLY the file that holds it. Returns
+// { found, where, file, ship }; found:false writes nothing (the caller warns). The find and the
+// write-back are one locked span: a fold running between them would move the ship into the folded
+// file and delete the shard this call is about to rewrite, resurrecting the deleted shard.
 export function updateShip(epicDir, match, update, lockOpts = {}) {
   return withLedgerLock(buildLogLock(epicDir), () => {
     const f = epicFiles(epicDir);

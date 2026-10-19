@@ -246,15 +246,16 @@ ${c.bold('Build helpers')}
                                        Commit by convention (trailers, atomic guard); --manual is
                                        the door past the Product's ledger hook, reason recorded
   yad build start <story> --repo <r>   ${c.dim('(on the Product)')} Begin a story's Build lane in one repo
-  yad build step <story> --repo <r> <step> in_progress|in_review|done|blocked [--reason] [--run <uid>]
+  yad build step <story> --repo <r> <step> in_progress|in_review|done|blocked [--reason] [--run <uid>] [--via auto|human]
                                        Move the lane's current step; done records how it closed
-  yad build trust <story> --repo <r> <step> --verdict <v> [--signal k=v]
+  yad build trust <story> --repo <r> <step> --verdict <v> [--signal k=v] [--ran-by machine|human] [--note]
                                        Record a step run's trust entry (prints its uid); --uid <uid>
                                        --verdict <v> finalizes one already recorded
   yad build ship <story> --task <T> --repo <r> --pr <n>
                                        Record a ship from the MERGED PR/MR (merge commit, checks,
-                                       approvers); not \`yad ship\`, which commits and opens the PR
-  yad build done <story>               Every task shipped: status shipped, review step closed
+                                       approvers); not \`yad ship\`, which commits and opens the PR.
+                                       No platform: --merge-commit <sha> [--approver <login>]…
+  yad build done <story> [--no-fetch]  Every task shipped: status shipped, review step closed
   yad run checks [--title <text>] [--body <file>] [--base <ref>] [--no-build] [--no-fetch]
                                        Run every PR/MR gate here before you push, as CI would: this
                                        repo's own checks/ scripts against origin/<default>, with the

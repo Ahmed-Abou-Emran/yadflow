@@ -66,20 +66,32 @@ export function setFrontmatterStatus(file, status) {
   return cur;
 }
 
-// A story's Build status (`yad build ship` / `yad build done`, #346): `approved` → `in-build` → `shipped`,
-// forward only, and only the `status:` line of the frontmatter. The Shape ladder above never writes these
-// values (PRESERVE); this is the one writer of them. Returns the prior status when it changed, else null.
-const BUILD_LADDER = { approved: 0, 'in-build': 1, shipped: 2 };
+// A story's Build status (`yad build ship` / `yad build done`, #346), forward only, and only the `status:`
+// line of the frontmatter. Every Shape value (`draft`, `in-review`, `approved`) is before Build: a story
+// whose stories review passed may still say `draft` when nobody ran `yad sync-status`. The Shape ladder
+// above never writes the Build values (PRESERVE); this is the one writer of them. The value is read as YAML
+// reads it — quotes and a trailing `# comment` aside. Returns { prior, changed }, or { prior, unknown: true }
+// for a value this cannot place (the caller refuses rather than leave the line behind).
+const BUILD_LADDER = { draft: 0, 'in-review': 0, approved: 0, 'in-build': 1, shipped: 2 };
+export const statusValue = (raw) => String(raw ?? '').replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+export function readStoryStatus(file) {
+  if (!fs.existsSync(file)) return null;
+  const fm = fs.readFileSync(file, 'utf8').match(FRONTMATTER_BLOCK);
+  const raw = fm ? (fm[1].match(/^status:\s*(.*)$/m) || [])[1] : undefined;
+  return raw === undefined ? null : statusValue(raw);
+}
 export function setBuildStatus(file, status) {
-  if (!(status in BUILD_LADDER) || status === 'approved' || !fs.existsSync(file)) return null;
+  if (!['in-build', 'shipped'].includes(status) || !fs.existsSync(file)) return { prior: null, unknown: true };
   const text = fs.readFileSync(file, 'utf8');
   const fm = text.match(FRONTMATTER_BLOCK);
-  if (!fm) return null;
-  const cur = (fm[1].match(/^status:\s*(.*)$/m) || [])[1]?.trim();
-  if (cur === undefined || !(cur in BUILD_LADDER) || BUILD_LADDER[status] <= BUILD_LADDER[cur]) return null;
+  const raw = fm ? (fm[1].match(/^status:\s*(.*)$/m) || [])[1] : undefined;
+  if (raw === undefined) return { prior: null, unknown: true };
+  const prior = statusValue(raw);
+  if (!(prior in BUILD_LADDER)) return { prior, unknown: true };
+  if (BUILD_LADDER[status] <= BUILD_LADDER[prior]) return { prior, changed: false };
   const block = fm[1].replace(/^status:\s*.*$/m, () => `status: ${status}`);
   fs.writeFileSync(file, text.replace(fm[1], () => block));
-  return cur;
+  return { prior, changed: true };
 }
 
 // Sweep one epic (or every epic under epics/) and reconcile artifact frontmatter with state.json.
