@@ -358,7 +358,7 @@ for sha in $commits; do
 done
 
 if [ "$violations" -gt 0 ]; then
-  echo "FAIL [ledger-guard]: ${violations} commit(s) change CI-owned gate files without a verified gate-bot signature. The ledger is CI-owned — let CI sync the gate; do not commit .sdlc/*.json or reviews/*.md yourself. Every commit in the range is checked, so a new commit that undoes the change does not help: rewrite the commits listed above (git rebase -i ${BASE}) so each leaves those files as ${BASE} has them, and force-push."
+  echo "FAIL [ledger-guard]: ${violations} commit(s) change CI-owned gate files without a verified gate-bot signature. The ledger is CI-owned — let CI sync the gate; do not commit .sdlc/*.json or reviews/*.md yourself. Every commit in the range is checked, so a new commit that undoes the change does not help: rewrite your own commits listed above (git rebase -i ${BASE}) so each leaves those files as ${BASE} has them, and force-push."
   if [ "${#overrides[@]}" -gt 0 ]; then
     echo "note [ledger-guard]: these commits carry a Ledger-Override trailer — the reason a person gave for committing past the local hook (\`yad commit --manual\` writes it). It is quoted for the reviewer and does not change the verdict:"
     printf '%s\n' "${overrides[@]}"

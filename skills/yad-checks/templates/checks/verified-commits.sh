@@ -115,8 +115,10 @@ case "$platform" in
 esac
 
 # 0 when the platform marks the commit's signature verified. On GitHub a failed API call sets
-# sig_api_error=1, so the FAIL can tell "not signed" from "could not ask" (#351). GitLab answers an
-# unsigned commit with a 404, which `curl -f` cannot tell from a refused token, so it stays one case.
+# sig_api_error=1, so the FAIL can tell "not signed" from "could not ask" (#351). It is read from gh's
+# exit status: on an HTTP error (a bad token, a rate limit) gh still prints the error body to stdout.
+# GitLab answers an unsigned commit with a 404, which `curl -f` cannot tell from a refused token, so it
+# stays one case.
 sig_api_error=0
 signature_verified() {
   local sha v body
@@ -124,8 +126,10 @@ signature_verified() {
   sig_api_error=0
   case "$platform" in
     github)
-      v="$(gh api "repos/{owner}/{repo}/commits/${sha}" --jq '.commit.verification.verified' 2>/dev/null || echo api-error)"
-      [ "$v" != "api-error" ] || sig_api_error=1
+      if ! v="$(gh api "repos/{owner}/{repo}/commits/${sha}" --jq '.commit.verification.verified' 2>/dev/null)"; then
+        sig_api_error=1
+        return 1
+      fi
       [ "$v" = "true" ]
       ;;
     gitlab)
@@ -180,7 +184,7 @@ while IFS= read -r sha; do
       if [ "$sig_api_error" = 1 ]; then
         echo "FAIL [verified-commits]: ${short} — the job could not ask GitHub for the commit's signature (gh api failed). The job needs GH_TOKEN set to the workflow's github.token, as the yad workflows set it; then run it again."
       else
-        resign="sign commits with a GPG or SSH key added to your ${platform} account (git config commit.gpgsign true), then re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' ${BASE}, and force-push."
+        resign="sign commits with a GPG or SSH key added to your ${platform} account (git config commit.gpgsign true; for an SSH key also gpg.format ssh and user.signingkey). On a pull request branch, re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' ${BASE}, and force-push. On the default branch, do not force-push: land the change again through a pull request of signed commits."
         if [ "$platform" = gitlab ]; then
           echo "FAIL [verified-commits]: ${short} signature missing/unverified — ${resign} If the commits are signed, the job could not read GitLab's signature API: set a GITLAB_TOKEN (or SDLC_API_TOKEN) CI/CD variable with the read_api scope."
         else

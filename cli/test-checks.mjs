@@ -99,7 +99,7 @@ test('spec-link gate: commit without a Task trailer fails', () => {
   assert.match(r.out, /has no 'Task:' trailer/);
   // #351: the fix, the command that writes it, how to repair a commit already made, and who is exempt.
   assert.match(r.out, /add one naming the task it implements, as 'Task: EP-<slug>-S<n>-T<NN>'\. `yad commit --task <id>` writes it/);
-  assert.match(r.out, /reword it \(git commit --amend, or git rebase -i main\) and push again\. A ci, chore, build or test commit needs no trailer\./);
+  assert.match(r.out, /reword it \(git commit --amend, or git rebase -i main\) and force-push\. A ci, chore, build or test commit needs no trailer\./);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -2947,7 +2947,7 @@ for (const g of GATES) {
     commit(T, g.subject || 'feat: add thing\n\nTask: EP-demo-S01-T01', { 'src/thing.js': 'x', ...(g.files || {}) });
     r = runGate(g.script, T);
     assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /keeps more than one Product holding EP-demo \(a b\) — the gate cannot tell which is meant\. Set product-repo in the story's link\.md to one of them\./);
+    assert.match(r.out, /keeps more than one Product holding EP-demo \(a b\) — the gate cannot tell which is meant\. Set product-repo in the story's link\.md to one of them, and merge that change on its own first: a value counts once main has it\./);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
@@ -3009,7 +3009,7 @@ for (const g of GATES) {
     try {
       const r = runGate(g.script, T);
       assert.equal(r.code, 1, r.out);
-      assert.match(r.out, /a folder the gate cannot enter to check where it really is — so it is not read\. Point product-repo in the story's link\.md \(or path in \.sdlc\/product-link\.json on the base\) at a folder the job can read\./);
+      assert.match(r.out, /a folder the gate cannot enter to check where it really is — so it is not read\. Point product-repo in the story's link\.md \(or path in \.sdlc\/product-link\.json\) at a folder the job can read, and merge that change on its own first: a value counts once main has it\./);
     } finally {
       fs.chmodSync(path.join(T, 'product'), 0o755);
       fs.rmSync(T, { recursive: true, force: true });
@@ -3044,7 +3044,7 @@ for (const g of GATES) {
     });
     const r = runGate(g.script, T);
     assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product\. Point product-repo in the story's link\.md \(or path in \.sdlc\/product-link\.json on the base\) at the Product checkout, such as \.yad\/product\./);
+    assert.match(r.out, /inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product\. Point path in \.sdlc\/product-link\.json at the Product checkout \(\.yad\/product, from the repo root\), or product-repo in the story's link\.md \(\.\.\/\.\.\/\.yad\/product, from the story's folder\), and merge that change on its own first: a value counts once main has it\./);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
@@ -3057,7 +3057,7 @@ for (const g of GATES) {
     });
     const r = runGate(g.script, T);
     assert.equal(r.code, 1, r.out);
-    assert.ok(r.out.includes("a Product this repo keeps, and main has no 'our-product/epics' folder — there is nothing on the base to read. Merge that Product's epics into main first, or point product-repo in the story's link.md (or path in .sdlc/product-link.json on the base) at the Product checkout."), r.out);
+    assert.ok(r.out.includes("a Product this repo keeps, and main has no 'our-product/epics' folder — there is nothing on the base to read. Merge that Product's epics into main first, or point product-repo in the story's link.md (or path in .sdlc/product-link.json) at the Product checkout, merged on its own first."), r.out);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
@@ -3693,7 +3693,7 @@ test('build-test-lint gate: failing test script fails the gate', () => {
   });
   const r = runGate(BTL, T, []);
   assert.notEqual(r.code, 0, 'failing tests must fail the gate');
-  assert.match(r.out, /FAIL \[build\/test\/lint\]: 'npm run test' failed — the output above says why\. Run it on your machine, fix what it reports, and push again\./);
+  assert.match(r.out, /FAIL \[build\/test\/lint\]: 'npm run test' failed\. If nothing is printed above, package\.json has no "test" script — add one\. Otherwise the output above says why: run it on your machine, fix what it reports, and push again\./);
   fs.rmSync(T, { recursive: true, force: true });
 });
 
@@ -3704,7 +3704,7 @@ test('build-test-lint gate: a failing or missing step is named, and the later st
   });
   const r = runGate(BTL, T, []);
   assert.notEqual(r.code, 0, r.out);
-  assert.match(r.out, /FAIL \[build\/test\/lint\]: 'npm run build' failed .* package\.json must have a "build" script: a missing one fails here too\./);
+  assert.match(r.out, /FAIL \[build\/test\/lint\]: 'npm run build' failed\. If nothing is printed above, package\.json has no "build" script — add one\./);
   assert.doesNotMatch(r.out, /\[build\/test\/lint\] test…/);
   fs.rmSync(T, { recursive: true, force: true });
 });
@@ -4843,7 +4843,7 @@ test('ledger-guard: yad commit --manual passes the local hook, and the CI check 
     assert.equal(ci.code, 1, `the trailer changes nothing about the verdict\n${ci.out}`);
     assert.match(ci.out, /FAIL \[ledger-guard\]/);
     // #351: a commit that undoes the change does not help; the FAIL says to rewrite the listed ones.
-    assert.match(ci.out, /a new commit that undoes the change does not help: rewrite the commits listed above \(git rebase -i origin\/main\) so each leaves those files as origin\/main has them, and force-push\./);
+    assert.match(ci.out, /a new commit that undoes the change does not help: rewrite your own commits listed above \(git rebase -i origin\/main\) so each leaves those files as origin\/main has them, and force-push\./);
     const sha = String(git(repo, 'rev-parse', 'HEAD')).trim();
     assert.ok(ci.out.split('\n').includes(`  ${sha} Ledger-Override: ${why}`), `the reason is quoted after the sha, so no line starts with ::\n${ci.out}`);
     assert.doesNotMatch(ci.out, /^\s*::/m, 'the runner skips leading spaces');
@@ -5228,6 +5228,13 @@ test('ledger-guard: an unresolvable base ref FAILs closed (bridge on)', () => {
   commit(T, 'enable bridge', {});
   assert.equal(runGate(LEDGER_GUARD, T, ['origin/nope']).code, 1);
   fs.rmSync(T, { recursive: true, force: true });
+});
+
+// #351: yadflow's own CI runs checks/verified-commits.sh, an installed copy of the template. A change to
+// the template that misses the copy leaves this repo's own CI on the old rules.
+test('checks/verified-commits.sh is the shipped template, byte for byte', () => {
+  assert.equal(fs.readFileSync(path.join(ROOT, 'checks/verified-commits.sh'), 'utf8'),
+    fs.readFileSync(path.join(CHECKS, 'verified-commits.sh'), 'utf8'));
 });
 
 // #351: one text in eleven gates, so every copy is run — a fix in one arm and not its twin fails here.
@@ -5754,7 +5761,7 @@ test('lineage-check: a chore with no parent PASSES, a defect with no parent FAIL
     linkedCommit(T, productConfig);
     const bad = runGate(LINEAGE, T, ['main']);
     assert.equal(bad.code, 1, bad.out);
-    assert.match(bad.out, /is type:defect but declares no 'parent:' — a change-epic must thread to its predecessor\. Add parent: <the epic it changes> to epics\/EP-demo\/epic\.md in the Product \(the yad-change skill writes it\); `yad thread` lists the threads\./);
+    assert.match(bad.out, /is type:defect but declares no 'parent:' — a change-epic must thread to its predecessor\. Add parent: <the epic it changes> to epics\/EP-demo\/epic\.md in the Product, through its review PR \(the yad-change skill writes it\); `yad thread` lists the threads\./);
 
     // A parent the Product does not have (#351): which field to fix, or what to merge first.
     git(T, 'reset', '-q', '--hard', 'main');

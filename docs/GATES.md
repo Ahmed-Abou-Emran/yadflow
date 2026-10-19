@@ -12,6 +12,7 @@ are built and why each rule exists, see the skill's own reference,
 
 ## Contents
 
+- [Words used on this page](#words-used-on-this-page)
 - [How to read a gate's output](#how-to-read-a-gates-output)
 - [Which gates run where](#which-gates-run-where)
 - [Messages many gates share](#messages-many-gates-share)
@@ -24,6 +25,27 @@ are built and why each rule exists, see the skill's own reference,
 - Helper steps: [product-checkout](#product-checkout) · [install-deps](#install-deps)
 - [Commit trailers the gates read](#commit-trailers-the-gates-read)
 
+## Words used on this page
+
+| Word | Meaning |
+|---|---|
+| **Product** | The repo that holds the planning documents (epics, stories, the contract) and their review records. Code lives in separate **code repos**, unless the team keeps both in one repo. |
+| **epic**, **story**, **task** | An epic is one feature or change, such as `EP-checkout`. It is split into stories (`EP-checkout-S01`), and each story into tasks (`EP-checkout-S01-T02`). |
+| **Shape review PR** | A pull request in the Product that reviews one planning document. Merging it is what approves the document. |
+| **thread** | A feature and the changes made to it later. A change epic names the epic it changes with `parent:`. |
+| **contract** | The shared interface between repos: APIs, events, schemas. It is written and **locked** in the Product. The **lock** is a file holding a hash (a fingerprint) of the contract text. |
+| **slice** | The part of the contract one story builds against, copied into the code repo under `specs/<story>/contracts/`. |
+| **trailer** | A `Key: value` line at the end of a commit message, such as `Task: EP-checkout-S01-T02`. |
+| **base** | The branch the change will merge into, such as `origin/main`. CI passes it to each gate. |
+| **merge base** | The last commit the branch and the base have in common. |
+| **shallow clone** | A checkout without the full history. Gates that compare with the base need the full history. |
+| **rebase**, **force-push** | Rebase rewrites a branch's commits, for example to reword a message. A rewritten branch must be force-pushed (`git push --force-with-lease`), because the old commits are replaced. |
+| **symlink**, **submodule** | A symlink is a file that points at another path. A submodule is another git repo placed inside this one. The gates refuse both where they read files, because the content would live somewhere the gate does not check. |
+| **fork** | A copy of the repo under another account. A pull request from a fork never gets the repo's secrets. |
+| **Conventional Commits** | The subject format `type(scope): description`, such as `fix(api): handle empty cart`. |
+| **lockfile** | The file that pins the exact version of each package (`package-lock.json`, `pnpm-lock.yaml`). |
+| **CI/CD variable**, **secret** | A value stored in the repo's settings and handed to CI jobs. On GitLab, **masked** means it is hidden in job logs; a token needs the **`read_api` scope** (permission) to read GitLab's API. |
+
 ## How to read a gate's output
 
 Every line starts with a word that says what kind of line it is:
@@ -34,16 +56,22 @@ Every line starts with a word that says what kind of line it is:
 | `FAIL [gate]:` | This part failed. The job fails at the end. The text after the dash says what to change. |
 | `WARNING` / `WARN [gate]:` | Something you should fix soon, but the job does not fail for it. On GitHub some warnings also show as a yellow note on the pull request. |
 | `note [gate]:` | Information only, for example "the Product could not be reached, so this part was skipped". |
+| `NOTE [pr-template]:` | Why the description could not be read in full on GitLab. See [pr-template](#pr-template). |
+| `hint [ledger-guard]:` | A likely cause and its fix. |
 | `->` or an indented line | More detail for the line above it. |
 
-A failure is written as `FAIL [gate]: <what is wrong> — <what to change>`. Most gates check every
-commit in the pull request, so one run can print several `FAIL` lines.
+Most failures are written as `FAIL [gate]: <what is wrong> — <what to change>`. When the fix is plain
+from the problem (a missing line), the message names only the problem; the tables below give the fix.
+Most gates check every commit in the pull request, so one run can print several `FAIL` lines.
 
 **A commit already pushed must be rewritten to fix a commit-level failure.** The gates read every
 commit in the pull request, not only the last one. A new commit that fixes the problem does not help
 when the problem is in an older commit (a missing trailer, a bad subject, a missing signature). Reword
 or rewrite the older commit (`git commit --amend` for the last one, `git rebase -i <base>` for older
 ones), then force-push.
+
+One exception: contract-check accepts the `Contract-Change: yes` trailer on **any** commit in the pull
+request, so a new commit carrying it does count.
 
 ## Which gates run where
 
@@ -72,13 +100,14 @@ Two more scripts run as steps inside the jobs above:
   reconcile-debt. It checks the Product out so those gates can read it.
 - [install-deps](#install-deps) (`install-deps.sh`) runs first in build/test/lint. It installs the repo's packages.
 
-**On a direct push to the default branch** (no pull request), the `yad-update-guard` workflow runs only
+**On a direct push to the default branch** (no pull request), the `yad-update-guard` workflow (GitHub)
+or the `yad-update-guard-verified-commits` and `yad-update-guard-commit-message` jobs (GitLab) run only
 two gates over the pushed commits: [verified-commits](#verified-commits) and
 [commit-message](#commit-message). This covers `yad update --push`, which pushes without a pull request.
 
-**When the PR text is edited** (title or description only), GitHub runs the jobs again. The jobs that
-read commits (`verified-commits`, `ledger-guard`, `member-check`) skip that run, because no commit
-changed.
+**When the PR text is edited** (title or description only), GitHub runs only `pr-title` and
+`pr-template` again. Every other job skips that run, because no commit changed. On GitLab, editing a
+merge request's text does not start a pipeline.
 
 ## Messages many gates share
 
@@ -110,7 +139,9 @@ The Product's settings are kept under two names until v5: `.sdlc/product.json` a
 | `FAIL [product-settings]: SDLC_PRODUCT_CONFIG (…) and SDLC_HUB_CONFIG (…) name files that say different things. Set only SDLC_PRODUCT_CONFIG.` | Remove `SDLC_HUB_CONFIG` from the job's environment. |
 | `FAIL [product-settings]: .sdlc/product.json and .sdlc/hub.json say different things … Run yad migrate in the Product …` | In the Product, run `yad migrate --apply --keep product` (or `--keep hub`) to choose the copy to keep, then commit both files. |
 
-Every gate that takes a base prints these, except risk-map, where they are a note.
+Gates that print them: spec-link, contract-check, backfill, lineage-check, epic-open, reconcile-debt,
+commit-message, verified-commits, ledger-guard and product-checkout. risk-map prints a note instead.
+member-check reads the first settings file it finds.
 
 ### Where the Product is read from
 
@@ -123,25 +154,28 @@ in this order:
 2. `product-repo` in the story's `specs/<story>/link.md`, **as the base has it**. For a story that is
    new in this pull request, another story's `link.md` on the base is used.
 3. A Product kept inside this repo (a monorepo), read from the base commit.
+4. Only when the base names no Product at all (the repo's **first spec**): the story's own
+   `product-repo` from this pull request.
 
-The pull request under check never decides where the Product is read from. A change to
-`product-link.json` or to `product-repo` counts only after it merges, so make that change in its own
-pull request.
+Once the base names a Product, the pull request under check does not decide where it is read from. A
+change to `product-link.json` or to `product-repo` counts only after it merges, so make that change in
+its own pull request.
 
 **When the Product cannot be reached at all** (CI did not check it out), lineage-check, epic-open and
-reconcile-debt pass with a note, and contract-check skips the lock comparison with a note. The one
-exception is a repo's [first spec](#contract-check).
+reconcile-debt print `PASS [gate]: … deferred`, and contract-check skips the lock comparison with a
+note. Two exceptions: epic-open fails when nothing names the Product at all, and contract-check fails
+a changed slice on the repo's [first spec](#contract-check).
 
 | Message (after `FAIL [<gate>]: …`) | What to change |
 |---|---|
-| `product-repo resolves to '<path>', a folder the gate cannot enter … Point product-repo in the story's link.md (or path in .sdlc/product-link.json on the base) at a folder the job can read.` | Fix the path, or the folder's permissions. |
-| `product-repo resolves to '<path>', inside this repo's own git folder … Point … at the Product checkout, such as .yad/product.` | The path points into `.git/`. Point it at the Product checkout. |
-| `<what>, and <base> keeps more than one Product holding <epic> (<list>) — the gate cannot tell which is meant. Set product-repo in the story's link.md to one of them.` | Set `product-repo` to one of the listed folders. |
+| `product-repo resolves to '<path>', a folder the gate cannot enter … Point product-repo in the story's link.md (or path in .sdlc/product-link.json) at a folder the job can read, and merge that change on its own first: …` | Fix the path, or the folder's permissions. |
+| `product-repo resolves to '<path>', inside this repo's own git folder … Point path in .sdlc/product-link.json at the Product checkout (.yad/product, from the repo root), or product-repo in the story's link.md (../../.yad/product, from the story's folder), and merge that change on its own first: …` | The path points into `.git/`. Point it at the Product checkout. |
+| `<what>, and <base> keeps more than one Product holding <epic> (<list>) — the gate cannot tell which is meant. Set product-repo in the story's link.md to one of them, and merge that change on its own first: …` | Set `product-repo` to one of the listed folders. |
 | `product-repo reaches the Product through '<path>', a symlink, submodule or file this repo tracks … Point product-repo at the Product itself.` | Point it at the real Product folder, not at a link. |
 | `product-repo resolves to '<path>', which holds files this repo tracks, but <base> does not track '.sdlc/product.json' … Untrack those files (git rm -r --cached '<path>') or point product-repo at the Product.` | A pull request cannot add its own Product. Untrack the folder, or point at the real Product. |
-| `product-repo resolves to '<path>', a Product this repo keeps, and <base> has no '<path>/epics' folder … Merge that Product's epics into <base> first, or point … at the Product checkout.` | Merge the Product's epics into the base first. |
+| `product-repo resolves to '<path>', a Product this repo keeps, and <base> has no '<path>/epics' folder … Merge that Product's epics into <base> first, or point … at the Product checkout, merged on its own first.` | Merge the Product's epics into the base first. |
 | `'<path>/epics/<file>' on <base> is a symlink or a submodule … Replace it with the files themselves.` | Replace the link inside the kept Product with real files, in its own pull request. |
-| `product-repo resolves to '<path>', a Product this repo keeps, and '<path>/epics' could not be read from <base> — check the code out with full history …` | Fetch the whole history, then run again. |
+| `product-repo resolves to '<path>', a Product this repo keeps, and '<path>/epics' could not be read from <base> — run the job again; if it repeats, check the code out with full history and no partial-clone filter …` | As it says. |
 
 ## spec-link
 
@@ -185,11 +219,12 @@ A change to the surface passes when either of these is true:
 - **The change is only a quote** (no trailer needed). Each changed slice file is Markdown and holds
   exactly one `<!-- CONTRACT-QUOTE:BEGIN -->` … `<!-- CONTRACT-QUOTE:END -->` block. The lines inside
   are one unbroken run of the locked contract's surface lines, in order. The `yad-spec` skill writes
-  slices this way. Outside the block, only blank lines and the title `# Contract slice — <story ID>`
-  are allowed; notes go in `spec.md` or `plan.md`.
+  slices this way. Outside the block, only blank lines are allowed, plus the title
+  `# Contract slice — <story ID>` as the first line; notes go in `spec.md` or `plan.md`.
 
 The gate reads what merging the branch into the base would change, the same as GitHub's own merge
-check. Contract files that landed on the base after the branch split off are not blamed on the branch.
+check. Contract files that changed on the base after the branch split off do not count as this
+branch's change.
 
 **Exemptions:**
 
@@ -220,6 +255,7 @@ to the merge base and fails in the cases it cannot judge.
 | `Contract-Change claimed, but <epic> has no contract lock at all.` | Lock the contract upstream first; the lines below the message name the cases. |
 | `<story>'s slice belongs to <epic>, which does not exist in the Product … an orphan slice. Check the story id in the slice's folder name; …` | Fix the folder's story id, or merge the epic's Shape review PRs into the Product first. A pull request that only deletes the slice passes. |
 | `<link.md> is this repo's first spec — no link.md on <base> names a Product …` | Run `yad check --fix --push` from the Product, with the `YAD_PRODUCT_TOKEN` secret set, so CI can check the Product out. Or fix `product-repo`. |
+| `<link.md> — ` and a [Where the Product is read from](#where-the-product-is-read-from) message | See that table. |
 | `a changed slice pins a stale or absent contract lock … (see above)` | A summary line. Fix the lines above it. |
 
 **Why a slice is not a quote.** These lines are printed under the "without a Contract-Change trailer"
@@ -233,15 +269,20 @@ failure. Each one says why that story's slice could not pass as a quote:
 | `this line is not in the locked surface: …` / `not one unbroken run of the locked surface` | Copy whole lines, in order, from the locked surface. If the line is new, the contract is changing: add the trailer and lock upstream. |
 | `this removes slice file(s) — a deletion changes the surface.` | A deletion needs the trailer. |
 | `only a Markdown slice can pass as a quote` | Any other file under `contracts/` needs the trailer. |
-| `not rebased onto <base> (or holds merge commits)` | Rebase the branch onto the base, then push again. |
+| `not rebased onto <base> (or holds merge commits)` | Rebase the branch onto the base, then force-push. |
+| `the branch's own commits touch it, but it is not in what lands (added and removed again?)` | That needs the trailer. |
+| `specs/<folder>/contracts is not under a story ID — it quotes no lock.` | Move the slice under its story's folder, or delete it. |
+| `<link.md> is not there, so the slice is tied to no lock` | Re-run `yad-spec`. |
+| `<lock> has no readable "hash" value.` | Lock the contract again upstream (`yad-architecture`, Step 5). |
+| A [Where the Product is read from](#where-the-product-is-read-from) message | See that table. |
 | `<link.md> names no contract-lock` / `pins …, not the current lock` | Re-run `yad-spec`. |
 | `cannot check <story>'s slice against its lock — the Product's lock is not reachable` | Let CI check the Product out (see [product-checkout](#product-checkout)), or add the trailer. |
 | `the Product's contract.md no longer matches its lock` | Lock the contract again upstream (`yad-architecture`, Step 5). |
 | `<epic>'s pointer lock names '<ref>', which is not another epic's lock` / `and there is no lock there` / `its owner now locks another surface` | Fix the pointer lock in the Product (`ref` / `inheritedFrom` in `contract-lock.json`); the `yad-change` skill writes it. |
 | `<contract.md> is not there — nothing to quote from.` | Write and lock the contract in the Product (`yad-architecture`). |
-| `no sha256sum or shasum on this machine` | Use a runner image that has `sha256sum` (coreutils) or `shasum` (perl). |
+| `no sha256sum or shasum on this machine` | Run the job on a machine image that has `sha256sum` (coreutils) or `shasum` (perl). |
 | `a slice file name holding a newline is not read` / `holds a zero byte` / `could not be read` | Rename the file, or write it again with `yad-spec`. |
-| `git could not list the slice's changes` / `git listed no changed slice file` | Fetch the whole history and run again, or add the trailer. |
+| `git could not list the slice's changes` / `… deletions` / `git listed no changed slice file` | Fetch the whole history and run again, or add the trailer. |
 
 ## build/test/lint
 
@@ -255,14 +296,15 @@ lockfile shows (npm or pnpm).
 
 | Message | What to change |
 |---|---|
-| `FAIL [build/test/lint]: '<command> run <step>' failed — the output above says why. Run it on your machine, fix what it reports, and push again. package.json must have a "<step>" script: a missing one fails here too.` | Run the named command locally and fix what it reports. If the script does not exist, add it to `package.json`. The later steps do not run after a failure. |
-| Messages from `package-manager.sh` | See [install-deps](#install-deps); the same checks run here. |
+| `FAIL [build/test/lint]: '<command> run <step>' failed. If nothing is printed above, package.json has no "<step>" script — add one. Otherwise the output above says why: run it on your machine, fix what it reports, and push again.` | As it says. npm prints nothing for a missing script; pnpm prints "Missing script". The later steps do not run after a failure. |
+| `FAIL [package-manager]: …` | See [the package manager checks](#install-deps); the same checks run here. |
 
 ## lineage-check
 
 **What it checks:** every code change belongs to an epic that sits in a **feature thread**. A thread is
-a feature and the changes made to it later. An epic of type `change`, `defect` or `hotfix` must name its
-predecessor with `parent:`, and that parent must exist in the Product.
+a feature and the changes made to it later. An epic of any type other than `feature` or `chore` (so
+`change`, `defect` or `hotfix`) must name its predecessor with `parent:`, and that parent must exist in
+the Product. An epic with no type counts as `feature`.
 
 **Exemptions:**
 
@@ -283,7 +325,7 @@ predecessor with `parent:`, and that parent must exist in the Product.
 | `<link.md> says epic: <x>, but <story> is a story of <epic>. … Fix epic: in <link.md>.` | Set `epic:` to the story id's prefix. |
 | [Where the Product is read from](#where-the-product-is-read-from) messages | See that table. |
 | `-> epic <epic> does not exist in the product repo (orphan story link). Check the story id in the Task trailer; …` | Fix the story id, or merge the epic's Shape review PRs into the Product's default branch first. |
-| `-> <epic> is type:<type> but declares no 'parent:' … Add parent: <the epic it changes> to epics/<epic>/epic.md in the Product …` | Add `parent:` in the Product. The `yad-change` skill writes it; `yad thread` lists the threads. |
+| `-> <epic> is type:<type> but declares no 'parent:' … Add parent: <the epic it changes> to epics/<epic>/epic.md in the Product, through its review PR …` | Add `parent:` in the Product. The `yad-change` skill writes it; `yad thread` lists the threads. |
 | `-> <epic> threads to '<parent>', but epics/<parent>/ does not exist in the Product (orphan thread). Fix parent: …` | Point `parent:` at an epic the Product has, or merge the parent epic first. |
 
 ## epic-open
@@ -314,8 +356,9 @@ change epic that threads to it.
 
 ## reconcile-debt
 
-**What it checks:** a hotfix that skipped the planning steps leaves **reconcile debt**: the Shape
-documents must be updated and a regression test added. While a thread has open debt that belongs to
+**What it checks:** a hotfix (an urgent fix that skipped the planning steps) leaves **reconcile debt**:
+work still owed. The planning documents must be updated and a regression test (a test that would have
+caught the bug) added. While a thread has open debt that belongs to
 another epic, no other change may ship on that thread.
 
 **Exemptions:**
@@ -335,7 +378,7 @@ another epic, no other change may ship on that thread.
 | `<link.md> says epic: <x>, but <story> is a story of <epic>. … Fix epic: in <link.md>.` | Set `epic:` to the story id's prefix. |
 | [Where the Product is read from](#where-the-product-is-read-from) messages | See that table. |
 | `-> epic <epic> does not exist in the product repo (orphan story link). …` | Fix the story id, or merge the epic's Shape review PRs into the Product first. |
-| `thread <thread> carries OPEN hotfix debt:` (the epics follow) | Pay the debt first: update the Shape documents and add the regression test, then set that entry's `status` to `paid` in `epics/<epic>/.sdlc/reconcile-debt.json`. `yad reconcile check` lists open debt. |
+| `thread <thread> carries OPEN hotfix debt:` (the epics follow) | Do the owed work first: update the planning documents and add the regression test, then set that entry's `status` to `paid` in `epics/<epic>/.sdlc/reconcile-debt.json`. `yad reconcile check` lists open debt. |
 
 ## risk-map (advice only)
 
@@ -369,7 +412,7 @@ many approvers this change should have. It never fails the job. Anything it cann
 ## commit-message
 
 **What it checks:** every commit subject follows Conventional Commits: `<type>(<scope>)?!?:
-<description>`, with type one of `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`,
+<description>`. The scope is optional and uses lowercase letters, digits, `.`, `_` or `-`. The type is one of `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`,
 `chore` or `revert`, and no full stop at the end. Trailers, when present, come in this order: `Task`,
 then `Contract-Change`, then `Co-Authored-By`.
 
@@ -394,13 +437,13 @@ is the same).
 **What it checks:** the pull request title.
 
 - **Code repos** (`--profile code`): a Conventional Commits subject, like a commit, with no full stop.
-  With squash merges the title becomes the commit subject.
+  With a squash merge (all commits merged as one) the title becomes the commit subject.
 - **The Product** (`--profile product`): a pull request from a `review/EP-*` branch is a Shape review,
   so its title must be `review: <artifact> (EP-<slug>)`, which `yad gate open` writes. Any other branch
   is a change to the Product's own tooling, so it uses the code rule.
 
 **Exemptions:** a Product pull request that changes only step owner files
-(`epics/<epic>/.sdlc/owners/*.json`) may come from any branch.
+(`epics/<epic>/.sdlc/owners/*.json` or `foundation/.sdlc/owners/*.json`) may come from any branch.
 
 **Reads:** the title; on the Product, the branch name and the changed paths.
 
@@ -454,7 +497,7 @@ author commits is decided by write access to the repo, not by a list.
 
 | Message (after `FAIL [verified-commits]: <sha> …`) | What to change |
 |---|---|
-| `signature missing/unverified — sign commits with a GPG or SSH key added to your <platform> account (git config commit.gpgsign true), then re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' <base>, and force-push.` | As it says. On GitLab the message adds: if the commits are signed, set the `GITLAB_TOKEN` variable, because GitLab answers "no signature" and "no access" the same way. |
+| `signature missing/unverified — sign commits with a GPG or SSH key added to your <platform> account (…). On a pull request branch, re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' <base>, and force-push. On the default branch, do not force-push: land the change again through a pull request of signed commits.` | As it says. On GitLab the message adds: if the commits are signed, set the `GITLAB_TOKEN` variable, because GitLab answers "no signature" and "no access" the same way. |
 | `— the job could not ask GitHub for the commit's signature (gh api failed). The job needs GH_TOKEN …` | Set `GH_TOKEN: ${{ github.token }}` on the job, as the `yad` workflows do, then run it again. |
 | `unknown platform '<x>' (SDLC_PLATFORM must be github\|gitlab\|none).` | Fix `SDLC_PLATFORM`. |
 
@@ -481,7 +524,7 @@ never changes the result.
 
 | Message | What to change |
 |---|---|
-| `FAIL [ledger-guard]: N commit(s) change CI-owned gate files without a verified gate-bot signature. … rewrite the commits listed above (git rebase -i <base>) so each leaves those files as <base> has them, and force-push.` | Every commit is checked, so a new commit that undoes the change does not help. Rewrite the listed commits. CI writes the records itself when the review merges (`yad gate sync <epic>` shows the state). If they are seed commits from a review PR that already merged, rebase onto the base instead (the hint line says so). |
+| `FAIL [ledger-guard]: N commit(s) change CI-owned gate files without a verified gate-bot signature. … rewrite your own commits listed above (git rebase -i <base>) so each leaves those files as <base> has them, and force-push.` | Every commit is checked, so a new commit that undoes the change does not help. Rewrite the listed commits. CI writes the records itself when the review merges (`yad gate status <epic>` shows the state). If they are seed commits from a review PR that already merged, rebase onto the base instead (the hint line says so). |
 | `FAIL [ledger-guard]: unknown platform '<x>' …` | Fix `SDLC_PLATFORM`. |
 
 ## member-check
@@ -508,12 +551,15 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
 | `<file>: not a member file (no "accounts" list)` / `does not hold <author>'s own <platform> account …` / `the account id in the file … is not the author's` / `must hold exactly one <platform> account …` | Write the file again with `yad member add`, as its own person. |
 | `belonged to account id …, not <author>'s — a reused login does not take over a member file; remove it first` | Remove the old file first with `yad member remove <login> --reason`, in its own pull request. |
 | `holds an email no commit in this PR proves …` | Make one commit with that email in the pull request (`yad member add` does), and verify the email on your account. |
-| `the account <x> is in <a> and <b>` / `one email is in <a> and <b>` | One account and one email belong to one member. Remove the stale file or the duplicate email. |
+| `the account <x> is in <a> and <b>` | One account belongs to one member. Remove the stale file with `yad member remove <login> --reason`. |
+| `one email is in <a> and <b>` (GitHub only) | One email belongs to one member. Remove the duplicate email from one file, or remove the stale file. |
 | `"<path>" is another spelling of .sdlc/ …` / `… of .sdlc/members/` / `… is not a folder at HEAD (a link?)` / `… is not a plain file (a link?)` / `<a> and <b> are one file on macOS and Windows` | Use the real `.sdlc/members/` folder and plain files, one spelling each. |
 | `member files changed, but the Product names no platform` | Set `platform` (`github` or `gitlab`) in `.sdlc/product.json`. |
 | `no API token (GITLAB_TOKEN or SDLC_API_TOKEN) …` / `could not read the MR (HTTP N)` / `could not read the MR: …` | Add a `GITLAB_TOKEN` masked CI/CD variable with the `read_api` scope, whose user can see the project. Renew it if it has expired. |
 | `cannot tell who opened this PR/MR …` / `cannot tell the numeric id of who opened this PR (PR_AUTHOR_ID)` | On GitHub, the job must pass `PR_AUTHOR` and `PR_AUTHOR_ID` from the event, as the `yad` workflow does. A bot cannot change member files: open the pull request as the person. |
 | The base messages | See [the base cannot be found](#the-base-cannot-be-found). |
+| `git could not list the changed files` | Fetch the whole history, then run again. |
+| `usage: node checks/member-check.mjs <base-ref>` | A wiring problem: the job must pass the base. |
 
 ## product-checkout
 
@@ -546,17 +592,24 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
 ## install-deps
 
 **What it does:** installs the repo's packages with the package manager `package.json` names, before
-build/test/lint runs. The checks in `package-manager.sh` run in both steps.
+build/test/lint runs.
 
 | Message | What to change |
 |---|---|
 | `FAIL [install-deps]: npm requires package-lock.json or npm-shrinkwrap.json.` | Commit the npm lockfile. |
 | `FAIL [install-deps]: pnpm requires pnpm-lock.yaml.` | Commit the pnpm lockfile. |
 | `FAIL [install-deps]: pnpm CI requires an exact package.json#packageManager value (for example pnpm@9.15.0).` | Set `packageManager` to an exact version. |
-| `packageManager is set but corepack is not on PATH (Node 25+ …)` | Set the `YAD_NODE_VERSION` CI variable to a 20, 22 or 24 line, or install corepack in the job. |
-| `corepack could not activate <spec>. …` | Check that the version exists and the registry is reachable; the message names the Corepack version problem. |
+
+**The package manager checks.** These lines start with `FAIL [package-manager]:` and can appear in both
+install-deps and build/test/lint, which share `package-manager.sh`. **Corepack** is the tool that comes
+with Node and installs the exact npm or pnpm version `packageManager` names.
+
+| Message (after `FAIL [package-manager]: …`) | What to change |
+|---|---|
+| `package.json#packageManager is set but corepack is not on PATH (Node 25+ no longer bundles it) — …` | Set the `YAD_NODE_VERSION` CI variable to a 20, 22 or 24 line, or run `npm install -g corepack` in the job. |
+| `corepack could not activate <spec>. A Corepack older than 0.31 cannot verify packages signed after the 2025 npm registry key rotation — …` | Use a newer Node line (`YAD_NODE_VERSION` 20, 22 or 24) or `npm install -g corepack`. Otherwise check that the version exists and the registry can be reached. |
 | `packageManager "<x>" must name an exact semantic version …` | Use a value like `pnpm@9.15.0`, with no line break in it. |
-| `package.json is missing.` / `is not valid JSON.` / `must be a JSON object.` / `packageManager must be a string.` | Fix `package.json`. |
+| `package.json is missing.` / `package.json is not valid JSON.` / `package.json must be a JSON object.` / `packageManager must be a string.` | Fix `package.json`. |
 | `unsupported packageManager '<x>' (supported: npm, pnpm).` | Use npm or pnpm. With an npm lockfile present, yarn and bun fall back to npm with a warning. |
 
 ## Commit trailers the gates read

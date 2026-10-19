@@ -24,7 +24,7 @@ run_step() {
   local step="$1"
   shift
   if ! "${run_with[@]}" run --silent "$step" "$@"; then
-    echo "FAIL [build/test/lint]: '${run_with_words} run ${step}' failed — the output above says why. Run it on your machine, fix what it reports, and push again. package.json must have a \"${step}\" script: a missing one fails here too."
+    echo "FAIL [build/test/lint]: '${run_with_words} run ${step}' failed. If nothing is printed above, package.json has no \"${step}\" script — add one. Otherwise the output above says why: run it on your machine, fix what it reports, and push again."
     exit 1
   fi
 }

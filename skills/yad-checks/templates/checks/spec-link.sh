@@ -99,7 +99,7 @@ while IFS= read -r sha; do
     continue
   fi
   if [ -z "$task" ]; then
-    echo "FAIL [spec-link]: ${short} '${subject}' has no 'Task:' trailer — add one naming the task it implements, as 'Task: EP-<slug>-S<n>-T<NN>'. \`yad commit --task <id>\` writes it, and reads the id from a branch named like feat/EP-<slug>-S01-T01-<words> when no --task is given. For a commit already made, reword it (git commit --amend, or git rebase -i ${BASE}) and push again. A ci, chore, build or test commit needs no trailer."
+    echo "FAIL [spec-link]: ${short} '${subject}' has no 'Task:' trailer — add one naming the task it implements, as 'Task: EP-<slug>-S<n>-T<NN>'. \`yad commit --task <id>\` writes it, and reads the id from a branch named like feat/EP-<slug>-S01-T01-<words> when no --task is given. For a commit already made, reword it (git commit --amend, or git rebase -i ${BASE}) and force-push. A ci, chore, build or test commit needs no trailer."
     rc=1
     continue
   fi

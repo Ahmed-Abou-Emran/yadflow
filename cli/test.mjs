@@ -10643,11 +10643,12 @@ test('verified-commits gate: the signature is now the whole gate — a Verified 
     assert.match(r.out, /PASS \[verified-commits\]: \w+ signature verified by github/);
     assert.match(r.out, new RegExp(`FAIL \\[verified-commits\\]: ${bad} signature missing/unverified`));
     // #351: the FAIL says how to re-sign what is already committed, and no GitLab token advice on GitHub.
-    assert.match(r.out, /re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' \S+, and force-push\./);
+    assert.match(r.out, /On a pull request branch, re-sign the commits already made: git rebase --exec 'git commit --amend --no-edit -S' \S+, and force-push\. On the default branch, do not force-push: land the change again through a pull request of signed commits\./);
     assert.doesNotMatch(r.out, /GITLAB_TOKEN/);
 
-    // A gh that cannot answer is "could not ask", not "unsigned" (#351).
-    fs.writeFileSync(path.join(bin, 'gh'), '#!/usr/bin/env bash\nexit 1\n');
+    // A gh that cannot answer is "could not ask", not "unsigned" (#351). Like the real gh on an HTTP
+    // error, the stub prints the error body to stdout and exits non-zero.
+    fs.writeFileSync(path.join(bin, 'gh'), '#!/usr/bin/env bash\necho \'{"message":"Bad credentials","status":"401"}\'\nexit 1\n');
     const r2 = runGate(T, { SDLC_PLATFORM: 'github', PATH: `${bin}:${process.env.PATH}` });
     assert.equal(r2.code, 1, r2.out);
     assert.match(r2.out, new RegExp(`FAIL \\[verified-commits\\]: ${bad} — the job could not ask GitHub for the commit's signature \\(gh api failed\\)\\. The job needs GH_TOKEN`));
