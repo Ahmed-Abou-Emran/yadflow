@@ -463,7 +463,7 @@ branches never get it), and when it is set on a GitLab **group**, naming the oth
 that group, since every project there gets a token that can read the Product (a user's own namespace is
 not a group; instance-level variables are not read). A read that fails is "not known", with the reason —
 never "missing". On a GitLab Product it also warns about the Product's own project access tokens that can clone
-it and expire within 30 days, or have expired (revoking a replaced one clears its line); which one a variable holds is never known here. The token's own expiry is read where the token is: in CI,
+it and expire within 30 days, or expired in the last 30 (revoking a replaced one clears its line); which one a variable holds is never known here. The token's own expiry is read where the token is: in CI,
 `product-checkout.sh` makes one API call with it and warns 30 days ahead. A missing token on a PR or MR
 that is not from a fork is a `WARNING` (and a GitHub annotation), not a note — still not a failure.
 

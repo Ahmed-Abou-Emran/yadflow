@@ -28979,6 +28979,8 @@ test('#345 product token: a GitLab Product\'s access tokens that can clone it an
     { id: 3, name: 'wrong-scope', scopes: ['read_api'], expires_at: '2026-10-20', active: true },
     // Expired: GitLab lists it `active: false`, and it is still said (review 1). Revoked: gone on purpose.
     { id: 4, name: 'lapsed', scopes: ['api'], expires_at: '2026-10-10', active: false },
+    // Expired long ago: no news, and GitLab gives no way to clear it from the list (review 3).
+    { id: 8, name: 'ancient', scopes: ['api'], expires_at: '2025-01-01', active: false },
     { id: 7, name: 'revoked', scopes: ['api'], expires_at: '2026-10-20', active: false, revoked: true },
     { id: 5, name: 'no-expiry', scopes: ['api'], expires_at: null, active: true },
     { id: 6, name: 'edge', scopes: ['api'], expires_at: '2026-11-18', active: true },
@@ -29025,7 +29027,7 @@ test('#345 doctor: one product-token line per connected code repo, none for the 
     assert.match(checks[0].message, /comes from the group acme\/team, .*\(registered here: web\)/);
     assert.match(checks[2].message, /the Product's access token prod-read \(read_repository\) expires on 2026-10-25 \(in 6 day\(s\)\)/);
     assert.doesNotMatch(JSON.stringify(checks), /PLANTED|glpat/);
-    assert.match(checks[2].hint, /revoke the old one/);
+    assert.match(checks[2].hint, /revoking the old one/);
     // A GitLab Product read from GitHub code repos still has its tokens' expiry checked (review 2).
     fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'gh', platform: 'github', git_url: 'https://github.com/acme/gh.git' }] }));
     const g = fakePlatform({ calls: [[/actions\/secrets/, 200, { secrets: [{ name: 'YAD_PRODUCT_TOKEN' }] }], [/^projects\/acme%2Fproduct\/access_tokens/, 200, []]] });
@@ -29073,15 +29075,28 @@ test('#345 doctor: an on-disk repo is skipped when it is the Product\'s own repo
     }
     fs.mkdirSync(path.join(T, 'linked/.sdlc'));
     fs.writeFileSync(path.join(T, 'linked/.sdlc/product-link.json'), '{}');
+    // `onmain` has the record on its default branch only; this clone sits on a branch without it (review 3).
+    const onmain = path.join(T, 'onmain');
+    fs.mkdirSync(path.join(onmain, '.sdlc'), { recursive: true });
+    git(onmain, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(onmain, '.sdlc/product-link.json'), '{}');
+    git(onmain, 'add', '-A');
+    git(onmain, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'record');
+    git(onmain, 'checkout', '-q', '--orphan', 'old');
+    git(onmain, 'rm', '-rq', '--cached', '.');
+    fs.rmSync(path.join(onmain, '.sdlc'), { recursive: true, force: true });
+    git(onmain, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'old');
+    git(onmain, 'update-ref', 'refs/remotes/origin/main', 'main');
     fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [
       { name: 'svc', path: 'svc', platform: 'github', git_url: 'https://github.com/acme/mirror.git' }, // inside the Product's git repo
       { name: 'linked', path: 'linked', platform: 'github', git_url: 'https://github.com/acme/linked.git' },
       { name: 'bare', path: 'bare', platform: 'github', git_url: 'https://github.com/acme/bare.git' }, // no record
+      { name: 'onmain', path: 'onmain', platform: 'github', default_branch: 'main', git_url: 'https://github.com/acme/onmain.git' },
       { name: 'remote', platform: 'github', git_url: 'https://github.com/acme/remote.git' }, // not on disk: checked
     ] }));
     const f = fakePlatform({ calls: [[/actions\/secrets/, 200, { secrets: [{ name: 'YAD_PRODUCT_TOKEN' }] }]] });
     const checks = [];
     productTokenChecks(checks, T, { runner: f.runner, env: ON });
-    assert.deepEqual(checks.map((x) => x.id), ['product-token:linked', 'product-token:remote']);
+    assert.deepEqual(checks.map((x) => x.id), ['product-token:linked', 'product-token:onmain', 'product-token:remote']);
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });

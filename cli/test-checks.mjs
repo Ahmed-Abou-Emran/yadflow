@@ -2465,6 +2465,17 @@ test('product-checkout: #345 GitLab reads expires_at with PRIVATE-TOKEN; no date
   assert.match(fs.readFileSync(path.join(rig.rig, 'sent-header.txt'), 'utf8'), /^PRIVATE-TOKEN: /m);
   assert.match(r.out, /expires on/);
   rig.done();
+  // The clone's user goes with the host too (review 2): `oauth2` for a GitLab Product read from GitHub
+  // Actions. A `git` wrapper first on PATH records the header the script hands git, then runs the real one.
+  rig = expiryRig({ host: 'gitlab.example.com', body: '{"expires_at":null}' });
+  const realGit = execFileSync('bash', ['-c', 'command -v git']).toString().trim();
+  fs.writeFileSync(path.join(rig.rig, 'bin/git'), `#!/usr/bin/env bash\n[ -z "\${GIT_CONFIG_VALUE_0:-}" ] || printf '%s\\n' "$GIT_CONFIG_VALUE_0" >> "${rig.rig}/git-header.txt"\nexec "${realGit}" "$@"\n`, { mode: 0o755 });
+  r = runCheckout(rig.T, [rig.base], { ...rig.env, GITHUB_ACTIONS: 'true' });
+  assert.equal(r.code, 0, r.out);
+  const sent = fs.readFileSync(path.join(rig.rig, 'git-header.txt'), 'utf8').match(/Authorization: Basic ([A-Za-z0-9+/=]+)/);
+  assert.ok(sent, 'git was given the header');
+  assert.match(Buffer.from(sent[1], 'base64').toString(), /^oauth2:s3cret-t0ken$/);
+  rig.done();
   // ...and a github.com Product from GitLab CI, with a user in its url that never reaches the API host.
   rig = expiryRig({ host: 'github.com', userinfo: 'x-access-token@', head: `github-authentication-token-expiration: ${inDays(60)} 00:00:00 UTC\r\n` });
   r = runCheckout(rig.T, [rig.base], { ...rig.env, GITLAB_CI: 'true' });

@@ -2596,7 +2596,9 @@ export function productTokenChecks(checks, root, { runner, env, today } = {}) {
         // often keeps it, review 2); its place in the list when GitLab gave none.
         check(checks, Number.isInteger(t.id) ? `product-token-expiry:${t.id}` : `product-token-expiry:#${k + 1}`, 'product-token', 'warn',
           `the Product's access token ${shown(t.name)} (${t.scopes.map(shown).join(', ')}) ${when} — if it is the ${TOKEN_NAME} of a code repo, the Product-reading gates there will fail their checkout`,
-          `${t.days < 0 ? '' : 'make a new token that can read the Product and set it as YAD_PRODUCT_TOKEN on each code repo that used the old one (yad cannot see which token a variable holds); '}revoke the old one in the Product's Settings → Access tokens once it is replaced, which clears this line`);
+          t.days < 0
+            ? 'make a new token that can read the Product and set it as YAD_PRODUCT_TOKEN on each code repo that used the expired one (yad cannot see which token a variable holds); this line stops 30 days after the expiry date'
+            : 'make a new token that can read the Product and set it as YAD_PRODUCT_TOKEN on each code repo that used the old one (yad cannot see which token a variable holds); revoking the old one in the Product\'s Settings → Access tokens once it is replaced clears this line');
       }
     }
   }

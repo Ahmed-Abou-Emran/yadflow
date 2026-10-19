@@ -154,7 +154,8 @@ export function tokenLine(r, { name, others = () => [] } = {}) {
   return { status: 'warn', message: `${who}: ${TOKEN_NAME} is not set on the project or its groups — ${defer} on every merge request`, hint: add };
 }
 
-// A GitLab Product's own access tokens that can clone it and expire within EXPIRY_WARN_DAYS. `today` is
+// A GitLab Product's own access tokens that can clone it and expire within EXPIRY_WARN_DAYS, or expired
+// within the last EXPIRY_WARN_DAYS. `today` is
 // YYYY-MM-DD (injectable for tests). `{ known: false, why }`, or `{ known: true, soon: [{ name, expires,
 // days, scopes }] }`.
 export function readExpiringProductTokens({ gitUrl }, { runner = run, env = process.env, authCache = new Map(), today = new Date().toISOString().slice(0, 10) } = {}) {
@@ -175,7 +176,9 @@ export function readExpiringProductTokens({ gitUrl }, { runner = run, env = proc
     const exp = typeof tok.expires_at === 'string' && /^\d{4}-\d{2}-\d{2}/.test(tok.expires_at) ? tok.expires_at.slice(0, 10) : null;
     if (!exp) continue;
     const days = Math.round(day(exp) - day(today));
-    if (days <= EXPIRY_WARN_DAYS) soon.push({ id: Number.isInteger(tok.id) ? tok.id : null, name: typeof tok.name === 'string' ? tok.name : `#${tok.id}`, expires: exp, days, scopes });
+    // Within 30 days either side: one that expired long ago is no news, and GitLab offers no way to remove
+    // an expired token from its list, so a line about it could never be cleared (review 3).
+    if (days <= EXPIRY_WARN_DAYS && days >= -EXPIRY_WARN_DAYS) soon.push({ id: Number.isInteger(tok.id) ? tok.id : null, name: typeof tok.name === 'string' ? tok.name : `#${tok.id}`, expires: exp, days, scopes });
   }
   // A full page proves nothing about the tokens past it (review 1).
   if (r.body.length >= PAGE) return unknown('partial', `${shown(base.repo)} has more than ${PAGE} access tokens, and yad reads one page`);
