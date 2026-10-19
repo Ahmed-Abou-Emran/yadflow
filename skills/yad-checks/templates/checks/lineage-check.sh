@@ -135,7 +135,7 @@ record_path() {
 }
 product_for() {
   _link="specs/$1/link.md"
-  prod=""; prod_note=""; prod_fail=""; _fix_where="product-repo in specs/$1/link.md"; _fix_when=""
+  prod=""; prod_note=""; prod_fail=""; _fix_where="product-repo in specs/$1/link.md"; _fix_when=""; _src="product-repo"; _fix_eg="../../.yad/product, from the story's folder"
   yad_tmp   # here, in this shell: a $(…) below would set it, and its EXIT trap, in a subshell only
   product_rel="$(link_val product-repo "$_link")"
   _from="$_link"
@@ -192,6 +192,7 @@ SIBLINGS
   # spec (the base names no Product) is it this PR's own link.md, which counts at once; anything else is
   # read from the base, so a change to it counts only after it merges.
   if [ -n "$_use_rec" ]; then
+    _src="path '${_rec}' in .sdlc/product-link.json"; _fix_eg=".yad/product, from the repo root"
     _fix_where="path in .sdlc/product-link.json"; _fix_when=", and merge that change on its own first: a value counts once ${BASE} has it"
   elif [ -n "$_base_rel" ]; then
     _fix_where="product-repo in ${_from}"; _fix_when=", and merge that change on its own first: a value counts once ${BASE} has it"
@@ -227,7 +228,7 @@ CANDS
       case "$prod" in /*) _pc="$prod" ;; *) _pc="./$prod" ;; esac
       _phys="$(cd -P "$_pc" 2>/dev/null && pwd -P)" || _phys=""
       if [ -z "$_phys" ]; then
-        prod_fail="product-repo resolves to '${prod}', a folder the gate cannot enter to check where it really is — so it is not read. Point ${_fix_where} at a folder the job can read${_fix_when}."
+        prod_fail="${_src} resolves to '${prod}', a folder the gate cannot enter to check where it really is — so it is not read. Point ${_fix_where} at a folder the job can read${_fix_when}."
         return 0
       fi
       # Not inside this repo's own git folder (review 7). git never lists `.git/` as tracked, yet a PR
@@ -240,7 +241,7 @@ CANDS
         _p="$_phys"
         while :; do
           if [ "$_p" -ef "$_gd" ]; then
-            prod_fail="product-repo resolves to '${prod}', inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product. Point ${_fix_where} at the Product checkout (.yad/product from the repo root, ../../.yad/product from a story's folder)${_fix_when}."
+            prod_fail="${_src} resolves to '${prod}', inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product. Point ${_fix_where} at the Product checkout (${_fix_eg})${_fix_when}."
             return 0
           fi
           case "$_p" in /|'') break ;; esac
@@ -293,12 +294,12 @@ KEPT
 tracked_verdict() {
   case "$1" in
     entry:*)
-      prod_fail="product-repo reaches the Product through '${1#*:}', a symlink, submodule or file this repo tracks — what is behind it is this PR's to choose. Point ${_fix_where} at the Product itself${_fix_when}."
+      prod_fail="${_src} reaches the Product through '${1#*:}', a symlink, submodule or file this repo tracks — what is behind it is this PR's to choose. Point ${_fix_where} at the Product itself${_fix_when}."
       return 0 ;;
     tree:*)
       _r="${1#*:}"
       if git cat-file -e "${BASE}:${_r:+$_r/}.sdlc/product.json" 2>/dev/null || git cat-file -e "${BASE}:${_r:+$_r/}.sdlc/hub.json" 2>/dev/null; then base_product "$_r"; return 0; fi
-      prod_fail="product-repo resolves to '${_r:-.}', which holds files this repo tracks, but ${BASE} does not track '${_r:+$_r/}.sdlc/product.json' (or the older hub.json) there, so it is not a Product kept in this repo. Untrack those files (git rm -r --cached '${_r:-.}'), or point ${_fix_where} at the Product${_fix_when}."
+      prod_fail="${_src} resolves to '${_r:-.}', which holds files this repo tracks, but ${BASE} does not track '${_r:+$_r/}.sdlc/product.json' (or the older hub.json) there, so it is not a Product kept in this repo. Untrack those files (git rm -r --cached '${_r:-.}'), or point ${_fix_where} at the Product${_fix_when}."
       return 0 ;;
   esac
   return 1
@@ -331,7 +332,7 @@ KEPT
 base_product() {
   _r="$1"; _e="${_r:+$_r/}epics"
   if [ "$(git cat-file -t "${BASE}:${_e}" 2>/dev/null)" != tree ]; then
-    prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and ${BASE} has no '${_e}' folder — there is nothing on the base to read. Merge that Product's epics into ${BASE} first, or point ${_fix_where} at the Product checkout${_fix_when}."
+    prod_fail="${_src} resolves to '${_r:-.}', a Product this repo keeps, and ${BASE} has no '${_e}' folder — there is nothing on the base to read. Merge that Product's epics into ${BASE} first, or point ${_fix_where} at the Product checkout${_fix_when}."
     return 0
   fi
   # (awk reads to the end rather than stopping at the first hit: stopping left `tr` writing into a
@@ -360,7 +361,7 @@ base_product() {
            GIT_INDEX_FILE="${_arch_dir}.idx" git ls-files -z -- ':(glob)**/.gitattributes' |
              GIT_INDEX_FILE="${_arch_dir}.idx" xargs -0 git update-index --force-remove -- &&
            GIT_WORK_TREE="${_arch_dir}/${_e}" GIT_INDEX_FILE="${_arch_dir}.idx" git checkout-index -a -f; } >/dev/null 2>&1; then
-      prod_fail="product-repo resolves to '${_r:-.}', a Product this repo keeps, and '${_e}' could not be read from ${BASE} — run the job again; if it repeats, check the code out with full history and no partial-clone filter (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\")."
+      prod_fail="${_src} resolves to '${_r:-.}', a Product this repo keeps, and '${_e}' could not be read from ${BASE} — run the job again; if it repeats, check the code out with full history and no partial-clone filter (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\")."
       return 0
     fi
     _arch_key="x$_r"

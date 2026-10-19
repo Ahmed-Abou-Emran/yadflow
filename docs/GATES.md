@@ -152,9 +152,10 @@ in this order:
    write this file into each code repo. CI checks the Product out there (see
    [product-checkout](#product-checkout)). One exception: when that path reaches no folder here and
    the value from step 2 does, step 2 is used.
-2. `product-repo` in the story's `specs/<story>/link.md`, **as the base has it**. For a story that is
-   new in this pull request, another story's `link.md` on the base is used: a story of the same epic
-   first, and the first one whose value reaches a folder.
+2. `product-repo` in the story's `specs/<story>/link.md`, **as the base has it**. When the base has no
+   value for this story (a new story, or a `link.md` without one), another story's `link.md` on the base
+   is used: a story of the same epic first, and the first one whose value reaches a folder. If none
+   reaches a folder, the first one with a value is used.
 3. Only when the base names no Product at all (the repo's **first spec**): the story's own
    `product-repo` from this pull request.
 4. Only when the value chosen above reaches nothing: a Product kept inside this repo (a monorepo) that
@@ -164,6 +165,8 @@ Once the base names a Product, the pull request under check does not decide wher
 change to `product-link.json` or to `product-repo` counts only after it merges, so make that change in
 its own pull request. The failure messages below name the file that was read, and say which case
 applies: "in this pull request" on a first spec, or "merge that change on its own first" otherwise.
+When the record was read, a message starts with `path '<path>' in .sdlc/product-link.json` instead of
+`product-repo`.
 
 **When the Product cannot be reached at all** (CI did not check it out), lineage-check, epic-open and
 reconcile-debt print `PASS [gate]: … deferred`, and contract-check skips the lock comparison with a
@@ -173,7 +176,7 @@ a changed slice on the repo's [first spec](#contract-check).
 | Message (after `FAIL [<gate>]: …`) | What to change |
 |---|---|
 | `product-repo resolves to '<path>', a folder the gate cannot enter … Point <the file and field that was read> at a folder the job can read …` | Fix the path, or the folder's permissions. |
-| `product-repo resolves to '<path>', inside this repo's own git folder … Point <the file and field> at the Product checkout (.yad/product from the repo root, ../../.yad/product from a story's folder) …` | The path points into `.git/`. Point it at the Product checkout. |
+| `product-repo resolves to '<path>', inside this repo's own git folder … Point <the file and field> at the Product checkout (.yad/product, from the repo root — or ../../.yad/product, from the story's folder) …` | The path points into `.git/`. Point it at the Product checkout. |
 | `<what>, and <base> keeps more than one Product holding <epic> (<list>) — the gate cannot tell which is meant. Set <the file and field> to one of them …` | Set the value to one of the listed folders. |
 | `product-repo reaches the Product through '<path>', a symlink, submodule or file this repo tracks … Point <the file and field> at the Product itself …` | Point it at the real Product folder, not at a link. |
 | `product-repo resolves to '<path>', which holds files this repo tracks, but <base> does not track '.sdlc/product.json' … Untrack those files (git rm -r --cached '<path>'), or point <the file and field> at the Product …` | A pull request cannot add its own Product. Untrack the folder, or point at the real Product. |
@@ -301,7 +304,7 @@ lockfile shows (npm or pnpm).
 | Message | What to change |
 |---|---|
 | `FAIL [build/test/lint]: '<command> run <step>' failed — the output above says why. Run it on your machine, fix what it reports, and push again.` | As it says. The later steps do not run after a failure. |
-| `FAIL [build/test/lint]: package.json has no "<step>" script — add one; the gate runs lint, build and test, in that order.` | Add the script to `package.json`. |
+| `FAIL [build/test/lint]: package.json has no "<step>" script, or an empty one — add one; the gate runs lint, build and test, in that order.` | Add the script to `package.json`. An empty script fails too: npm would run it as a pass. |
 | `FAIL [package-manager]: …` | See [the package manager checks](#install-deps); the same checks run here. |
 
 ## lineage-check

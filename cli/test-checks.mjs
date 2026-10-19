@@ -3044,7 +3044,7 @@ for (const g of GATES) {
     });
     const r = runGate(g.script, T);
     assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product\. Point product-repo in specs\/EP-demo-S01\/link\.md at the Product checkout \(\.yad\/product from the repo root, \.\.\/\.\.\/\.yad\/product from a story's folder\) in this pull request\./);
+    assert.match(r.out, /inside this repo's own git folder — what is there is git's, shaped by branch names, not a Product\. Point product-repo in specs\/EP-demo-S01\/link\.md at the Product checkout \(\.\.\/\.\.\/\.yad\/product, from the story's folder\) in this pull request\./);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
@@ -3058,7 +3058,8 @@ for (const g of GATES) {
     });
     const r = runGate(g.script, T);
     assert.equal(r.code, 1, r.out);
-    assert.ok(r.out.includes("not a Product. Point path in .sdlc/product-link.json at the Product checkout (.yad/product from the repo root, ../../.yad/product from a story's folder), and merge that change on its own first: a value counts once main has it."), r.out);
+    assert.ok(r.out.includes("path '.git/refs/heads' in .sdlc/product-link.json resolves to "), r.out);
+    assert.ok(r.out.includes("not a Product. Point path in .sdlc/product-link.json at the Product checkout (.yad/product, from the repo root), and merge that change on its own first: a value counts once main has it."), r.out);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
@@ -3172,8 +3173,20 @@ for (const g of GATES) {
     });
     const r = runGate(g.script, T);
     assert.equal(r.code, 1, r.out);
-    assert.ok(r.out.includes("a symlink, submodule or file this repo tracks — what is behind it is this PR's to choose. Point path in .sdlc/product-link.json at the Product itself, and merge that change on its own first: a value counts once main has it."), r.out);
+    assert.ok(r.out.includes("path 'sub' in .sdlc/product-link.json reaches the Product through 'sub', a symlink, submodule or file this repo tracks — what is behind it is this PR's to choose. Point path in .sdlc/product-link.json at the Product itself, and merge that change on its own first: a value counts once main has it."), r.out);
     fs.rmSync(outside, { recursive: true, force: true });
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+
+  test(`${g.name} gate: a record path that reaches nothing, with two kept Products, is named as the record (#351)`, () => {
+    const T = scaffoldRepo();
+    productFiles(T, 'a', g.seed, { settings: true });
+    productFiles(T, 'b', g.seed, { settings: true });
+    onBase(T, { '.sdlc/product-link.json': JSON.stringify({ path: 'nowhere' }), 'specs/EP-demo-S01/link.md': linkFor(g, '../../nowhere') });
+    commit(T, g.subject || 'feat: add thing\n\nTask: EP-demo-S01-T01', { 'src/thing.js': 'x', ...(g.files || {}) });
+    const r = runGate(g.script, T);
+    assert.equal(r.code, 1, r.out);
+    assert.ok(r.out.includes("path 'nowhere' in .sdlc/product-link.json reaches nothing, and main keeps more than one Product holding EP-demo (a b) — the gate cannot tell which is meant. Set path in .sdlc/product-link.json to one of them, and merge that change on its own first: a value counts once main has it."), r.out);
     fs.rmSync(T, { recursive: true, force: true });
   });
 }
@@ -3735,8 +3748,18 @@ test('build-test-lint gate: a failing or missing step is named, and the later st
   });
   const r = runGate(BTL, T, []);
   assert.notEqual(r.code, 0, r.out);
-  assert.match(r.out, /FAIL \[build\/test\/lint\]: package\.json has no "build" script — add one; the gate runs lint, build and test, in that order\./);
+  assert.match(r.out, /FAIL \[build\/test\/lint\]: package\.json has no "build" script, or an empty one — add one; the gate runs lint, build and test, in that order\./);
   assert.doesNotMatch(r.out, /\[build\/test\/lint\] test…/);
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('build-test-lint gate: an empty test script fails — npm would run it as a pass (#351)', () => {
+  const T = scaffoldRepo();
+  commit(T, 'chore: wire scripts', { 'package.json': npmStub('node -e ""', 'node -e ""', '  ') });
+  const r = runGate(BTL, T, []);
+  assert.notEqual(r.code, 0, r.out);
+  assert.match(r.out, /FAIL \[build\/test\/lint\]: package\.json has no "test" script, or an empty one/);
+  assert.doesNotMatch(r.out, /PASS \[build\/test\/lint\]/);
   fs.rmSync(T, { recursive: true, force: true });
 });
 

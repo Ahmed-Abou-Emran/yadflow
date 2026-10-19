@@ -21,15 +21,18 @@ read -r -a run_with <<< "$run_with_words"
 # One step of the gate. A failing step used to end the job under `set -e` with only the tool's own
 # output; this names the step, the command to run by hand, and the missing-script case (#351).
 run_step() {
-  local step="$1"
+  local step="$1" has=0
   shift
+  # Checked before it runs: npm prints nothing for a missing script, and runs an empty one as a pass,
+  # so an empty "test" would read as green. Exit 3 is "none"; a package.json node cannot read is left
+  # to the run itself, which reports it.
+  YAD_STEP="$step" node --input-type=module -e 'import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("package.json", "utf8").replace(/^\uFEFF/, "")); const s=p.scripts?.[process.env.YAD_STEP]; process.exit(typeof s === "string" && s.trim() ? 0 : 3)' 2>/dev/null || has=$?
+  if [ "$has" = 3 ]; then
+    echo "FAIL [build/test/lint]: package.json has no \"${step}\" script, or an empty one — add one; the gate runs lint, build and test, in that order."
+    exit 1
+  fi
   if ! "${run_with[@]}" run --silent "$step" "$@"; then
-    # npm prints nothing for a missing (or empty) script, so the gate says it when package.json has none.
-    if YAD_STEP="$step" node --input-type=module -e 'import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("package.json", "utf8").replace(/^\uFEFF/, "")); process.exit(p.scripts?.[process.env.YAD_STEP] ? 1 : 0)' 2>/dev/null; then
-      echo "FAIL [build/test/lint]: package.json has no \"${step}\" script — add one; the gate runs lint, build and test, in that order."
-    else
-      echo "FAIL [build/test/lint]: '${run_with_words} run ${step}' failed — the output above says why. Run it on your machine, fix what it reports, and push again."
-    fi
+    echo "FAIL [build/test/lint]: '${run_with_words} run ${step}' failed — the output above says why. Run it on your machine, fix what it reports, and push again."
     exit 1
   fi
 }
