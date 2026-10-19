@@ -3155,9 +3155,26 @@ for (const g of GATES) {
       const r = runGate(g.script, T);
       assert.equal(r.code, 1, `${kind}:\n${r.out}`);
       assert.match(r.out, /product-repo reaches the Product through 'sub', a symlink, submodule or file this repo tracks/, `${kind}:\n${r.out}`);
+      assert.ok(r.out.includes("Point product-repo in specs/EP-demo-S01/link.md at the Product itself in this pull request."), `${kind}:\n${r.out}`);
       fs.rmSync(outside, { recursive: true, force: true });
       fs.rmSync(T, { recursive: true, force: true });
     }
+  });
+
+  test(`${g.name} gate: a tracked symlink the base record points at names the record, merged first (#351)`, () => {
+    const T = scaffoldRepo();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-hub-'));
+    clean(outside);
+    fs.symlinkSync(outside, path.join(T, 'sub'));
+    onBase(T, { '.sdlc/product-link.json': JSON.stringify({ path: 'sub' }) });
+    commit(T, g.subject || 'feat: add thing\n\nTask: EP-demo-S01-T01', {
+      'src/thing.js': 'x', ...(g.files || {}), 'specs/EP-demo-S01/link.md': linkFor(g, '../../sub'),
+    });
+    const r = runGate(g.script, T);
+    assert.equal(r.code, 1, r.out);
+    assert.ok(r.out.includes("a symlink, submodule or file this repo tracks — what is behind it is this PR's to choose. Point path in .sdlc/product-link.json at the Product itself, and merge that change on its own first: a value counts once main has it."), r.out);
+    fs.rmSync(outside, { recursive: true, force: true });
+    fs.rmSync(T, { recursive: true, force: true });
   });
 }
 

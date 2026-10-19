@@ -150,9 +150,11 @@ in this order:
 
 1. `path` in `.sdlc/product-link.json`, **as the base has it**. `yad check --fix` and `yad update`
    write this file into each code repo. CI checks the Product out there (see
-   [product-checkout](#product-checkout)).
+   [product-checkout](#product-checkout)). One exception: when that path reaches no folder here and
+   the value from step 2 does, step 2 is used.
 2. `product-repo` in the story's `specs/<story>/link.md`, **as the base has it**. For a story that is
-   new in this pull request, another story's `link.md` on the base is used.
+   new in this pull request, another story's `link.md` on the base is used: a story of the same epic
+   first, and the first one whose value reaches a folder.
 3. Only when the base names no Product at all (the repo's **first spec**): the story's own
    `product-repo` from this pull request.
 4. Only when the value chosen above reaches nothing: a Product kept inside this repo (a monorepo) that
@@ -173,8 +175,8 @@ a changed slice on the repo's [first spec](#contract-check).
 | `product-repo resolves to '<path>', a folder the gate cannot enter … Point <the file and field that was read> at a folder the job can read …` | Fix the path, or the folder's permissions. |
 | `product-repo resolves to '<path>', inside this repo's own git folder … Point <the file and field> at the Product checkout (.yad/product from the repo root, ../../.yad/product from a story's folder) …` | The path points into `.git/`. Point it at the Product checkout. |
 | `<what>, and <base> keeps more than one Product holding <epic> (<list>) — the gate cannot tell which is meant. Set <the file and field> to one of them …` | Set the value to one of the listed folders. |
-| `product-repo reaches the Product through '<path>', a symlink, submodule or file this repo tracks … Point product-repo at the Product itself.` | Point it at the real Product folder, not at a link. |
-| `product-repo resolves to '<path>', which holds files this repo tracks, but <base> does not track '.sdlc/product.json' … Untrack those files (git rm -r --cached '<path>') or point product-repo at the Product.` | A pull request cannot add its own Product. Untrack the folder, or point at the real Product. |
+| `product-repo reaches the Product through '<path>', a symlink, submodule or file this repo tracks … Point <the file and field> at the Product itself …` | Point it at the real Product folder, not at a link. |
+| `product-repo resolves to '<path>', which holds files this repo tracks, but <base> does not track '.sdlc/product.json' … Untrack those files (git rm -r --cached '<path>'), or point <the file and field> at the Product …` | A pull request cannot add its own Product. Untrack the folder, or point at the real Product. |
 | `product-repo resolves to '<path>', a Product this repo keeps, and <base> has no '<path>/epics' folder … Merge that Product's epics into <base> first, or point <the file and field> at the Product checkout …` | Merge the Product's epics into the base first, or fix the value. |
 | `'<path>/epics/<file>' on <base> is a symlink or a submodule … Replace it with the files themselves.` | Replace the link inside the kept Product with real files, in its own pull request. |
 | `product-repo resolves to '<path>', a Product this repo keeps, and '<path>/epics' could not be read from <base> — run the job again; if it repeats, check the code out with full history and no partial-clone filter …` | As it says. |

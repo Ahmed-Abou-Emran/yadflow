@@ -24,8 +24,8 @@ run_step() {
   local step="$1"
   shift
   if ! "${run_with[@]}" run --silent "$step" "$@"; then
-    # npm prints nothing for a missing script, so the gate says it when package.json has none.
-    if YAD_STEP="$step" node --input-type=module -e 'import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("package.json", "utf8").replace(/^\uFEFF/, "")); process.exit(typeof p.scripts?.[process.env.YAD_STEP] === "string" ? 1 : 0)' 2>/dev/null; then
+    # npm prints nothing for a missing (or empty) script, so the gate says it when package.json has none.
+    if YAD_STEP="$step" node --input-type=module -e 'import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("package.json", "utf8").replace(/^\uFEFF/, "")); process.exit(p.scripts?.[process.env.YAD_STEP] ? 1 : 0)' 2>/dev/null; then
       echo "FAIL [build/test/lint]: package.json has no \"${step}\" script — add one; the gate runs lint, build and test, in that order."
     else
       echo "FAIL [build/test/lint]: '${run_with_words} run ${step}' failed — the output above says why. Run it on your machine, fix what it reports, and push again."

@@ -273,7 +273,8 @@ CANDS
 $_kept
 KEPT
   [ -n "$_kept_here" ] || return 0
-  if [ -n "$product_rel" ]; then _what="product-repo '${product_rel}' reaches nothing"; else _what="link.md names no product-repo"; fi
+  if [ -n "$_use_rec" ]; then _what="path '${_rec}' in .sdlc/product-link.json reaches nothing"
+  elif [ -n "$product_rel" ]; then _what="product-repo '${product_rel}' reaches nothing"; else _what="link.md names no product-repo"; fi
   if [ "$(printf '%s' "$_kept_here" | grep -c .)" -gt 1 ]; then
     prod_fail="${_what}, and ${BASE} keeps more than one Product holding ${_epic_of} ($(printf '%s' "$_kept_here" | tr '\n' ' ' | sed -E 's/ +$//')) — the gate cannot tell which is meant. Set ${_fix_where} to one of them${_fix_when}."
     return 0
@@ -293,12 +294,12 @@ KEPT
 tracked_verdict() {
   case "$1" in
     entry:*)
-      prod_fail="product-repo reaches the Product through '${1#*:}', a symlink, submodule or file this repo tracks — what is behind it is this PR's to choose. Point product-repo at the Product itself."
+      prod_fail="product-repo reaches the Product through '${1#*:}', a symlink, submodule or file this repo tracks — what is behind it is this PR's to choose. Point ${_fix_where} at the Product itself${_fix_when}."
       return 0 ;;
     tree:*)
       _r="${1#*:}"
       if git cat-file -e "${BASE}:${_r:+$_r/}.sdlc/product.json" 2>/dev/null || git cat-file -e "${BASE}:${_r:+$_r/}.sdlc/hub.json" 2>/dev/null; then base_product "$_r"; return 0; fi
-      prod_fail="product-repo resolves to '${_r:-.}', which holds files this repo tracks, but ${BASE} does not track '${_r:+$_r/}.sdlc/product.json' (or the older hub.json) there, so it is not a Product kept in this repo. Untrack those files (git rm -r --cached '${_r:-.}') or point product-repo at the Product."
+      prod_fail="product-repo resolves to '${_r:-.}', which holds files this repo tracks, but ${BASE} does not track '${_r:+$_r/}.sdlc/product.json' (or the older hub.json) there, so it is not a Product kept in this repo. Untrack those files (git rm -r --cached '${_r:-.}'), or point ${_fix_where} at the Product${_fix_when}."
       return 0 ;;
   esac
   return 1
