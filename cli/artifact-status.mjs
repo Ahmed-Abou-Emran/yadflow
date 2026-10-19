@@ -96,7 +96,6 @@ export function setBuildStatus(file, status) {
   // `yad tidy` compare the raw value.
   if (BUILD_LADDER[status] < BUILD_LADDER[prior]) return { prior, changed: false };
   if (BUILD_LADDER[status] === BUILD_LADDER[prior] && lines[0][0] === `status: ${status}`) return { prior, changed: false };
-  if (BUILD_LADDER[status] === BUILD_LADDER[prior] && prior !== status) return { prior, changed: false };
   const block = fm[1].replace(/^status:\s*.*$/m, () => `status: ${status}`);
   fs.writeFileSync(file, text.replace(fm[1], () => block));
   return { prior, changed: true };

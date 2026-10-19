@@ -387,3 +387,36 @@ test('yad build done: a shipped status written another way is rewritten; two sta
     assert.match(r.out, /EP-l is not in Build/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('tasksInBranch: the task a branch names, under folders and in any case, never a slug after it (#346 review 3)', async () => {
+  const { tasksInBranch } = await import('./build.mjs');
+  assert.deepEqual(tasksInBranch('feat/EP-auth-S01-T02-2fa-setup'), ['ep-auth-s01-t02']);
+  assert.deepEqual(tasksInBranch('amn/feat/ep-l-s01-t01-orders'), ['ep-l-s01-t01']);
+  assert.deepEqual(tasksInBranch('feat/EP-x-S01-T01-then-S02-T03'), ['ep-x-s01-t01']);
+  assert.deepEqual(tasksInBranch('feat/EP-l-S01-T012-x'), ['ep-l-s01-t012']);
+  assert.deepEqual(tasksInBranch('EP-l-S01-T01'), ['ep-l-s01-t01']);
+  assert.deepEqual(tasksInBranch('fix-typo'), []);
+});
+
+test('yad build done: a lane with no steps is half-seeded, not shipped; a clone is matched to its registered URL by path, never printed (#346 review 3)', () => {
+  const { W, P, dir, api } = workspace({ tasks: '- T01 one\n' });
+  try {
+    yad(P, 'skip', 'EP-l', 'EP-l-S01', '--repo', 'web', '--reason', 'no UI change');
+    yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'e'.repeat(40));
+    const file = path.join(dir, '.sdlc/build-state/EP-l-S01.json');
+    const bs = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify({ ...bs, repos: { ...bs.repos, api: { currentStep: 'spec', steps: [] } } }));
+    let r = yad(P, 'build', 'done', 'EP-l-S01');
+    assert.match(r.out, /EP-l-S01 has no lane in api/);
+    // The registered URL with a port and a token, the clone over another remote form: one repo.
+    git(api, 'remote', 'set-url', 'origin', path.join(W, 'api.git'));
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', git_url: 'ssh://git@host:2222/team/api.git' }, { name: 'web', path: '../web' }] }) });
+    git(api, 'remote', 'set-url', 'origin', 'https://oauth2:SECRET@host/team/api/');
+    r = yad(P, 'build', 'done', 'EP-l-S01', '--no-fetch');
+    assert.doesNotMatch(r.out, /is a clone of/);
+    git(api, 'remote', 'set-url', 'origin', 'https://oauth2:SECRET@host/team/other.git');
+    r = yad(P, 'build', 'done', 'EP-l-S01', '--no-fetch');
+    assert.match(r.out, /\.\.\/api is a clone of team\/other, not team\/api/);
+    assert.doesNotMatch(r.out, /SECRET/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});

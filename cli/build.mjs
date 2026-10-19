@@ -23,6 +23,7 @@ import { err } from './errors.mjs';
 import { readShips, readTrustRuns, writeShip, writeTrustRun, updateTrustRun } from './ledger.mjs';
 import { setBuildStatus, readStoryStatus } from './artifact-status.mjs';
 import { readPr, mapApprovers, detectPlatform, cliFor, platformReady } from './platform.mjs';
+import { repoPathFromGitUrl } from './protection.mjs';
 import { recordActor } from './skip.mjs';
 import { sealedEpic } from './thread.mjs';
 
@@ -321,9 +322,12 @@ function registeredRepo(root, repo) {
   const checkout = dir && exists(path.join(dir, '.git')) ? dir : null;
   const remote = checkout ? run('git', ['remote', 'get-url', 'origin'], { cwd: checkout }).stdout : '';
   // The folder must be the registered repo: a stale path to another clone would read that repo's PR #n.
+  // Compared by the repo's path on its host (`team/api`), so a port, an SSH host alias, a token in the URL
+  // or a trailing slash do not matter. Never printed as a URL: a remote can hold a token.
   if (checkout && meta?.git_url && remote) {
-    const norm = (u) => String(u).trim().toLowerCase().replace(/\.git$/, '').replace(/^[a-z]+:\/\/(?:[^@/]+@)?/, '').replace(/^[^@/]+@/, '').replace(':', '/');
-    if (norm(remote) !== norm(meta.git_url)) throw err(CODE, `${meta.path} is a clone of ${remote}, not ${meta.git_url}`, `fix the path of ${repo} in .sdlc/repos.json, or clone it with \`yad repo clone ${repo}\``);
+    const have = repoPathFromGitUrl(remote);
+    const want = repoPathFromGitUrl(meta.git_url);
+    if (have && want && have.toLowerCase() !== want.toLowerCase()) throw err(CODE, `${meta.path} is a clone of ${have}, not ${want}`, `fix the path of ${repo} in .sdlc/repos.json, or clone it with \`yad repo clone ${repo}\``);
   }
   const named = typeof meta?.default_branch === 'string' && meta.default_branch ? meta.default_branch : null;
   if (named && (named.startsWith('-') || !run('git', ['check-ref-format', '--branch', named]).ok)) {
@@ -366,6 +370,14 @@ export function readMergedPr(platform, n, { cwd, runner = run } = {}) {
   };
 }
 
+// The task ids a branch names, lower-case: `feat/EP-auth-S01-T02-2fa-setup` → ['ep-auth-s01-t02'], under any
+// folders, in any case. Each id is the shortest one from a folder or `_` boundary that ends at a word
+// boundary, so a slug after the task (`-2fa-setup`, `-then-S02-T03`) is never read as part of it, and
+// `T012` is not `T01`.
+export function tasksInBranch(branch) {
+  return [...String(branch || '').matchAll(/(?:^|[/_])(ep-[a-z0-9-]+?-s\d+-t\d+)(?=$|[-_/])/gi)].map((m) => m[1].toLowerCase());
+}
+
 const riskFromBody = (body) => (String(body).match(/^\s*Risk level:\s*(low|medium|high)\b/im) || [])[1]?.toLowerCase() || null;
 
 export async function buildShip(root, { story, task, repo, pr, mergeCommit = null, approvers = [], today, runner = run, prReader = readPr } = {}) {
@@ -399,12 +411,9 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     if (!got.merged) throw err(CODE, `PR #${pr} in ${repo} is not merged`, 'a ship is recorded once the PR/MR merges');
     if (!got.mergeCommit) throw err(CODE, `PR #${pr} in ${repo} is merged, but the platform names no merge commit`, 'record it by hand once you know the commit: --merge-commit <sha> (on a repo whose platform cannot be read)');
     // The PR's branch names the task it carries (`feat/EP-x-S01-T01-…`): the ship is never put on another.
-    const want = `${story}-${task}`.toLowerCase();
-    const br = String(got.branch || '').toLowerCase();
-    const at = br.indexOf(want);
-    const exact = at >= 0 && (at === 0 || /[/_-]/.test(br[at - 1])) && (at + want.length === br.length || /[/_-]/.test(br[at + want.length]) && !/^-?\d/.test(br.slice(at + want.length)));
-    if (!exact && /-s\d+-t\d+/.test(br)) throw err(CODE, `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, 'check --task and --pr');
-    if (!exact) warn(`PR #${pr} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${story}-${task}`);
+    const named = tasksInBranch(got.branch);
+    if (named.length && !named.includes(`${story}-${task}`.toLowerCase())) throw err(CODE, `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, 'check --task and --pr');
+    if (!named.length) warn(`PR #${pr} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${story}-${task}`);
     const pull = prReader(where.platform, pr, { cwd: where.checkout, runner });
     const seen = new Set();
     const engineerReview = [];
@@ -483,7 +492,8 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
   if (!ctx.entry.repos.some((r) => !skipped.includes(r))) {
     throw err(CODE, `${story} owes no lane in any repo, so there is nothing to have shipped`, 'a story that needs no change in any repo is a question for its stories review');
   }
-  const noLane = ctx.entry.repos.filter((r) => !skipped.includes(r) && !(isPlainObject(bs.repos[r]) && Array.isArray(bs.repos[r].steps)));
+  // An empty `steps` is a half-seeded lane, which `yad next` reads as not started — never as shipped.
+  const noLane = ctx.entry.repos.filter((r) => !skipped.includes(r) && !(isPlainObject(bs.repos[r]) && Array.isArray(bs.repos[r].steps) && bs.repos[r].steps.length));
   if (noLane.length) {
     throw err(CODE, `${story} has no lane in ${noLane.join(', ')}, so \`yad next\` would still read it in Build`,
       `\`yad build start ${story} --repo <r>\` and close its steps with \`yad build step\`; a story shipped before the Build ledger existed is recorded with \`yad checkpoint --retro-ship\` instead`);
@@ -512,18 +522,16 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
     bs.repos[repo] = { ...lane, currentStep: REVIEW_STEP, steps };
   }
   // The status line first: a refusal there leaves the lanes as they were, so the two never part.
+  // The lanes first, the status line last: if the run stops between the two, the story still reads in
+  // Build to the seal and tidy — the safe side. A status line that cannot be set puts the lanes back.
   const storyText = fs.readFileSync(ctx.storyFile, 'utf8');
+  const laneText = fs.existsSync(ctx.file) ? fs.readFileSync(ctx.file, 'utf8') : null;
+  if (changedLanes || !ctx.buildState?.story) writeJSON(ctx.file, bs);
   const moved = setBuildStatus(ctx.storyFile, 'shipped');
   if (moved.unknown || readFrontmatter(ctx.storyFile).status !== 'shipped') {
     fs.writeFileSync(ctx.storyFile, storyText);
-    throw err(CODE, `could not set status: shipped in ${path.relative(ctx.epicDir, ctx.storyFile)}`, 'make it one plain `status:` line, then run this again');
-  }
-  // A lane write that fails puts the status line back, so the two never part.
-  try {
-    if (changedLanes || !ctx.buildState?.story) writeJSON(ctx.file, bs);
-  } catch (e) {
-    fs.writeFileSync(ctx.storyFile, storyText);
-    throw e;
+    if (laneText === null) fs.rmSync(ctx.file, { force: true }); else fs.writeFileSync(ctx.file, laneText);
+    throw err(CODE, `could not set status: shipped in ${path.relative(ctx.epicDir, ctx.storyFile)}`, 'make it one plain `status:` line (with LF line endings), then run this again');
   }
   ok(`${story} is shipped${changedLanes ? ` — ${REVIEW_STEP} closed in ${changedLanes} lane${changedLanes > 1 ? 's' : ''}` : ''}`);
   if (sealedEpic(root, ctx.epic)) info(`${ctx.epic} is now sealed: every story shipped — new work there needs a change epic (yad-change)`);
