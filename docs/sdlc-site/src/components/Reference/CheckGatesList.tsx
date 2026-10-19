@@ -13,6 +13,18 @@ export function CheckGatesList() {
         <Icon name="verified" size={20} className="text-purple-400" />
         <h3 className="text-slate-100 text-lg font-bold font-display">The Check Gates</h3>
       </div>
+      <p className="text-xs text-slate-400 mb-3">
+        Every gate's rules, exemptions and failure messages, with what to change for each, are on one page:{' '}
+        <a
+          href="https://github.com/abdelrahmannasr/yadflow/blob/main/docs/GATES.md"
+          className="text-purple-300 underline hover:text-purple-200"
+          target="_blank"
+          rel="noreferrer"
+        >
+          docs/GATES.md
+        </a>
+        .
+      </p>
       <div className="space-y-2">
         {jobs.map((job) => (
           <div

@@ -800,7 +800,7 @@ export const MODULES: Module[] = [
             '`yad capture` — snapshots your Shape drafts to your private `yad/wip/<you>/<epic>` branch (a hook runs it after each agent edit). `yad claims` shows who else is editing which file. `yad fold <epic> <step>` ends an authoring step with one clean commit.',
             '`yad join <url>` — set up a teammate\'s machine from the Product\'s URL; `yad repo clone` fetches a registered repo that is missing locally.',
           ] },
-          { kind: 'callout', tone: 'info', text: 'Go deeper: the full command reference is in docs/CLI.md, the skill catalogue in docs/SKILLS.md, and the by-hand end-to-end path in docs/WALKTHROUGH.md. The terminology report explains every term on one illustrated page.' },
+          { kind: 'callout', tone: 'info', text: 'Go deeper: the full command reference is in docs/CLI.md, the skill catalogue in docs/SKILLS.md, and the by-hand end-to-end path in docs/WALKTHROUGH.md, and the rules and failure messages of every CI gate in docs/GATES.md. The terminology report explains every term on one illustrated page.' },
         ],
         commands: [
           { cmd: 'yad-status', note: 'where is everything, what is blocking' },

@@ -6820,3 +6820,20 @@ test('E47 Product checks: an artifact renamed into .sdlc/owners/ is still an art
     assert.match(fs.readFileSync(changed, 'utf8'), /^"epics\/EP-caf/m, 'and the old command quoted the non-ASCII path');
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
+
+// #351: docs/GATES.md is the one page that lists every gate. A gate wired into a CI template, or the
+// hand-placed backfill gate, that the page does not name has no rules, exemptions or fixes written down.
+test('docs/GATES.md names every gate script a CI template runs (#351)', () => {
+  const page = fs.readFileSync(path.join(ROOT, 'docs/GATES.md'), 'utf8');
+  const wired = new Set(['backfill-check.sh']);
+  const dirs = fs.readdirSync(path.join(ROOT, 'skills')).flatMap((sk) => ['github', 'gitlab'].map((p) => path.join('skills', sk, 'templates', p)))
+    .filter((d) => fs.existsSync(path.join(ROOT, d)));
+  for (const dir of dirs) {
+    for (const f of fs.readdirSync(path.join(ROOT, dir))) {
+      if (!/\.ya?ml$/.test(f)) continue;
+      for (const m of fs.readFileSync(path.join(ROOT, dir, f), 'utf8').matchAll(/checks\/([a-z-]+\.(?:sh|mjs))/g)) wired.add(m[1]);
+    }
+  }
+  assert.ok(wired.size >= 15, `found only ${[...wired]}`);
+  for (const script of wired) assert.ok(page.includes(`\`${script}\``), `docs/GATES.md does not name ${script}`);
+});
