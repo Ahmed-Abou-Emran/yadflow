@@ -704,7 +704,8 @@ steps to carry their own advance dial so the orchestrator (`yad-run`) can read i
 whether to advance on its own. Two new files under `.sdlc/` do this.
 
 > **Who commits these.** `build-state/<story-id>.json`, `trust-log.json`, and `build-log.json` are
-> **machine-written** by Build (`yad-run`, `yad-engineer-review`) and committed by
+> **machine-written** by the `yad build` commands (#346: `start`, `step`, `trust`, `ship`, `done`, which
+> the `yad-run` and `yad-engineer-review` skills run — never written by hand) and committed by
 > **`yad checkpoint`** — the Build analogue of the Shape `yad gate ci` sync. It lands them as
 > one `chore(product): sync Build state — <epic>/<story> by @<login>` audit-trail commit, on the
 > default branch, staging **only** these three ledgers by an explicit allowlist (never a Shape
@@ -741,7 +742,7 @@ Each `steps[]` entry:
 | `id` | `spec`, `tasks`, `implement`, `checks`, `engineer-review` | Build step identity (the `back_steps` from `config.yaml` + the human merge gate). |
 | `automation` / `advance` | `human_approve`/`human` \| `machine_advance`/`auto` | Dial 2, written under both names (the OLD one is read). Defaults to `human_approve`; `yad dial <epic> <story> --repo <r> <step> --to auto` flips it (E34 — nothing to earn), never on the `engineer-review` gate. |
 | `locked` | `true` \| `false` | `engineer-review` is `true` — it never auto-advances (build plan §E). |
-| `closed` | `{ by, date, via, run }` | Written by the `yad-run` skill when it moves the lane past the step: `via` is `auto` or `human`, and `run` names the trust-log run (E18). See "Closing records". |
+| `closed` | `{ by, date, via, run }` | Written by `yad build step <story> --repo <r> <step> done` when the lane moves past the step (the `engineer-review` step by `yad build done`): `via` is `auto` or `human`, and `run` names the trust-log run (E18). See "Closing records". |
 | `status` | the same **step states** as the Shape chain | Lifecycle. This file is **not** migrated to shape 7 — the `yad-run` / `yad-implement` skills write it, not the engine, so a rewrite would be undone by their next write. `yad-run` advances `done` steps and marks a halted lane `blocked` **with a `record`** naming the halt cause (a failed check, a scope overrun, a contract touch): that record is what separates a halted lane from one nobody started, because a bare `blocked` is the pre-shape-7 spelling of `todo` and still reads that way here. A lane halted by an older `yad-run` carries no record and reads as `todo` until the next run rewrites it — nothing advances past it either way. |
 
 `currentStep` is the `id` the orchestrator is waiting on / about to run for that repo. The file is

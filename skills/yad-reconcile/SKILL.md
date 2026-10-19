@@ -46,10 +46,10 @@ Run `yad reconcile check` (optionally `--thread EP-<genesis>`). For each thread 
   - a **merged task with no ship record** — a `Task:` trailer, a merge commit naming a task branch, a full
     task ID in a commit subject (not a revert), or a merged task branch. For a story that has no ship in
     that repo it offers `yad checkpoint --retro-ship …` once, for a story that predates ledger tracking
-    (its status must be `in-build` or `shipped` first); otherwise record the ship as `yad-engineer-review`
-    does. A retroactive ship covers only the tasks merged up to it (by its merge commit or date);
+    (its status must be `in-build` or `shipped` first); otherwise record the ship with
+    `yad build ship <story> --task <T> --repo <r> --pr <n>`. A retroactive ship covers only the tasks merged up to it (by its merge commit or date);
   - a story whose every repo holds merged work or a ship, but whose `status:` is not `shipped` — a hint,
-    not counted: if no task is left, set `status: shipped`;
+    not counted: if no task is left, run `yad build done <story>`;
   - a **possible match** to check by hand, for a story not yet shipped or recorded in that repo: a full
     story ID in a commit subject with no task, or a short scope tag such as `feat(s06):`. Never counted. A
     story ID only in a commit body is not evidence.

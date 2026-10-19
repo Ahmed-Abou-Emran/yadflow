@@ -316,7 +316,7 @@ export function shipDrift(root, { platform = true, epics = null, runner, env = p
         // and needs the story `in-build` or `shipped` first. So it is offered once, only while (story, repo)
         // has no ship at all and the story's file carries its ID, and only for a story that predates
         // tracking; every other line says to record the ship as yad-engineer-review does (review 1).
-        const engineer = 'record the ship as yad-engineer-review does (a command for it is #346)';
+        const engineer = 'record the ship with `yad build ship <story> --task <T> --repo <r> --pr <n>` (#346)';
         const evSha = shaOf(ev.sha);
         let fix = engineer;
         if (!recorded.length && !suggested && s.sameFile && asArg(repoName) === repoName) {

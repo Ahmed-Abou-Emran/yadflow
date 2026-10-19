@@ -77,8 +77,8 @@ declared files are wrong is a spec bug, not an implementation decision.
 
 This stop is a **scope overrun** — a halt condition that pulls in a human regardless of any automation
 dial. When this step is driven by the orchestrator (`yad-run`, Phase 4), the stop must be legible to
-it: mark the `implement` step `status: blocked` in `build-state/<story>.json` — **with a `record`**,
-`{ "reason": "scope overrun: <which file>", "by": "<login or null>", "date": "<YYYY-MM-DD>" }` — and
+it: `yad build step <story> --repo <repo> implement blocked --reason "scope overrun: <which file>"` (it
+writes the step's `record`) — and
 surface `scope_overrun: true` so the run records a `rejected` trust entry and halts (it never advances
 past a boundary breach). The same applies to the Step 5 contract-surface stop (`contract_touch: true`).
 
@@ -136,10 +136,9 @@ finalize a `tasks` trust entry, anchored to what the human/dev actually did with
 - the task is **re-scoped** first (its `Files:`/boundary edited) → `approved-with-edits`
   (signal `task_rescoped: true`);
 - the task list is discarded / regenerated → `rejected`.
-Write the entry to its own shard `epics/<epic>/.sdlc/trust-log/<story>-<repo>-tasks-<uid>.json` (a fresh
-`uid` per run, so concurrent writers never conflict; readers union the folded `trust-log.json` + the
-loose shards, skipping any shard whose full `(story, repo, step, uid)` already appears folded — a
-half-applied `yad tidy up` — so entries are never double-counted). Schema: `../yad-epic/references/state-schema.md`. The record is advice: the `tasks` dial
+Record it with `yad build trust <story> --repo <repo> tasks --verdict <v> --signal task_rescoped=<true|false>`
+(or finalize the run `yad-run` recorded: `--uid <closed.run of the tasks step>`); it writes its own shard
+with a fresh `uid`, so concurrent writers never conflict. Never write the shard by hand. Schema: `../yad-epic/references/state-schema.md`. The record is advice: the `tasks` dial
 is whatever the team sets with `yad dial`. (The `implement` step's own verdict is finalized later,
 at the engineer review in `yad-engineer-review`: merged as authored → `approved-unchanged`; edited first →
 `approved-with-edits`; scope/contract/checks halt → `rejected`.)
