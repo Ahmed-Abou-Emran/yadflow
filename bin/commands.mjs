@@ -21,6 +21,7 @@ export { runEpicNew, runFoundationNew, runFoundationStatus } from '../cli/epic.m
 export { runSkillBind, runSkillList, runSkillRecommend, runSkillUnbind } from '../cli/skill.mjs';
 export { runCommit } from '../cli/commit.mjs';
 export { runOpenPr } from '../cli/openpr.mjs';
+export { runChecks } from '../cli/run-checks.mjs';
 export { reviewTrailer, reviewContext, reviewNudge, reviewReconcile, reviewWalkthrough } from '../cli/review.mjs';
 export { runShip } from '../cli/ship.mjs';
 export { runCheckpoint } from '../cli/checkpoint.mjs';

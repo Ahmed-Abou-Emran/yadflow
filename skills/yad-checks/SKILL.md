@@ -82,7 +82,7 @@ from CI. `product-repo` is read from the base, a Product this repo tracks is rea
 `epic:` must be the story ID's prefix — the PR cannot choose what is gated (E117, E118). See `references/check-gates.md` and `skills/yad-change`.
 
 The gates are **CI-agnostic bash** in `checks/`; thin pipeline configs invoke them on GitHub Actions
-and GitLab CI. This step is **by hand** in Phase 3 — run the gates with the skill or let CI run them;
+and GitLab CI. This step is **by hand** in Phase 3 — run the gates with the skill (`yad run checks`) or let CI run them;
 **nothing auto-advances**. The gates are blocking in CI (all but the advisory risk-map check), but the human still owns the merge (Step E).
 
 ## Conventions
@@ -294,7 +294,12 @@ it. Branch protection is what makes the CI gates hold a merge at all: point the 
 `docs/branch-protection.md`.
 
 ### Step 3 — `run` (run the gates now)
-From inside the repo, run each gate against `base` and report PASS/FAIL per gate:
+From inside the repo, run `yad run checks` (add `--body <file>` holding the PR/MR description, and
+`--title` unless the branch has exactly one commit). It runs every installed gate as CI does — the
+Product's default branch where CI checks it out, every gate even after one fails — and prints a summary;
+report PASS, FAIL or skipped per gate from it (`--json` lists each gate's FAIL lines). A skipped
+pr-title or pr-template is not a pass. It runs `npm ci` (which replaces `node_modules`) and the build;
+add `--no-build` when that is not wanted. One gate by hand:
 ```
 bash checks/spec-link.sh "<base>"
 bash checks/contract-check.sh "<base>"

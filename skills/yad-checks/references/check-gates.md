@@ -992,6 +992,12 @@ names can actually close:
 
 ## Running by hand (Phase 3 is manual)
 
+`yad run checks` runs every installed gate in one go, the way CI runs them: this repo's own `checks/`,
+against `origin/<default branch>`, with the Product's default branch written where
+`.sdlc/product-link.json` says while the four Product-reading gates run, and removed after (a folder
+already there is read as it is and kept: a run removes only what it wrote). Signatures are checked with git there; the platform's
+Verified badge is judged in CI. To run one gate on its own:
+
 From inside the code repo, against the PR/MR base (e.g. `master`). For the gates that take one, the
 base argument is optional — omit it and the gate resolves the trunk in the order above (configured
 `default_branch`, else `origin/HEAD`, else `origin/main`), printing the base it chose; pass it (or

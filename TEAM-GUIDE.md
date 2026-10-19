@@ -442,7 +442,8 @@ From a `ready-for-build` story, do this **inside each code repo the story is tag
    (a change, defect or hotfix epic must thread to a real parent), epic-open (no new work on a sealed,
    fully shipped epic) and reconcile-debt (a thread with an open hotfix debt must pay it first). The
    risk-map check runs too, but it only warns: it reports how many approvers the PR asks for and never
-   blocks a merge.
+   blocks a merge. Before you push, `yad run checks --body <file>` runs these gates on your machine the
+   way CI will, so a failure shows up without waiting for CI.
 4. **Open the PR/MR** (the template is already wired) with `yad open-pr` — or do steps 2-pre + 4 in one
    step with **`yad-ship`** (commit + open PR/MR) — then run `yad-pr-template repo:<repo> action: route`
    to print the approval count and the touched domains (no reviewers are requested — ask them on the PR). The PR is based on the repo's **own default branch** (resolved:
