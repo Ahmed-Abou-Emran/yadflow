@@ -410,8 +410,9 @@ all shipped:
   the constraint as a comment and keep every required section early, so a truncated body still passes;
 - when a required section is missing **and** the body it read was cut (GitLab's flag, or ≥ 2700
   characters) and the full text could not be read, the gate prints a `NOTE` naming the truncation, why
-  the full text was not read (a refused `GITLAB_TOKEN` is told to get `read_api` and to check its
-  expiry), and the fix — reorder the required sections above the cutoff and push
+  the full text was not read and, only where a token change can help, what to change (no variable and a
+  refusal: set `GITLAB_TOKEN`; a refused variable: 401 renew it, 403 give it `read_api`, 404 its user
+  cannot see the project; a fork: it cannot read the target's MR), and the fix — reorder the required sections above the cutoff and push
   the long narrative to the end. Never delete a section: reordering is always allowed.
 
 ## 8. Phase 6 — feature-thread gates (`lineage-check.sh`, `epic-open.sh`, `reconcile-debt-check.sh`)

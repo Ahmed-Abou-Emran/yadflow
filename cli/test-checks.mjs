@@ -4493,40 +4493,48 @@ test('pr-template gate: #343 in GitLab CI a cut description is read in full from
 test('pr-template gate: #343 when the full description cannot be read, the cut body is checked and the note says why', () => {
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-prtpl-'));
   const cut = body(T, LONG_VALID.slice(0, 2700));
-  for (const [rig, why, extra] of [
-    [mrApiRig(T, { code: '401' }), /answered HTTP 401 to the job token/, {}],
-    [mrApiRig(T, { json: { iid: 42 } }), /answered the job token without a description yad could read/, {}],
-    [mrApiRig(T, { code: 'fail' }), /answered HTTP 000 to the job token|answered nothing to the job token/, {}],
-    [mrApiRig(T), /this is not a merge request pipeline/, { CI_MERGE_REQUEST_IID: '' }],
-  ]) {
+  // [answer, extra env, the reason, the advice — or null when no token change can help] (reviews 2, 3)
+  const cases = [
+    [{ code: '401' }, {}, /answered HTTP 401 to the job token/, /set a GITLAB_TOKEN CI\/CD variable/],
+    [{ code: '404' }, {}, /answered HTTP 404 to the job token/, /set a GITLAB_TOKEN CI\/CD variable/],
+    [{ code: '401' }, { GITLAB_TOKEN: 't' }, /answered HTTP 401 to GITLAB_TOKEN/, /the GITLAB_TOKEN variable was refused: it has expired or been revoked/],
+    [{ code: '403' }, { SDLC_API_TOKEN: 't' }, /answered HTTP 403 to SDLC_API_TOKEN/, /the SDLC_API_TOKEN variable was refused: give it the read_api scope/],
+    [{ code: '404' }, { GITLAB_TOKEN: 't' }, /answered HTTP 404 to GITLAB_TOKEN/, /user cannot see this project/],
+    [{ code: '502' }, { GITLAB_TOKEN: 't' }, /answered HTTP 502 to GITLAB_TOKEN/, null],
+    [{ code: 'fail' }, {}, /answered nothing to the job token/, null],
+    [{ json: { iid: 42 } }, {}, /answered the job token without a description yad could read/, null],
+    [{}, { CI_MERGE_REQUEST_IID: '' }, /this is not a merge request pipeline/, null],
+    [{ code: '404' }, { CI_PROJECT_ID: '9' }, /answered HTTP 404 to the job token/, /this pipeline runs in a fork, which cannot read the target project's merge request/],
+    [{ code: 'fail' }, { CI_PROJECT_ID: '9' }, /answered nothing/, /runs in a fork/],
+  ];
+  for (const [answer, extra, why, advice] of cases) {
+    const rig = mrApiRig(T, answer);
     const r = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...rig.env, ...extra });
-    assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /TRUNCATED at 2700/);
-    assert.match(r.out, why);
-    assert.match(r.out, /Set a GITLAB_TOKEN CI\/CD variable/);
+    const label = `${JSON.stringify(answer)} ${JSON.stringify(extra)}:\n${r.out}`;
+    assert.equal(r.code, 1, label);
+    assert.match(r.out, /TRUNCATED at 2700/, label);
+    assert.match(r.out, why, label);
+    if (advice) assert.match(r.out, advice, label);
+    else assert.doesNotMatch(r.out, /could not be read instead: [^\n]* — /, `${label}\n(no advice expected)`);
+    if (!advice || !/set a GITLAB_TOKEN/.test(advice.source)) assert.doesNotMatch(r.out, /set a GITLAB_TOKEN/i, label);
+    assert.match(r.out, /move the required sections above the cutoff/, label);
     rig.done();
   }
-  // A variable that is set but refused: the advice is to fix it, not to set it again (review 2).
-  const refused = mrApiRig(T, { code: '403' });
-  const rr = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...refused.env, SDLC_API_TOKEN: 't' });
-  assert.equal(rr.code, 1, rr.out);
-  assert.match(rr.out, /answered HTTP 403 to GITLAB_TOKEN/);
-  assert.match(rr.out, /is set but was refused: give it the read_api scope/);
-  assert.doesNotMatch(rr.out, /Set a GITLAB_TOKEN/);
-  refused.done();
-  // A branch pipeline has no MR project: it is not a fork (review 2).
+  // A branch pipeline (no MR project) is not a fork, though CI_PROJECT_ID is set (review 2). A gate run
+  // in one is told it is not an MR pipeline, and nothing about forks.
   const branch = mrApiRig(T);
-  const rbp = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...branch.env, CI_MERGE_REQUEST_PROJECT_ID: '', CI_MERGE_REQUEST_IID: '' });
-  assert.match(rbp.out, /this is not a merge request pipeline/);
-  assert.doesNotMatch(rbp.out, /runs in a fork/);
+  const rbp = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...branch.env, CI_PROJECT_ID: '9', CI_MERGE_REQUEST_PROJECT_ID: '', CI_MERGE_REQUEST_IID: '' });
+  assert.equal(rbp.code, 1, rbp.out);
+  assert.match(rbp.out, /could not be read instead: this is not a merge request pipeline\.$/m);
   branch.done();
-  // A fork's pipeline cannot read the target's MR: told so, not sent to set a variable (review 1).
-  const fork = mrApiRig(T, { code: '404' });
-  const rf = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...fork.env, CI_PROJECT_ID: '9' });
-  assert.equal(rf.code, 1, rf.out);
-  assert.match(rf.out, /this pipeline runs in a fork/);
-  assert.doesNotMatch(rf.out, /Set a GITLAB_TOKEN/);
-  fork.done();
+  // No temp folder at all: a FAIL that says so, never a silent exit (review 3).
+  // A `mktemp` that fails, first on PATH (macOS's own falls back past a missing TMPDIR; GNU's does not).
+  const noTmp = mrApiRig(T);
+  fs.writeFileSync(path.join(noTmp.bin, 'mktemp'), '#!/usr/bin/env bash\necho "mktemp: cannot create temp file" >&2\nexit 1\n', { mode: 0o755 });
+  const rt = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], noTmp.env);
+  assert.equal(rt.code, 1, rt.out);
+  assert.match(rt.out, /FAIL \[pr-template\]: no temp folder to write to/);
+  noTmp.done();
   // Below the cut, or outside GitLab CI: no call at all.
   const quiet = mrApiRig(T, { json: { description: LONG_VALID } });
   runGate(PR_TEMPLATE, T, ['--profile', 'code', body(T, '## Summary\nshort\n')], quiet.env);
