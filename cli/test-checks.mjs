@@ -2269,21 +2269,25 @@ function productSource() {
   return src;
 }
 const recordFor = (url, p, branch = 'main') => JSON.stringify({ git_url: url, path: p, default_branch: branch }, null, 2) + '\n';
+// product-checkout reads which CI it is in (#345): a run of the suite inside CI must not change what these
+// tests see, so each run starts from "not in CI" and a test names the CI it wants.
+const CI_CLEAN = { GITHUB_ACTIONS: '', GITLAB_CI: '', YAD_PR_FORK: '', GITHUB_ACTOR: '', CI_MERGE_REQUEST_SOURCE_PROJECT_ID: '', CI_MERGE_REQUEST_PROJECT_ID: '' };
+const runCheckout = (cwd, args, env = {}) => runGate(PRODUCT_CHECKOUT, cwd, args, { ...CI_CLEAN, ...env });
 
 test('product-checkout: clones the Product where the base record says, only with the secret (E120)', () => {
   const src = productSource();
   const { T, base } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}`, '.yad/product') });
   // No secret: nothing is cloned, the gates defer.
-  const none = runGate(PRODUCT_CHECKOUT, T, [base], { YAD_PRODUCT_TOKEN: '' });
+  const none = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: '' });
   assert.equal(none.code, 0, none.out);
   assert.match(none.out, /no YAD_PRODUCT_TOKEN secret — the Product is not checked out/);
   assert.ok(!fs.existsSync(path.join(T, '.yad/product')));
   // With it: cloned, and a second run leaves it alone.
-  const r = runGate(PRODUCT_CHECKOUT, T, [base], { YAD_PRODUCT_TOKEN: 't0ken' });
+  const r = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't0ken' });
   assert.equal(r.code, 0, r.out);
   assert.ok(fs.existsSync(path.join(T, '.yad/product/epics/EP-demo/epic.md')), r.out);
   assert.doesNotMatch(r.out, /t0ken/);
-  assert.match(runGate(PRODUCT_CHECKOUT, T, [base], { YAD_PRODUCT_TOKEN: 't0ken' }).out, /already there — it is not replaced/);
+  assert.match(runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't0ken' }).out, /already there — it is not replaced/);
   fs.rmSync(T, { recursive: true, force: true });
   fs.rmSync(src, { recursive: true, force: true });
 });
@@ -2293,13 +2297,13 @@ test('product-checkout: the record is read from the base, never as the PR leaves
   const planted = productSource();
   const { T, base } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}`, '.yad/product') });
   commit(T, 'chore: point CI elsewhere', { '.sdlc/product-link.json': recordFor(`file://${planted}`, 'mine') });
-  const r = runGate(PRODUCT_CHECKOUT, T, [base], { YAD_PRODUCT_TOKEN: 't' });
+  const r = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
   assert.equal(r.code, 0, r.out);
   assert.ok(fs.existsSync(path.join(T, '.yad/product')) && !fs.existsSync(path.join(T, 'mine')), r.out);
   // No record on the base: nothing to check out, whatever the PR adds.
   const { T: U, base: b2 } = renameRepo({ 'README.md': 'x\n' });
   commit(U, 'chore: add a record', { '.sdlc/product-link.json': recordFor(`file://${planted}`, 'mine') });
-  const r2 = runGate(PRODUCT_CHECKOUT, U, [b2], { YAD_PRODUCT_TOKEN: 't' });
+  const r2 = runCheckout(U, [b2], { YAD_PRODUCT_TOKEN: 't' });
   assert.equal(r2.code, 0, r2.out);
   assert.match(r2.out, /no \.sdlc\/product-link\.json on .* nothing to check out/);
   assert.ok(!fs.existsSync(path.join(U, 'mine')));
@@ -2310,7 +2314,7 @@ test('product-checkout: a path outside the repo, a tracked folder, or a failed c
   const src = productSource();
   for (const p of ['../escape', '/tmp/abs', '.', '', 'a/../../b', '.git/x']) {
     const { T, base } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}`, p) });
-    const r = runGate(PRODUCT_CHECKOUT, T, [base], { YAD_PRODUCT_TOKEN: 't' });
+    const r = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
     assert.equal(r.code, 1, `${p}:\n${r.out}`);
     assert.match(r.out, /must be a folder inside this repo/, p);
     fs.rmSync(T, { recursive: true, force: true });
@@ -2319,14 +2323,14 @@ test('product-checkout: a path outside the repo, a tracked folder, or a failed c
   for (const onDisk of [true, false]) {
     const { T, base } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}`, 'prod'), 'prod/x.txt': 'tracked\n' });
     if (!onDisk) fs.rmSync(path.join(T, 'prod'), { recursive: true, force: true });
-    const tracked = runGate(PRODUCT_CHECKOUT, T, [base], { YAD_PRODUCT_TOKEN: 't' });
+    const tracked = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
     assert.equal(tracked.code, 1, `${onDisk}:\n${tracked.out}`);
     assert.match(tracked.out, /'prod' holds files this repo tracks/);
     fs.rmSync(T, { recursive: true, force: true });
   }
   // A plain http url: the token is not sent over it.
   const { T: H, base: bh } = renameRepo({ '.sdlc/product-link.json': recordFor('http://example.com/org/product.git', '.yad/product') });
-  const http = runGate(PRODUCT_CHECKOUT, H, [bh], { YAD_PRODUCT_TOKEN: 't' });
+  const http = runCheckout(H, [bh], { YAD_PRODUCT_TOKEN: 't' });
   assert.equal(http.code, 1, http.out);
   assert.match(http.out, /the token is not sent over plain http/);
   fs.rmSync(H, { recursive: true, force: true });
@@ -2335,25 +2339,145 @@ test('product-checkout: a path outside the repo, a tracked folder, or a failed c
   const out = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-out-'));
   fs.symlinkSync(out, path.join(L, '.yad'));
   commit(L, 'chore: a link');
-  const linked = runGate(PRODUCT_CHECKOUT, L, [bl], { YAD_PRODUCT_TOKEN: 't' });
+  const linked = runCheckout(L, [bl], { YAD_PRODUCT_TOKEN: 't' });
   assert.equal(linked.code, 1, linked.out);
   assert.match(linked.out, /'\.yad' is a symlink/);
   assert.deepEqual(fs.readdirSync(out), []);
   fs.rmSync(L, { recursive: true, force: true });
   fs.rmSync(out, { recursive: true, force: true });
   const { T: U, base: b2 } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}-gone`, '.yad/product') });
-  const bad = runGate(PRODUCT_CHECKOUT, U, [b2], { YAD_PRODUCT_TOKEN: 't' });
+  const bad = runCheckout(U, [b2], { YAD_PRODUCT_TOKEN: 't' });
   assert.equal(bad.code, 1, bad.out);
   assert.match(bad.out, /FAIL \[product-checkout\]: could not clone the Product/);
   fs.rmSync(U, { recursive: true, force: true });
   fs.rmSync(src, { recursive: true, force: true });
 });
 
+// #345: a missing token is a loud WARNING on a PR that could have had it, a note on a fork's (which never
+// gets secrets) and outside CI. Never a failure: the gates still defer.
+test('product-checkout: #345 a missing token warns loudly in CI, except on a fork or outside CI', () => {
+  const src = productSource();
+  const { T, base } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}`, '.yad/product') });
+  const loud = /WARNING \[product-checkout\]: no YAD_PRODUCT_TOKEN secret — the Product is not checked out/;
+  const cases = [
+    [{}, false, 'outside CI'],
+    [{ GITHUB_ACTIONS: 'true', YAD_PR_FORK: 'false' }, true, 'a GitHub PR from this repo'],
+    [{ GITHUB_ACTIONS: 'true', YAD_PR_FORK: 'true' }, false, 'a GitHub PR from a fork'],
+    [{ GITLAB_CI: 'true', CI_MERGE_REQUEST_SOURCE_PROJECT_ID: '7', CI_MERGE_REQUEST_PROJECT_ID: '7' }, true, 'a GitLab MR from this project'],
+    [{ GITLAB_CI: 'true', CI_MERGE_REQUEST_SOURCE_PROJECT_ID: '9', CI_MERGE_REQUEST_PROJECT_ID: '7' }, false, 'a GitLab MR from a fork'],
+  ];
+  for (const [env, warns, label] of cases) {
+    const r = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: '', ...env });
+    assert.equal(r.code, 0, `${label}:\n${r.out}`);
+    assert.equal(loud.test(r.out), warns, `${label}:\n${r.out}`);
+    if (!warns) assert.match(r.out, /note \[product-checkout\]: no YAD_PRODUCT_TOKEN secret/, label);
+    // Only GitHub has an annotation.
+    assert.equal(/^::warning title=product-checkout::/m.test(r.out), warns && env.GITHUB_ACTIONS === 'true', label);
+    assert.ok(!fs.existsSync(path.join(T, '.yad/product')), label);
+  }
+  assert.match(runCheckout(T, [base], { YAD_PRODUCT_TOKEN: '', GITHUB_ACTIONS: 'true', YAD_PR_FORK: 'true' }).out, /comes from a fork/);
+  const bot = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: '', GITHUB_ACTIONS: 'true', YAD_PR_FORK: 'false', GITHUB_ACTOR: 'dependabot[bot]' });
+  assert.match(bot.out, /Dependabot secrets only/);
+  fs.rmSync(T, { recursive: true, force: true });
+  fs.rmSync(src, { recursive: true, force: true });
+});
+
+// #345: with a token, one API call reads its expiry date. A fake `curl` first on PATH answers it, and an
+// https git_url is mapped to the local Product by a git `insteadOf`, so the clone itself still runs.
+function expiryRig({ host = 'github.com', code = '200', head = '', body = '{}', clones = true } = {}) {
+  const src = productSource();
+  const rig = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-expiry-'));
+  const url = `https://${host}/org/product.git`;
+  fs.writeFileSync(path.join(rig, 'gitconfig'), `[url "file://${clones ? src : `${src}-gone`}"]\n\tinsteadOf = ${url}\n`);
+  fs.mkdirSync(path.join(rig, 'bin'));
+  fs.writeFileSync(path.join(rig, 'head.txt'), head);
+  fs.writeFileSync(path.join(rig, 'body.txt'), body);
+  // Writes the canned answer where curl was told to, logs its argv and the header file it was handed.
+  fs.writeFileSync(path.join(rig, 'bin/curl'), `#!/usr/bin/env bash
+out=""; hdr=""; hfile=""
+printf '%s\\n' "$@" > "${rig}/argv.txt"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -D) hdr="$2"; shift ;;
+    -H) case "$2" in @*) hfile="\${2#@}" ;; esac; shift ;;
+  esac
+  shift
+done
+[ -z "$hfile" ] || cp "$hfile" "${rig}/sent-header.txt"
+cp "${rig}/head.txt" "$hdr"; cp "${rig}/body.txt" "$out"
+printf '%s' "${code}"
+`, { mode: 0o755 });
+  const { T, base } = renameRepo({ '.sdlc/product-link.json': recordFor(url, '.yad/product') });
+  const env = { YAD_PRODUCT_TOKEN: 's3cret-t0ken', GIT_CONFIG_GLOBAL: path.join(rig, 'gitconfig'), PATH: `${path.join(rig, 'bin')}:${process.env.PATH}` };
+  const done = () => { for (const d of [T, rig, src]) fs.rmSync(d, { recursive: true, force: true }); };
+  return { T, base, rig, env, done };
+}
+const inDays = (n) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+
+test('product-checkout: #345 warns 30 days before the token expires (GitHub header), notes it otherwise', () => {
+  for (const [days, warns] of [[10, true], [30, true], [90, false]]) {
+    const { T, base, rig, env, done } = expiryRig({ head: `HTTP/2 200\r\ngithub-authentication-token-expiration: ${inDays(days)} 10:00:00 UTC\r\n\r\n` });
+    const r = runCheckout(T, [base], { ...env, GITHUB_ACTIONS: 'true' });
+    assert.equal(r.code, 0, r.out);
+    assert.ok(fs.existsSync(path.join(T, '.yad/product/epics/EP-demo/epic.md')), r.out);
+    assert.equal(/WARNING \[product-checkout\]: YAD_PRODUCT_TOKEN expires on/.test(r.out), warns, `${days}:\n${r.out}`);
+    if (!warns) assert.match(r.out, new RegExp(`note \\[product-checkout\\]: YAD_PRODUCT_TOKEN expires on ${inDays(days)}\\.`));
+    // The token rides in a header file, never on curl's command line, and never in the log.
+    assert.doesNotMatch(fs.readFileSync(path.join(rig, 'argv.txt'), 'utf8'), /s3cret/);
+    assert.match(fs.readFileSync(path.join(rig, 'sent-header.txt'), 'utf8'), /^Authorization: Bearer s3cret-t0ken$/m);
+    assert.match(fs.readFileSync(path.join(rig, 'argv.txt'), 'utf8'), /^https:\/\/api\.github\.com\/rate_limit$/m);
+    assert.doesNotMatch(r.out, /s3cret/);
+    done();
+  }
+});
+
+test('product-checkout: #345 GitLab reads expires_at with PRIVATE-TOKEN; no date, or no answer, is a note', () => {
+  let rig = expiryRig({ host: 'gitlab.example.com', body: `{"id":1,"scopes":["read_repository"],"expires_at":"${inDays(5)}","active":true}` });
+  let r = runCheckout(rig.T, [rig.base], { ...rig.env, GITLAB_CI: 'true', CI_MERGE_REQUEST_SOURCE_PROJECT_ID: '1', CI_MERGE_REQUEST_PROJECT_ID: '1' });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, new RegExp(`WARNING \\[product-checkout\\]: YAD_PRODUCT_TOKEN expires on ${inDays(5)} \\(in 5 day`));
+  assert.doesNotMatch(r.out, /^::warning/m, 'no GitHub annotation on GitLab');
+  assert.match(fs.readFileSync(path.join(rig.rig, 'sent-header.txt'), 'utf8'), /^PRIVATE-TOKEN: s3cret-t0ken$/m);
+  assert.match(fs.readFileSync(path.join(rig.rig, 'argv.txt'), 'utf8'), /^https:\/\/gitlab\.example\.com\/api\/v4\/personal_access_tokens\/self$/m);
+  rig.done();
+  rig = expiryRig({ host: 'gitlab.example.com', body: '{"id":1,"expires_at":null}' });
+  r = runCheckout(rig.T, [rig.base], { ...rig.env, GITLAB_CI: 'true' });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /did not say when YAD_PRODUCT_TOKEN expires/);
+  rig.done();
+  rig = expiryRig({ host: 'gitlab.example.com', code: '403' });
+  r = runCheckout(rig.T, [rig.base], { ...rig.env, GITLAB_CI: 'true' });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /could not read YAD_PRODUCT_TOKEN's expiry date from gitlab\.example\.com \(HTTP 403\); going on with the clone/);
+  rig.done();
+  // Outside CI, a host that is not github.com has no known API: no call at all.
+  rig = expiryRig({ host: 'gitlab.example.com' });
+  r = runCheckout(rig.T, [rig.base], rig.env);
+  assert.equal(r.code, 0, r.out);
+  assert.ok(!fs.existsSync(path.join(rig.rig, 'argv.txt')), 'no API call');
+  rig.done();
+});
+
+test('product-checkout: #345 a token the platform rejects says so — a FAIL when the clone fails, a WARNING when it does not', () => {
+  let rig = expiryRig({ code: '401', clones: false });
+  let r = runCheckout(rig.T, [rig.base], { ...rig.env, GITHUB_ACTIONS: 'true' });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /FAIL \[product-checkout\]: could not clone the Product/);
+  assert.match(r.out, /github\.com rejected YAD_PRODUCT_TOKEN \(HTTP 401\): it has expired or been revoked/);
+  rig.done();
+  rig = expiryRig({ code: '401' });
+  r = runCheckout(rig.T, [rig.base], { ...rig.env, GITHUB_ACTIONS: 'true' });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /WARNING \[product-checkout\]: github\.com rejected YAD_PRODUCT_TOKEN on its API \(HTTP 401\), though the clone worked/);
+  rig.done();
+});
+
 test('the shipped workflows run product-checkout before each Product-reading gate (E120)', () => {
   const gh = fs.readFileSync(path.join(ROOT, 'skills/yad-checks/templates/github/yad-checks.yml'), 'utf8');
   const gl = fs.readFileSync(path.join(ROOT, 'skills/yad-checks/templates/gitlab/yad-checks.gitlab-ci.yml'), 'utf8');
   for (const gate of ['contract-check', 'lineage-check', 'epic-open', 'reconcile-debt-check']) {
-    assert.match(gh, new RegExp(`- run: bash checks/product-checkout\\.sh "origin/\\$\\{\\{ github\\.base_ref \\}\\}"\\n {8}env: \\{ YAD_PRODUCT_TOKEN: "\\$\\{\\{ secrets\\.YAD_PRODUCT_TOKEN \\}\\}" \\}\\n {6}- run: bash checks/${gate}\\.sh`), gate);
+    assert.match(gh, new RegExp(`- run: bash checks/product-checkout\\.sh "origin/\\$\\{\\{ github\\.base_ref \\}\\}"\\n {8}env: \\{ YAD_PRODUCT_TOKEN: "\\$\\{\\{ secrets\\.YAD_PRODUCT_TOKEN \\}\\}", YAD_PR_FORK: "\\$\\{\\{ github\\.event\\.pull_request\\.head\\.repo\\.full_name != github\\.repository \\}\\}" \\}\\n {6}- run: bash checks/${gate}\\.sh`), gate);
     assert.match(gl, new RegExp(`- bash checks/product-checkout\\.sh "origin/\\$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"\\n {4}- bash checks/${gate}\\.sh`), gate);
   }
 });
