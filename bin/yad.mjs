@@ -252,7 +252,7 @@ ${c.bold('Build helpers')}
                                        removed after). Signatures are checked with git; the platform's
                                        Verified badge is judged in CI. install-deps runs npm ci (it
                                        replaces node_modules); --no-build skips it and build/test/lint.
-                                       Exit 1 on any FAIL
+                                       Exit 1 on any FAIL, 130 when stopped with Ctrl-C
   yad open-pr [--repo <name>] [--title <text>]
                                        Open a task PR/MR against the repo's DEFAULT branch (never a
                                        hardcoded main; --base overrides) — stage-aware on the Product: a

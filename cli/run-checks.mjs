@@ -13,7 +13,8 @@
 //     `origin/<default_branch>` to where `.sdlc/product-link.json` ON THE BASE says, just before those
 //     four gates, and removed right after them — so the build gates never see it, as in CI. Written with
 //     a private index: the Product clone's own index, branch and files are never touched. The path gets
-//     the checks product-checkout.sh applies (no symlink on the way, nothing tracked there).
+//     the checks product-checkout.sh applies (no symlink on the way, nothing tracked there). A run removes
+//     only what it wrote itself; a folder already there is read as it is and kept.
 //   - every gate runs, even after one fails (CI jobs run side by side), then one summary.
 //
 // What cannot be the same here, and says so:
@@ -38,15 +39,6 @@ import { repoPathFromGitUrl } from './protection.mjs';
 
 // GitLab hands CI only this many characters of a merge request description (#164, #343).
 const GITLAB_DESCRIPTION_CUT = 2700;
-// The record of a run's Product copy, kept in this repo's git folder — where the Product's own files
-// cannot reach it, and where no gate sees it — so a copy a killed run left behind is known and replaced.
-const MARKER = 'yad-run-checks.json';
-const markerPath = (repoRoot) => {
-  const p = git(repoRoot, ['rev-parse', '--git-path', MARKER]).stdout;
-  return p ? path.resolve(repoRoot, p) : null;
-};
-// What this run is, as `ps` shows a yad run's command line.
-const RUN_COMMAND = /yad\S*\s+run\s+checks\b/;
 const PRODUCT_GATES = new Set(['contract-check', 'lineage-check', 'epic-open', 'reconcile-debt']);
 
 const git = (cwd, args, opts = {}) => run('git', args, { cwd, ...opts });
@@ -109,46 +101,25 @@ function readRecord(repoRoot, base) {
   return { rel, branch, record };
 }
 
-// Whose copy is at `rel`? { state: null } — no record of one (not ours); 'alive' — a run on this machine
-// still using it; 'gone' — the run that wrote it is over, and `created` is the folder it made. A process id
-// is reused once its process is gone (after a reboot a daemon may hold it), so 'alive' also needs the run to
-// have started since the last boot and, where `ps` can say, that process to be a `yad run checks`. A record
-// from another host is 'gone': a folder two machines share is not a case this guards.
-function markerOwner(file, rel) {
-  let m;
-  try { m = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return { state: null }; }
-  if (!m || m.rel !== rel) return { state: null };
-  const gone = { state: 'gone', created: typeof m.created === 'string' ? m.created : null };
-  if (m.host !== os.hostname() || !Number.isInteger(m.pid) || m.pid === process.pid) return gone;
-  if (!(m.start >= Date.now() - os.uptime() * 1000 - 60000)) return gone;
-  try { process.kill(m.pid, 0); } catch (e) { if (e.code !== 'EPERM') return gone; }
-  if (process.platform !== 'win32') {
-    const ps = run('ps', ['-o', 'command=', '-p', String(m.pid)]);
-    if (ps.ok && !RUN_COMMAND.test(ps.stdout)) return gone;
+// Remove a copy this run wrote: `dest` itself (it did not exist before), then each folder this run made on
+// the way to it, from the inside out, only while it is empty — a file someone put there meanwhile stays.
+function removeCopy(repoRoot, dest, created) {
+  fs.rmSync(dest, { recursive: true, force: true });
+  if (!created || created === dest) return;
+  for (let d = path.dirname(dest); d.length >= created.length && d.startsWith(repoRoot); d = path.dirname(d)) {
+    try { fs.rmdirSync(d); } catch { break; }
+    if (d === created) break;
   }
-  return { state: 'alive' };
 }
 
 // Write the Product's default branch to `rel`. Returns { placed, created?, note } or { fail }.
 function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, { fetch }) {
   const dest = path.join(repoRoot, rel);
-  const marker = markerPath(repoRoot);
+  // A run removes only what it wrote itself. A folder already there — the user's own, another run's in use,
+  // or one a killed run left behind — is read as it is and never removed (CI's product-checkout leaves an
+  // existing folder too).
   if (exists(dest)) {
-    const owner = marker ? markerOwner(marker, rel) : { state: null };
-    if (owner.state === null) {
-      return { placed: false, note: `${rel} is already there, so it is read as it is — it may not be the Product's default branch; remove it to read that` };
-    }
-    if (owner.state === 'alive') {
-      return { placed: false, note: `another yad run checks is using ${rel} right now — this run reads it as it is (remove ${rel} if no other run is going)` };
-    }
-    // A copy a killed run left behind: remove what that run made — a folder on the way to it included,
-    // when that folder is on the record's path and holds nothing this repo tracks.
-    fs.rmSync(dest, { recursive: true, force: true });
-    const c0 = owner.created;
-    if (c0 && c0 !== rel && rel.startsWith(`${c0}/`) && !git(repoRoot, ['ls-files', '--', c0]).stdout) {
-      fs.rmSync(path.join(repoRoot, c0), { recursive: true, force: true });
-    }
-    try { fs.rmSync(marker); } catch { /* gone */ }
+    return { placed: false, note: `${rel} is already there, so it is read as it is — it may not be the Product's default branch (another run may be using it, or a run that was killed left it): remove it to read the default branch` };
   }
   if (!productRoot) {
     return { placed: false, note: `no Product clone found from this repo (the workspace file names it), so ${rel} is not written — the Product-reading gates may read what product-repo in a link.md reaches on this machine, including unmerged edits, where CI would read nothing` };
@@ -178,11 +149,6 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yad-run-checks-'));
   const idx = path.join(tmp, 'index');
   try {
-    // First, so even a copy cut short by a crash is known as ours next time.
-    if (marker) {
-      fs.mkdirSync(path.dirname(marker), { recursive: true });
-      fs.writeFileSync(marker, JSON.stringify({ pid: process.pid, start: Date.now(), host: os.hostname(), rel, created: created ? path.relative(repoRoot, created).split(path.sep).join('/') : null }));
-    }
     fs.mkdirSync(dest, { recursive: true });
     const env = { ...process.env, GIT_INDEX_FILE: idx };
     delete env.GIT_DIR; delete env.GIT_WORK_TREE;
@@ -192,13 +158,12 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
       : read;
     if (out.status !== 0) throw new Error((out.stderr || '').trim().split('\n')[0] || 'git could not write it');
   } catch (e) {
-    if (created) fs.rmSync(created, { recursive: true, force: true });
-    if (marker) { try { fs.rmSync(marker); } catch { /* gone */ } }
+    removeCopy(repoRoot, dest, created);
     return { placed: false, note: [...notes, `could not write the Product's ${branch} to ${rel} (${e.message}) — the Product-reading gates may read what product-repo in a link.md reaches on this machine`].join('; ') };
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  return { placed: true, created, dest, marker, note: [...notes, `the Product's ${branch} (${sha.stdout.slice(0, 12)}) is written to ${rel}, as CI checks it out, and removed after these gates`].join('; ') };
+  return { placed: true, created, dest, note: [...notes, `the Product's ${branch} (${sha.stdout.slice(0, 12)}) is written to ${rel}, as CI checks it out, and removed after these gates`].join('; ') };
 }
 
 // Each commit's signature, as git reads it here. `%G?`: G good, U good with unknown trust, X/Y expired,
@@ -328,7 +293,7 @@ export async function runChecks(dir, opts = {}) {
     const e = entries[i];
     if (!e) continue;
     changed.push(e.slice(3));
-    if (e[0] === 'R' || e[0] === 'C') i++;
+    if ('RC'.includes(e[0]) || 'RC'.includes(e[1])) i++;
   }
   // An untracked folder on the record's path (`.yad/`, shown collapsed) is skipped whole.
   const dirty = changed
@@ -355,8 +320,7 @@ export async function runChecks(dir, opts = {}) {
   const live = { child: null, stopped: false };
   const removeProduct = () => {
     if (!placed?.placed) return;
-    fs.rmSync(placed.created || placed.dest, { recursive: true, force: true });
-    if (placed.marker) { try { fs.rmSync(placed.marker); } catch { /* gone */ } }
+    removeCopy(repoRoot, placed.dest, placed.created);
     placed.placed = false;
   };
   // The gate runs in a session of its own, so a Ctrl-C reaches only yad, which passes it on. It ends the
