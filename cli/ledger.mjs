@@ -246,6 +246,60 @@ export function writeRetroShip(epicDir, { story, repo, task = 'retro', mergeComm
 // { found, where, file, ship }; found:false writes nothing (the caller warns). The find and the
 // write-back are one locked span: a fold running between them would move the ship into the folded
 // file and delete the shard this call is about to rewrite, resurrecting the deleted shard.
+// Record a ship (`yad build ship`, #346): one shard per (story, task, repo), refused when that ship is
+// already recorded, or when another repo's ship shares its file name (`safe()` folds `api.v2` and `api_v2`
+// into one name, and writing the second would overwrite the first). The guard, the collision check and the
+// write are one critical section, as in `writeRetroShip`. Returns { written, reason?, file?, ship? }.
+export function writeShip(epicDir, ship, lockOpts = {}) {
+  const { story, task, repo } = ship;
+  if (!story || !task || !repo) throw new Error('writeShip: story, task and repo are required');
+  return withLedgerLock(buildLogLock(epicDir), () => {
+    const ships = readShips(epicDir).filter((s) => s.story === story && s.task === task);
+    if (ships.some((s) => s.repo === repo)) return { written: false, reason: 'exists' };
+    const clash = ships.find((s) => safe(s.repo) === safe(repo));
+    if (clash) return { written: false, reason: 'collision', repo: clash.repo };
+    const file = path.join(epicFiles(epicDir).buildLogDir, buildShardName(ship));
+    if (fs.existsSync(file)) return { written: false, reason: 'collision', file };
+    writeJSON(file, ship);
+    return { written: true, file, ship };
+  }, lockOpts);
+}
+
+// Record one trust run (`yad build trust`, #346): a new shard under its own `uid`, never over another file.
+export function writeTrustRun(epicDir, entry, lockOpts = {}) {
+  if (!entry?.story || !entry.repo || !entry.step || !entry.uid) throw new Error('writeTrustRun: story, repo, step and uid are required');
+  return withLedgerLock(trustLogLock(epicDir), () => {
+    const file = path.join(epicFiles(epicDir).trustLogDir, trustShardName(entry));
+    if (fs.existsSync(file)) return { written: false, reason: 'collision', file };
+    writeJSON(file, entry);
+    return { written: true, file };
+  }, lockOpts);
+}
+
+// Finalize a trust run's verdict where it lives: its own shard, or its entry in the folded trust-log.json
+// once `yad tidy up` folded it — the human gate's word on a run the orchestrator recorded.
+export function updateTrustRun(epicDir, match, update, lockOpts = {}) {
+  return withLedgerLock(trustLogLock(epicDir), () => {
+    const f = epicFiles(epicDir);
+    for (const { name, obj } of readShardDir(f.trustLogDir)) {
+      if (match(obj)) {
+        update(obj);
+        const file = path.join(f.trustLogDir, name);
+        writeJSON(file, obj);
+        return { found: true, where: 'shard', file, run: obj };
+      }
+    }
+    const foldedObj = readJSONStrict(f.trustLog, null);
+    const run = Array.isArray(foldedObj?.runs) ? foldedObj.runs.find(match) : null;
+    if (run) {
+      update(run);
+      writeJSON(f.trustLog, foldedObj);
+      return { found: true, where: 'folded', file: f.trustLog, run };
+    }
+    return { found: false };
+  }, lockOpts);
+}
+
 export function updateShip(epicDir, match, update, lockOpts = {}) {
   return withLedgerLock(buildLogLock(epicDir), () => {
     const f = epicFiles(epicDir);

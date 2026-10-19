@@ -66,6 +66,22 @@ export function setFrontmatterStatus(file, status) {
   return cur;
 }
 
+// A story's Build status (`yad build ship` / `yad build done`, #346): `approved` → `in-build` → `shipped`,
+// forward only, and only the `status:` line of the frontmatter. The Shape ladder above never writes these
+// values (PRESERVE); this is the one writer of them. Returns the prior status when it changed, else null.
+const BUILD_LADDER = { approved: 0, 'in-build': 1, shipped: 2 };
+export function setBuildStatus(file, status) {
+  if (!(status in BUILD_LADDER) || status === 'approved' || !fs.existsSync(file)) return null;
+  const text = fs.readFileSync(file, 'utf8');
+  const fm = text.match(FRONTMATTER_BLOCK);
+  if (!fm) return null;
+  const cur = (fm[1].match(/^status:\s*(.*)$/m) || [])[1]?.trim();
+  if (cur === undefined || !(cur in BUILD_LADDER) || BUILD_LADDER[status] <= BUILD_LADDER[cur]) return null;
+  const block = fm[1].replace(/^status:\s*.*$/m, () => `status: ${status}`);
+  fs.writeFileSync(file, text.replace(fm[1], () => block));
+  return cur;
+}
+
 // Sweep one epic (or every epic under epics/) and reconcile artifact frontmatter with state.json.
 export async function syncStatuses(root, { epic, dryRun = false } = {}) {
   // `epicIds` — the Foundation included (E75), and only VALID ids: a backup directory or any other

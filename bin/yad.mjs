@@ -386,7 +386,8 @@ ${c.bold('Environment')}
 
 const STANDUP_USAGE = 'usage: yad standup [--since <YYYY-MM-DD>|<N>h|<N>d] [--tz <zone>] [--member <login>|--me] [--format md|html] [--out <file>] [--json]';
 
-const VALUE_FLAGS = new Set(['--dir', '--type', '--message', '--task', '--ai', '--risk', '--repo', '--platform', '--base', '--title', '--scope', '--branch', '--pr', '--epic', '--team', '--body', '--out', '--since', '--until', '--member', '--format', '--reason', '--profile', '--parent', '--inherits', '--to', '--retro-ship', '--merge-commit', '--path', '--ide-targets', '--theme', '--thread', '--by', '--count', '--engagement', '--keep', '--role', '--fallback', '--detect', '--install', '--source', '--tz']);
+const VALUE_FLAGS = new Set(['--dir', '--type', '--message', '--task', '--ai', '--risk', '--repo', '--platform', '--base', '--title', '--scope', '--branch', '--pr', '--epic', '--team', '--body', '--out', '--since', '--until', '--member', '--format', '--reason', '--profile', '--parent', '--inherits', '--to', '--retro-ship', '--merge-commit', '--path', '--ide-targets', '--theme', '--thread', '--by', '--count', '--engagement', '--keep', '--role', '--fallback', '--detect', '--install', '--source', '--tz', '--verdict', '--ran-by', '--note', '--uid', '--run', '--via']);
+const LIST_FLAGS = new Set(['--signal', '--approver']);
 
 function parseArgs(argv) {
   const o = { _: [], dir: process.cwd(), fix: false, force: false, scope: 'all' };
@@ -441,6 +442,13 @@ function parseArgs(argv) {
     else if (a === '-v' || a === '--version') o.version = true;
     else if (a.startsWith('--scope=')) o.scope = a.slice('--scope='.length);
     else if (a === '-m' || a === '--message') o.message = takeValue(argv, ++i, a);
+    // Repeatable (`yad build trust … --signal a=true --signal b=false`, `yad build ship … --approver x --approver y`).
+    else if (LIST_FLAGS.has(a)) (o[a.slice(2)] ||= []).push(takeValue(argv, ++i, a));
+    else if (a.startsWith('--') && a.includes('=') && LIST_FLAGS.has(a.slice(0, a.indexOf('=')))) {
+      const value = a.slice(a.indexOf('=') + 1);
+      if (!value) throw new Error(`${a.slice(0, a.indexOf('='))} expects a value`);
+      (o[a.slice(2, a.indexOf('='))] ||= []).push(value);
+    }
     else if (VALUE_FLAGS.has(a)) o[a.replace(/^--/, '')] = takeValue(argv, ++i, a);
     // `--flag=value` for the same flags. Without it the token matched nothing and fell through to the
     // positionals, where it was silently ignored — and for `yad hook ledger-guard --format=cursor`
@@ -488,6 +496,7 @@ const ACTIONS = {
   toolbox: { known: ['list', 'check', 'add', 'remove'], default: 'list' },
   member: { known: ['add', 'list', 'remove'], default: 'list' },
   run: { known: ['checks'] },
+  build: { known: ['start', 'step', 'trust', 'ship', 'done'] },
 };
 // E80 — how each command finds its folder. A PRODUCT command works on the Product; a REPO command works
 // on the code repo it runs in and reads the Product beside it. The rest take their folder as given:
@@ -496,7 +505,7 @@ const PRODUCT_CMDS = new Set([
   'check', 'update', 'doctor', 'migrate', 'usage', 'sync-status', 'epic', 'foundation', 'skill', 'next',
   'skip', 'unskip', 'defer', 'undefer', 'dial', 'mode', 'kill', 'unkill', 'unblock', 'gate', 'checkpoint',
   'capture', 'claims', 'assign', 'unassign', 'owners', 'fold', 'tidy', 'index', 'history', 'repo',
-  'risk-map', 'codeowners', 'docs', 'thread', 'reconcile', 'member', 'standup',
+  'risk-map', 'codeowners', 'docs', 'thread', 'reconcile', 'member', 'standup', 'build',
 ]);
 const REPO_CMDS = new Set(['commit', 'open-pr', 'ship', 'review', 'run']);
 // The Product commands that WRITE its files without first checking it is one. Run from a code repo they
@@ -504,7 +513,7 @@ const REPO_CMDS = new Set(['commit', 'open-pr', 'ship', 'review', 'run']);
 // already refuse a folder that is not a Product.
 function writesProduct(cmd, o) {
   const action = o._[1];
-  if (cmd === 'update' || cmd === 'kill' || cmd === 'unkill') return true;
+  if (cmd === 'update' || cmd === 'kill' || cmd === 'unkill' || cmd === 'build') return true;
   if (cmd === 'check') return !!o.fix;
   if (cmd === 'epic' || cmd === 'foundation') return action === 'new';
   if (cmd === 'skill') return action === 'bind' || action === 'unbind';
@@ -899,6 +908,26 @@ async function main() {
     case 'commit':
       result = await commands.runCommit(o.dir, { type: o.type, message: o.message, task: o.task, ai: o.ai, contractChange: o.contractChange, dryRun: o.dryRun, force: o.force, manual: o.manual, reason: o.reason });
       break;
+    case 'build': {
+      const [, action, story, a3, a4] = o._;
+      const known = ACTIONS.build.known;
+      if (!known.includes(action)) { refuse(`unknown build action: ${action ?? '(none)'} (${known.join('|')})`, '`yad build start <story> --repo <name>` begins a story\'s lane'); break; }
+      if (!story) { refuse(`usage: yad build ${action} <story> …`, 'the story id, such as EP-checkout-S01'); break; }
+      if (noProduct()) break;
+      // Every --signal is name=value.
+      const signals = {};
+      for (const sgl of o.signal || []) {
+        const eq = sgl.indexOf('=');
+        if (eq < 1) { refuse(`--signal ${sgl}: expected name=value`, '--signal checks=pass'); return; }
+        signals[sgl.slice(0, eq)] = sgl.slice(eq + 1);
+      }
+      if (action === 'start') result = await commands.buildStart(o.dir, { story, repo: o.repo, today });
+      else if (action === 'step') result = await commands.buildStep(o.dir, { story, repo: o.repo, step: a3, to: a4, reason: o.reason, via: o.via || 'human', run: o.run || null, today });
+      else if (action === 'trust') result = await commands.buildTrust(o.dir, { story, repo: o.repo, step: a3, verdict: o.verdict, signals, ranBy: o['ran-by'] || 'human', note: o.note || null, uid: o.uid || null, today });
+      else if (action === 'ship') result = await commands.buildShip(o.dir, { story, task: o.task, repo: o.repo, pr: o.pr, mergeCommit: o['merge-commit'] || null, approvers: o.approver || [], today });
+      else result = await commands.buildDone(o.dir, { story, today, fetch: !o.noFetch });
+      break;
+    }
     case 'run': {
       const [, action] = o._;
       if (action !== 'checks') { refuse(`unknown run action: ${action ?? '(none)'} (checks)`, '`yad run checks` runs every pull request gate here before you push'); break; }
