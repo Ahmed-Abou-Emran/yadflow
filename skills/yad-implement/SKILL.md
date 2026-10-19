@@ -121,7 +121,7 @@ then the PR and review (Steps D–E). Do **not** open a PR, merge, or hand-edit 
 `state.json`. Step B ends at a committed task branch.
 
 - **Run standalone:** stop here; a human triggers the gates. Before the push, `yad run checks` runs every
-  gate here, as CI will.
+  gate on this machine, as CI will.
 - **Run by the orchestrator** (`yad-run`): this skill still just produces the committed branch and
   signals success (or a scope/contract halt). The orchestrator records the `implement` step's status
   and trust entry and, when `implement` is set to `advance: auto` (`yad dial`), **auto-runs

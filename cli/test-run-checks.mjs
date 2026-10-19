@@ -15,6 +15,8 @@ const YAD = path.join(ROOT, 'bin/yad.mjs');
 // No CI variable, git identity or base from the shell that runs the suite.
 const ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) =>
   !/^GIT_(AUTHOR|COMMITTER)_/.test(k) && !/^(CI|GITLAB_CI|GITHUB_ACTIONS|SDLC_BASE|SDLC_HUB_CONFIG|SDLC_PRODUCT_CONFIG)$/.test(k) && !/^(CI_|GITHUB_)/.test(k)));
+// Nor the person's own git settings (a signing key, an allowed-signers list).
+ENV.GIT_CONFIG_GLOBAL = '/dev/null';
 const git = (cwd, ...a) => execFileSync('git', a, { cwd, stdio: 'pipe', env: ENV }).toString().trim();
 const fm = (fields) => ['---', ...Object.entries(fields).map(([k, v]) => `${k}: ${v}`), '---', ''].join('\n');
 
@@ -92,7 +94,7 @@ test('yad run checks: every gate runs with the Product\'s default branch where C
     const r = yad(backend, ['run', 'checks', '--no-build']);
     // The only failure is the unsigned test commits: signatures are checked with git here.
     assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /the Product's main \([0-9a-f]{12}\) is written to \.yad\/product for this run, as CI checks it out, and removed after/);
+    assert.match(r.out, /the Product's main \([0-9a-f]{12}\) is written to \.yad\/product, as CI checks it out, and removed after these gates/);
     assert.match(r.out, /PASS \[spec-link\]: \w+ EP-demo-S01-T01 -> specs\/EP-demo-S01\/link\.md/);
     assert.match(r.out, /PASS \[epic-open\]: \w+ EP-demo-S01-T01 -> EP-demo \(epic is open/);
     assert.match(r.out, /PASS \[lineage-check\]: \w+ EP-demo-S01-T01 -> EP-demo \(genesis feature epic\)/);
@@ -102,7 +104,7 @@ test('yad run checks: every gate runs with the Product\'s default branch where C
     assert.match(r.out, /skipped: install-deps — skipped with --no-build/);
     assert.match(r.out, /FAIL \[verified-commits\]: \w+ is not signed/);
     assert.match(r.out, /the platform's Verified badge .* is judged in CI after the push/);
-    assert.match(r.out, /✗ verified-commits/);
+    assert.match(r.out, /1 gate failed: verified-commits/);
     assert.ok(!fs.existsSync(path.join(backend, '.yad')), 'the Product copy is removed after the run');
     assert.equal(git(backend, 'status', '--porcelain'), '', 'nothing is left in the work tree');
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
@@ -117,6 +119,8 @@ test('yad run checks: the Product is read from its default branch, not from loca
     assert.equal(r.code, 1, r.out);
     assert.match(r.out, /FAIL \[epic-open\]: \w+ EP-demo-S01-T01 targets SEALED epic EP-demo/);
     assert.match(git(product, 'status', '--porcelain'), /EP-demo-S01\.md/, 'the Product clone is left exactly as it was');
+    assert.equal(git(product, 'rev-parse', '--abbrev-ref', 'HEAD'), 'main');
+    assert.equal(git(product, 'diff', '--cached', '--name-only'), '', 'its index is untouched');
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 
@@ -157,7 +161,7 @@ test('yad run checks: a gate that differs from the shipped one is named; no chec
   try {
     fs.appendFileSync(path.join(backend, 'checks/spec-link.sh'), '\n# a local edit\n');
     let r = yad(backend, ['run', 'checks', '--no-build']);
-    assert.match(r.out, /checks\/spec-link\.sh differs from the gate this yadflow ships — CI runs the committed copy; `yad update` brings it to this version/);
+    assert.match(r.out, /checks\/spec-link\.sh is not the gate this yadflow ships — CI runs the committed copy; if it is an older one, `yad update` replaces it/);
     fs.rmSync(path.join(backend, 'checks'), { recursive: true, force: true });
     r = yad(backend, ['run', 'checks']);
     assert.equal(r.code, 1, r.out);
@@ -179,7 +183,7 @@ test('yad run checks: commits signed with a key git can check pass verified-comm
     const r = yad(backend, ['run', 'checks', '--no-build']);
     assert.match(r.out, /PASS \[verified-commits\]: \w+ is signed/);
     assert.equal(r.code, 0, r.out);
-    assert.match(r.out, /passed, \d+ skipped — push when ready/);
+    assert.match(r.out, /passed, \d+ skipped \(a skipped gate is not a pass\) — push when ready/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 
@@ -187,11 +191,13 @@ test('yad run checks: install-deps and build/test/lint run by default', () => {
   const { W, backend } = workspace();
   try {
     commitAll(backend, 'chore: scripts\n\nTask: EP-demo-S01-T01', {
-      'package.json': JSON.stringify({ name: 'b', version: '0.0.0', scripts: { lint: 'node -e ""', build: 'node -e ""', test: 'node -e "process.exit(1)"' } }),
+      // The build job never has the Product checked out in CI, so the copy must not be there yet.
+      'package.json': JSON.stringify({ name: 'b', version: '0.0.0', scripts: { lint: 'node -e "process.exit(require(\'fs\').existsSync(\'.yad/product\') ? 1 : 0)"', build: 'node -e ""', test: 'node -e "process.exit(1)"' } }),
       'package-lock.json': JSON.stringify({ name: 'b', version: '0.0.0', lockfileVersion: 3, requires: true, packages: { '': { name: 'b', version: '0.0.0' } } }),
     });
     const r = yad(backend, ['run', 'checks', '--title', 'feat: add thing']);
     assert.match(r.out, /✓ install-deps/);
+    assert.doesNotMatch(r.out, /npm run lint' failed/, 'lint did not see a Product copy');
     assert.match(r.out, /FAIL \[build\/test\/lint\]: '.*npm run test' failed/);
     assert.equal(r.code, 1, r.out);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
@@ -260,5 +266,119 @@ test('yad run checks: --base picks the base, and --no-fetch reads the last fetch
     const bad = yad(backend, ['run', 'checks', '--base', 'nope']);
     assert.equal(bad.code, 1, bad.out);
     assert.match(bad.out, /base 'nope' is not a commit here/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad run checks: a path CI refuses fails here too, and nothing outside the repo is written', () => {
+  const { W, backend } = workspace();
+  try {
+    // .yad is a symlink to a folder outside the repo.
+    fs.mkdirSync(path.join(W, 'shared'));
+    fs.symlinkSync(path.join(W, 'shared'), path.join(backend, '.yad'));
+    let r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /FAIL \[product-checkout\]: '\.yad' is a symlink — the Product is not written through it/);
+    assert.deepEqual(fs.readdirSync(path.join(W, 'shared')), [], 'nothing written through the link');
+    fs.rmSync(path.join(backend, '.yad'));
+    // A default_branch that git would read as an option.
+    git(backend, 'checkout', '-q', 'main');
+    commitAll(backend, 'chore: odd record', { '.sdlc/product-link.json': JSON.stringify({ git_url: 'x', path: '.yad/product', default_branch: `--upload-pack=touch ${path.join(W, 'PWNED')};git-upload-pack` }) });
+    git(backend, 'push', '-q', 'origin', 'main');
+    git(backend, 'checkout', '-q', 'feature');
+    r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.match(r.out, /FAIL \[product-checkout\]: \.sdlc\/product-link\.json on origin\/main names a default_branch git cannot use as a branch name/);
+    assert.ok(!fs.existsSync(path.join(W, 'PWNED')), 'the value never reaches git as an option');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad run checks: a folder already there is read as it is and kept; a copy an earlier run left is replaced', () => {
+  const { W, backend } = workspace();
+  try {
+    write(backend, { '.yad/notes.txt': 'mine\n' });
+    let r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.ok(fs.existsSync(path.join(backend, '.yad/notes.txt')), 'a .yad/ of the user\'s own is kept');
+    assert.ok(!fs.existsSync(path.join(backend, '.yad/product')), 'only the copy is removed');
+    write(backend, { '.yad/product/epics/x.md': 'hand-made\n' });
+    r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.match(r.out, /\.yad\/product is already there, so it is read as it is — it may not be the Product's main/);
+    assert.ok(fs.existsSync(path.join(backend, '.yad/product/epics/x.md')), 'a folder the run did not write is left in place');
+    fs.rmSync(path.join(backend, '.yad/product'), { recursive: true });
+    write(backend, { '.yad/product/.yad-run-checks': 'left\n', '.yad/product/stale.md': 'old\n' });
+    r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.match(r.out, /is written to \.yad\/product/);
+    assert.ok(!fs.existsSync(path.join(backend, '.yad/product')), 'the leftover copy is replaced, then removed');
+    assert.ok(fs.existsSync(path.join(backend, '.yad/notes.txt')));
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad run checks: an SSH signature git has no allowed-signers list for is "cannot check here", not "not signed"', { skip: spawnSync('ssh-keygen', ['-?']).error && 'needs ssh-keygen' }, () => {
+  const { W, backend } = workspace();
+  try {
+    const key = path.join(W, 'key');
+    execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key], { stdio: 'pipe' });
+    for (const [k, v] of [['gpg.format', 'ssh'], ['user.signingkey', key]]) git(backend, 'config', k, v);
+    git(backend, 'commit', '-q', '--amend', '--no-edit', '-S');
+    const r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.match(r.out, /note \[verified-commits\]: \w+ is signed, but this machine cannot check the key/);
+    assert.doesNotMatch(r.out, /is not signed/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad run checks: Ctrl-C stops the run even when the gate catches it, and the copy is gone', { skip: process.platform === 'win32' && 'process groups' }, async () => {
+  const { W, backend } = workspace();
+  try {
+    commitAll(backend, 'chore: scripts\n\nTask: EP-demo-S01-T01', {
+      'package.json': JSON.stringify({ name: 'b', version: '0.0.0', scripts: { lint: 'node -e "process.on(\'SIGINT\',()=>process.exit(130));process.on(\'SIGTERM\',()=>process.exit(143));setTimeout(()=>{},30000)"', build: 'node -e ""', test: 'node -e ""' } }),
+      'package-lock.json': JSON.stringify({ name: 'b', version: '0.0.0', lockfileVersion: 3, requires: true, packages: { '': { name: 'b', version: '0.0.0' } } }),
+    });
+    for (const sig of ['SIGINT', 'SIGTERM']) {
+      const child = (await import('node:child_process')).spawn(process.execPath, [YAD, 'run', 'checks', '--title', 'feat: x'], { cwd: backend, env: { ...ENV, PWD: backend, YAD_NO_REPORT: '1' }, detached: true });
+      let out = '';
+      child.stdout.on('data', (d) => { out += d; });
+      child.stderr.on('data', (d) => { out += d; });
+      const started = Date.now();
+      while (!/build\/test\/lint\]? lint…|\[build\/test\/lint\] lint/.test(out) && Date.now() - started < 20000) await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 500));
+      // Ctrl-C reaches the whole group; a plain kill reaches yad alone.
+      if (sig === 'SIGINT') process.kill(-child.pid, sig); else process.kill(child.pid, sig);
+      const code = await new Promise((r) => child.on('close', r));
+      assert.equal(code, 130, `${sig}: ${out}`);
+      assert.match(out, /stopped \(SIG(INT|TERM)\) — nothing after that gate ran/, out);
+      assert.doesNotMatch(out, /\ncontract-check\n/, `${sig}: no later gate ran`);
+      assert.ok(Date.now() - started < 25000, `${sig}: it stopped promptly`);
+    }
+    assert.ok(!fs.existsSync(path.join(backend, '.yad')));
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad run checks: member-check is left to CI when a member file changes; a missing --body file is refused', () => {
+  const { W, product } = workspace();
+  try {
+    fs.mkdirSync(path.join(product, 'checks'), { recursive: true });
+    fs.copyFileSync(path.join(ROOT, 'skills/yad-checks/templates/checks/member-check.mjs'), path.join(product, 'checks/member-check.mjs'));
+    commitAll(product, 'chore: wire the gate', {});
+    git(product, 'push', '-q', 'origin', 'main');
+    git(product, 'checkout', '-q', '-b', 'join');
+    commitAll(product, 'chore: join', { '.sdlc/members/github-alice.json': '{"accounts":[]}\n' });
+    let r = yad(product, ['run', 'checks']);
+    assert.match(r.out, /skipped: member-check — a member file changes, and the gate needs the PR's author, which only CI has/);
+    r = yad(product, ['run', 'checks', '--body', 'nope.md']);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /--body file not found: nope\.md/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad run checks: the base follows the registry like yad open-pr, and GitLab warns at the 2700-character cut', () => {
+  const { W, product, backend } = workspace();
+  try {
+    git(backend, 'checkout', '-q', '-b', 'develop', 'main');
+    git(backend, 'push', '-q', 'origin', 'develop');
+    git(backend, 'checkout', '-q', 'feature');
+    write(product, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'backend', path: '../backend', default_branch: 'develop', platform: 'gitlab' }] }) });
+    const body = path.join(W, 'body.md');
+    fs.writeFileSync(body, `## Summary\n${'x'.repeat(2800)}\n`);
+    const r = yad(backend, ['run', 'checks', '--no-build', '--body', body]);
+    assert.match(r.out, /base origin\/develop/);
+    assert.match(r.out, /the description is \d+ characters; GitLab hands CI only the first 2700/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });

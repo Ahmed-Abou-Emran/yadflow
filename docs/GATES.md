@@ -12,10 +12,10 @@ are built and why each rule exists, see the skill's own reference,
 
 ## Contents
 
-- [Run the gates on your machine](#run-the-gates-on-your-machine)
 - [Words used on this page](#words-used-on-this-page)
 - [How to read a gate's output](#how-to-read-a-gates-output)
 - [Which gates run where](#which-gates-run-where)
+- [Run the gates on your machine](#run-the-gates-on-your-machine)
 - [Messages many gates share](#messages-many-gates-share)
 - Gates on code repos: [spec-link](#spec-link) · [contract-check](#contract-check) ·
   [build/test/lint](#buildtestlint) · [lineage-check](#lineage-check) · [epic-open](#epic-open) ·
@@ -25,30 +25,6 @@ are built and why each rule exists, see the skill's own reference,
 - Gates on the Product: [ledger-guard](#ledger-guard) · [member-check](#member-check)
 - Helper steps: [product-checkout](#product-checkout) · [install-deps](#install-deps)
 - [Commit trailers the gates read](#commit-trailers-the-gates-read)
-
-## Run the gates on your machine
-
-`yad run checks` runs every gate on this page on your machine, before you push, so a failure shows up
-without waiting for CI. Run it inside the repo whose change you want to check:
-
-```sh
-yad run checks --body pr-description.md
-```
-
-- It runs this repo's own `checks/` scripts, as CI does, against `origin/<default branch>`.
-- The Product-reading gates read the Product's **default branch**, as CI does: `yad` writes it from
-  your Product clone to where CI would check it out, and removes it after. Your unmerged Product edits
-  are not seen.
-- Every gate runs, including the package install and build/test/lint (`--no-build` skips those two),
-  then a summary. The exit code is 1 when any gate fails.
-- Give the pull request text with `--title "<title>"` and `--body <file>`. A branch of one commit uses
-  its subject as the title. On GitLab it warns when the description is 2700 characters or longer —
-  GitLab cuts the text CI gets there (see [pr-template](#pr-template)).
-- Three things are judged only in CI, and the output says so: the platform's **Verified** badge (here,
-  git checks each commit's signature), `member-check` when a member file changes (it needs the pull
-  request's author), and anything that depends on CI secrets.
-
-See [`docs/CLI.md`](CLI.md#commands) for every flag.
 
 ## Words used on this page
 
@@ -133,6 +109,35 @@ two gates over the pushed commits: [verified-commits](#verified-commits) and
 **When the PR text is edited** (title or description only), GitHub runs only `pr-title` and
 `pr-template` again. Every other job skips that run, because no commit changed. On GitLab, editing a
 merge request's text does not start a pipeline.
+
+## Run the gates on your machine
+
+`yad run checks` runs this repo's installed gates on your machine, before you push, so a failure shows
+up without waiting for CI. Run it inside the repo whose change you want to check:
+
+```sh
+yad run checks --body pr-description.md
+```
+
+- It runs this repo's own `checks/` scripts, as CI does, against the branch the pull request will
+  target (`origin/<default branch>`, fetched first).
+- Two steps are replaced: [product-checkout](#product-checkout) by writing the Product's **default
+  branch** from your Product clone to where CI would check it out — only while contract-check,
+  lineage-check, epic-open and reconcile-debt run, then removed — and
+  [verified-commits](#verified-commits) by git's own signature check. Your unmerged Product edits are
+  not seen, as CI does not see them.
+- Every gate runs, including the package install and build/test/lint (`--no-build` skips those two),
+  then a summary. The exit code is 1 when a gate fails.
+- Give the pull request text with `--title "<title>"` and `--body <file>`. A branch of one commit uses
+  its subject as the title. Without them, pr-title and pr-template are skipped — a skipped gate is not a
+  pass. On GitLab it warns when the description is 2700 characters or longer — GitLab cuts the text CI
+  gets there (see [pr-template](#pr-template)).
+- What is judged only in CI, and the output says so: the platform's **Verified** badge, and
+  `member-check` when a member file changes (it needs the pull request's author). The build gates use
+  this machine's Node and tools, and CI on GitHub tests the merge of the branch into the base: rebase
+  onto the base for the same answer.
+
+See [`docs/CLI.md`](CLI.md#commands) for every flag.
 
 ## Messages many gates share
 

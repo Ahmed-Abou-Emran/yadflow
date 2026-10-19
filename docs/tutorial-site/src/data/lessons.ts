@@ -550,8 +550,9 @@ export const MODULES: Module[] = [
             '**risk-map** — warnings only, never a failure: a directory this change adds with no level in `.sdlc/risk-map`, a line whose directory is gone, or a level still `guessed`. It also prints the approver count: a change touching a directory the base branch\'s map marks `high` asks for one more, from someone who committed there in the last 30 days.',
           ] },
           { kind: 'callout', tone: 'info', text: 'These exist already in Yadflow — wiring them is a one-time setup step. This is the "preventing bad AI code from reaching the PR" wall.' },
+          { kind: 'p', text: 'Before you push, `yad run checks` runs the same gates on your machine, the way CI will: the repo\'s own gates, with the Product\'s default branch where CI reads it. Pass the PR description with --body <file>.' },
         ],
-        commands: [{ cmd: 'yad-checks repo:<repo> action: run' }],
+        commands: [{ cmd: 'yad-checks repo:<repo> action: run' }, { cmd: 'yad run checks --body pr-description.md' }],
         quiz: [
           {
             q: 'What happens if a diff changes the locked contract surface without declaring it?',
