@@ -141,17 +141,19 @@ if [ "${GITLAB_CI:-}" = true ] && { [ "${CI_MERGE_REQUEST_DESCRIPTION_IS_TRUNCAT
       else FULL_WHY="the merge request API answered ${_code:+HTTP }${_code:-nothing} to ${_with}"; fi
       # What would help, by who asked and what GitLab answered (reviews 2, 3). Only a refusal is a token's
       # fault; a timeout, a 5xx or an odd answer is said as it is, with no advice to change a token.
-      if [ -n "$FORK" ]; then
-        ADVICE="this pipeline runs in a fork, which cannot read the target project's merge request"
-      elif [ -n "$_tok" ]; then
+      # A fork's own variable is the fork's to fix, so the token advice comes first; the fork note is for
+      # a refused job token only (review 4: a timeout or a 5xx in a fork is not a question of access).
+      if [ -n "$_tok" ]; then
         case "$_code" in
-          401) ADVICE="the ${_with} variable was refused: it has expired or been revoked — renew it" ;;
+          401) ADVICE="the ${_with} variable was not accepted (expired, revoked, or not a valid token here) — renew or replace it" ;;
           403) ADVICE="the ${_with} variable was refused: give it the read_api scope" ;;
           404) ADVICE="the ${_with} variable's user cannot see this project — use a token of a member with Reporter access or more" ;;
         esac
       else
         case "$_code" in
-          401|403|404) ADVICE="set a GITLAB_TOKEN CI/CD variable (read_api, masked, not protected) so the gate reads the whole description" ;;
+          401|403|404)
+            if [ -n "$FORK" ]; then ADVICE="this pipeline runs in a fork, which cannot read the target project's merge request"
+            else ADVICE="set a GITLAB_TOKEN CI/CD variable (read_api, masked, not protected) so the gate reads the whole description"; fi ;;
         esac
       fi
     fi

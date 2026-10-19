@@ -4497,7 +4497,7 @@ test('pr-template gate: #343 when the full description cannot be read, the cut b
   const cases = [
     [{ code: '401' }, {}, /answered HTTP 401 to the job token/, /set a GITLAB_TOKEN CI\/CD variable/],
     [{ code: '404' }, {}, /answered HTTP 404 to the job token/, /set a GITLAB_TOKEN CI\/CD variable/],
-    [{ code: '401' }, { GITLAB_TOKEN: 't' }, /answered HTTP 401 to GITLAB_TOKEN/, /the GITLAB_TOKEN variable was refused: it has expired or been revoked/],
+    [{ code: '401' }, { GITLAB_TOKEN: 't' }, /answered HTTP 401 to GITLAB_TOKEN/, /the GITLAB_TOKEN variable was not accepted \(expired, revoked, or not a valid token here\)/],
     [{ code: '403' }, { SDLC_API_TOKEN: 't' }, /answered HTTP 403 to SDLC_API_TOKEN/, /the SDLC_API_TOKEN variable was refused: give it the read_api scope/],
     [{ code: '404' }, { GITLAB_TOKEN: 't' }, /answered HTTP 404 to GITLAB_TOKEN/, /user cannot see this project/],
     [{ code: '502' }, { GITLAB_TOKEN: 't' }, /answered HTTP 502 to GITLAB_TOKEN/, null],
@@ -4505,7 +4505,10 @@ test('pr-template gate: #343 when the full description cannot be read, the cut b
     [{ json: { iid: 42 } }, {}, /answered the job token without a description yad could read/, null],
     [{}, { CI_MERGE_REQUEST_IID: '' }, /this is not a merge request pipeline/, null],
     [{ code: '404' }, { CI_PROJECT_ID: '9' }, /answered HTTP 404 to the job token/, /this pipeline runs in a fork, which cannot read the target project's merge request/],
-    [{ code: 'fail' }, { CI_PROJECT_ID: '9' }, /answered nothing/, /runs in a fork/],
+    // A fork: the note only for a refusal; a timeout is said as it is (review 4); its own variable gets
+    // the token advice.
+    [{ code: 'fail' }, { CI_PROJECT_ID: '9' }, /answered nothing to the job token/, null],
+    [{ code: '401' }, { CI_PROJECT_ID: '9', GITLAB_TOKEN: 't' }, /answered HTTP 401 to GITLAB_TOKEN/, /renew or replace it/],
   ];
   for (const [answer, extra, why, advice] of cases) {
     const rig = mrApiRig(T, answer);
@@ -4516,6 +4519,7 @@ test('pr-template gate: #343 when the full description cannot be read, the cut b
     assert.match(r.out, why, label);
     if (advice) assert.match(r.out, advice, label);
     else assert.doesNotMatch(r.out, /could not be read instead: [^\n]* — /, `${label}\n(no advice expected)`);
+    if (!advice || !/runs in a fork/.test(advice.source)) assert.doesNotMatch(r.out, /runs in a fork/, label);
     if (!advice || !/set a GITLAB_TOKEN/.test(advice.source)) assert.doesNotMatch(r.out, /set a GITLAB_TOKEN/i, label);
     assert.match(r.out, /move the required sections above the cutoff/, label);
     rig.done();
