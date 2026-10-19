@@ -166,7 +166,8 @@ change to `product-link.json` or to `product-repo` counts only after it merges, 
 its own pull request. The failure messages below name the file that was read, and say which case
 applies: "in this pull request" on a first spec, or "merge that change on its own first" otherwise.
 When the record was read, a message starts with `path '<path>' in .sdlc/product-link.json` instead of
-`product-repo`.
+`product-repo`. When the value read reaches nothing and the gate falls back to a Product this repo
+keeps, the message starts with what was read, then `reaches nothing, so the Product this repo keeps`.
 
 **When the Product cannot be reached at all** (CI did not check it out), lineage-check, epic-open and
 reconcile-debt print `PASS [gate]: … deferred`, and contract-check skips the lock comparison with a
