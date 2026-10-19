@@ -465,3 +465,35 @@ test('yad run checks: a folder already there is read as it is and kept; a run re
     assert.ok(!fs.existsSync(path.join(backend, '.yad/product')), 'the copy is gone');
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('removeParents and removeCopy: only the folders a run made, and only while each is empty', async () => {
+  const { removeCopy, removeParents } = await import('../cli/run-checks.mjs');
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'yad-rm-'));
+  try {
+    const top = path.join(T, 'a', 'b');
+    const dest = path.join(top, 'c', 'd');
+    fs.mkdirSync(dest, { recursive: true });
+    fs.writeFileSync(path.join(top, 'stray.txt'), 'kept\n');
+    fs.writeFileSync(path.join(dest, 'x.md'), 'copy\n');
+    removeCopy(dest, top);
+    assert.ok(!fs.existsSync(dest), 'the copy goes');
+    assert.ok(!fs.existsSync(path.join(top, 'c')), 'an empty folder the run made goes');
+    assert.ok(fs.existsSync(path.join(top, 'stray.txt')), 'a folder with a file in it stays');
+    // A `created` that is not above dest removes nothing.
+    fs.mkdirSync(path.join(T, 'e', 'f'), { recursive: true });
+    removeParents(path.join(T, 'e', 'f', 'g'), path.join(T, 'other'));
+    assert.ok(fs.existsSync(path.join(T, 'e', 'f')));
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('yad run checks: a folder read as it was, removed while the Product gates read it, is said to be gone', () => {
+  const { W, backend } = workspace();
+  try {
+    write(backend, { '.yad/product/epics/EP-demo/epic.md': 'someone else\'s copy\n' });
+    // Another run ending: its copy goes while this run's Product gates run.
+    fs.writeFileSync(path.join(backend, 'checks/lineage-check.sh'), '#!/usr/bin/env bash\nrm -rf .yad/product\necho "PASS [lineage-check]: x"\n');
+    const r = yad(backend, ['run', 'checks', '--no-build', '--json']);
+    assert.match(r.out, /\.yad\/product was removed while the Product gates read it \(another run ended\) — their answers may be wrong; run again/);
+    assert.equal(JSON.parse(r.stdout).product.vanished, true);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});

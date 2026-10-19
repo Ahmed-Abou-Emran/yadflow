@@ -103,15 +103,15 @@ function readRecord(repoRoot, base) {
 
 // Remove a copy this run wrote: `dest` itself (it did not exist before), then each folder this run made on
 // the way to it, from the inside out, only while it is empty — a file someone put there meanwhile stays.
-function removeCopy(dest, created) {
+export function removeCopy(dest, created) {
   fs.rmSync(dest, { recursive: true, force: true });
   removeParents(dest, created);
 }
 // The folders this run made on the way to `dest` (`created` is the top one), only while each is empty.
 // Bounded by `created`, which is `dest` or an ancestor of it inside the repo (built with path.join, so the
 // same separators as path.dirname on every platform).
-function removeParents(dest, created) {
-  if (!created || created === dest) return;
+export function removeParents(dest, created) {
+  if (!created || created === dest || !dest.startsWith(created + path.sep)) return;
   for (let d = path.dirname(dest); d.length >= created.length; d = path.dirname(d)) {
     try { fs.rmdirSync(d); } catch { break; }
     if (d === created) break;
@@ -124,7 +124,7 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
   // A run removes only what it wrote itself. A folder already there — the user's own, another run's in use,
   // or one a killed run left behind — is read as it is and never removed (CI's product-checkout leaves an
   // existing folder too).
-  const alreadyThere = { placed: false, note: `${rel} is already there, so it is read as it is — it may not be the Product's default branch (another run may be using it, or a run that was killed left it): remove it to read the default branch` };
+  const alreadyThere = { placed: false, existing: dest, note: `${rel} is already there, so it is read as it is — it may not be the Product's default branch (another run may be using it, or a run that was killed left it): remove it to read the default branch` };
   if (exists(dest)) return alreadyThere;
   if (!productRoot) {
     return { placed: false, note: `no Product clone found from this repo (the workspace file names it), so ${rel} is not written — the Product-reading gates may read what product-repo in a link.md reaches on this machine, including unmerged edits, where CI would read nothing` };
@@ -144,21 +144,22 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
   if (!sha.ok || !sha.stdout) {
     return { placed: false, note: [...notes, `the Product clone has no origin/${branch}, so ${rel} is not written — the Product-reading gates may read what product-repo in a link.md reaches on this machine, where CI would read the default branch`].join('; ') };
   }
-  // The top folder this run creates (`.yad` for `.yad/product`), so the clean-up removes only what it made.
-  const parts = rel.split('/');
-  let created = null;
-  for (let i = 1; i <= parts.length; i++) {
-    const p = path.join(repoRoot, ...parts.slice(0, i));
-    if (!exists(p)) { created = p; break; }
-  }
   // Making the folder itself is the claim: one mkdir, which fails when another run made it first, between
-  // the check above and here (the fetch takes seconds).
+  // the check above and here (the fetch takes seconds). `created` is the top folder this run made (`.yad`
+  // for `.yad/product`) — what mkdir reports, so the clean-up removes only what this run made.
+  let top;
+  let created;
   try {
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    top = fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.mkdirSync(dest);
+    created = top || dest;
   } catch (e) {
-    removeParents(dest, created);
-    if (e.code === 'EEXIST') return alreadyThere;
+    removeParents(dest, top);
+    if (e.code === 'EEXIST') {
+      let isDir = false;
+      try { isDir = fs.lstatSync(dest).isDirectory(); } catch { /* gone again */ }
+      return isDir ? alreadyThere : { placed: false, note: `a file is where the Product's folder goes (${rel}) — move it, or point path in .sdlc/product-link.json elsewhere` };
+    }
     return { placed: false, note: [...notes, `could not make ${rel} (${e.message}) — the Product-reading gates may read what product-repo in a link.md reaches on this machine`].join('; ') };
   }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yad-run-checks-'));
@@ -332,6 +333,12 @@ export async function runChecks(dir, opts = {}) {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'yad-run-checks-'));
   let placed = null;
   const live = { child: null, stopped: false };
+  // A folder this run read as it was (another run's copy, say) may be removed by that run meanwhile.
+  const checkVanished = () => {
+    if (!placed?.existing || placed.vanished !== undefined) return;
+    placed.vanished = !exists(placed.existing);
+    if (placed.vanished) warn(`${record?.rel || 'the Product copy'} was removed while the Product gates read it (another run ended) — their answers may be wrong; run again`);
+  };
   const removeProduct = () => {
     if (!placed?.placed) return;
     removeCopy(placed.dest, placed.created);
@@ -421,6 +428,7 @@ export async function runChecks(dir, opts = {}) {
       if (g.optional && !exists(scriptPath)) continue;
       // The copy exists only while the Product-reading gates run, whichever of them is installed.
       if (placed?.placed && !PRODUCT_GATES.has(g.name)) removeProduct();
+      if (placed?.existing && !PRODUCT_GATES.has(g.name)) checkVanished();
       log(`\n${c.bold(g.name)}`);
       const r = { name: g.name, status: 'pass', reason: null, output: '' };
       results.push(r);
@@ -490,6 +498,7 @@ export async function runChecks(dir, opts = {}) {
     }
     // A signal that came during the last synchronous step is handled before the listeners go.
     await new Promise((r) => setImmediate(r));
+    checkVanished();
   } finally {
     if (escalate) clearTimeout(escalate);
     removeProduct();
@@ -502,7 +511,7 @@ export async function runChecks(dir, opts = {}) {
   const passed = results.filter((r) => r.status === 'pass');
   const json = () => ({
     repo: path.basename(repoRoot), kind: isProduct ? 'product' : 'code', base, platform,
-    product: placed ? { placed: !!placed.dest, path: record?.rel || null, note: placed.note || null } : null,
+    product: placed ? { placed: !!placed.dest, path: record?.rel || null, note: placed.note || null, ...(placed.vanished ? { vanished: true } : {}) } : null,
     gates: results.map(({ name, status, reason, exit, differs, output }) => ({
       name, status, ...(reason ? { reason } : {}), ...(exit !== undefined ? { exit } : {}), ...(differs ? { differs: true } : {}),
       // The FAIL lines, so an agent reading --json sees what to change without the whole log.
