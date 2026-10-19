@@ -432,10 +432,13 @@ test('yad run checks: a product-checkout FAIL skips the four gates; uncommitted 
   try {
     write(backend, { 'src/new.js': 'not added\n' });
     git(backend, 'mv', 'src/thing.js', 'src/moved.js');
+    // A rename in the work tree (intent to add) is one entry too: ` R new\0old\0`.
+    fs.renameSync(path.join(backend, '.gitignore'), path.join(backend, 'ignore.txt'));
+    git(backend, 'add', '-N', 'ignore.txt');
     fs.mkdirSync(path.join(W, 'shared'));
     fs.symlinkSync(path.join(W, 'shared'), path.join(backend, '.yad'));
     const r = yad(backend, ['run', 'checks', '--no-build']);
-    assert.match(r.out, /uncommitted changes are built and tested here but are not in the push \(src\/moved\.js, src\/new\.js\)/);
+    assert.match(r.out, /uncommitted changes are built and tested here but are not in the push \((ignore\.txt, src\/moved\.js, src\/new\.js|src\/moved\.js, ignore\.txt, src\/new\.js)\)/);
     assert.match(r.out, /skipped: contract-check — product-checkout failed, so it was not run \(as in CI\)/);
     assert.match(r.out, /✗ product-checkout — the Product could not be put where CI puts it/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }

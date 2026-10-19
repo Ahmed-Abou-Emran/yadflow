@@ -103,10 +103,16 @@ function readRecord(repoRoot, base) {
 
 // Remove a copy this run wrote: `dest` itself (it did not exist before), then each folder this run made on
 // the way to it, from the inside out, only while it is empty — a file someone put there meanwhile stays.
-function removeCopy(repoRoot, dest, created) {
+function removeCopy(dest, created) {
   fs.rmSync(dest, { recursive: true, force: true });
+  removeParents(dest, created);
+}
+// The folders this run made on the way to `dest` (`created` is the top one), only while each is empty.
+// Bounded by `created`, which is `dest` or an ancestor of it inside the repo (built with path.join, so the
+// same separators as path.dirname on every platform).
+function removeParents(dest, created) {
   if (!created || created === dest) return;
-  for (let d = path.dirname(dest); d.length >= created.length && d.startsWith(repoRoot); d = path.dirname(d)) {
+  for (let d = path.dirname(dest); d.length >= created.length; d = path.dirname(d)) {
     try { fs.rmdirSync(d); } catch { break; }
     if (d === created) break;
   }
@@ -118,9 +124,8 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
   // A run removes only what it wrote itself. A folder already there — the user's own, another run's in use,
   // or one a killed run left behind — is read as it is and never removed (CI's product-checkout leaves an
   // existing folder too).
-  if (exists(dest)) {
-    return { placed: false, note: `${rel} is already there, so it is read as it is — it may not be the Product's default branch (another run may be using it, or a run that was killed left it): remove it to read the default branch` };
-  }
+  const alreadyThere = { placed: false, note: `${rel} is already there, so it is read as it is — it may not be the Product's default branch (another run may be using it, or a run that was killed left it): remove it to read the default branch` };
+  if (exists(dest)) return alreadyThere;
   if (!productRoot) {
     return { placed: false, note: `no Product clone found from this repo (the workspace file names it), so ${rel} is not written — the Product-reading gates may read what product-repo in a link.md reaches on this machine, including unmerged edits, where CI would read nothing` };
   }
@@ -146,10 +151,19 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
     const p = path.join(repoRoot, ...parts.slice(0, i));
     if (!exists(p)) { created = p; break; }
   }
+  // Making the folder itself is the claim: one mkdir, which fails when another run made it first, between
+  // the check above and here (the fetch takes seconds).
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.mkdirSync(dest);
+  } catch (e) {
+    removeParents(dest, created);
+    if (e.code === 'EEXIST') return alreadyThere;
+    return { placed: false, note: [...notes, `could not make ${rel} (${e.message}) — the Product-reading gates may read what product-repo in a link.md reaches on this machine`].join('; ') };
+  }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yad-run-checks-'));
   const idx = path.join(tmp, 'index');
   try {
-    fs.mkdirSync(dest, { recursive: true });
     const env = { ...process.env, GIT_INDEX_FILE: idx };
     delete env.GIT_DIR; delete env.GIT_WORK_TREE;
     const read = spawnSync('git', ['read-tree', sha.stdout], { cwd: productRoot, env, encoding: 'utf8' });
@@ -158,7 +172,7 @@ function placeProduct(repoRoot, productRoot, { rel, branch: recorded, record }, 
       : read;
     if (out.status !== 0) throw new Error((out.stderr || '').trim().split('\n')[0] || 'git could not write it');
   } catch (e) {
-    removeCopy(repoRoot, dest, created);
+    removeCopy(dest, created);
     return { placed: false, note: [...notes, `could not write the Product's ${branch} to ${rel} (${e.message}) — the Product-reading gates may read what product-repo in a link.md reaches on this machine`].join('; ') };
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -282,7 +296,7 @@ export async function runChecks(dir, opts = {}) {
   if (!git(repoRoot, ['merge-base', '--is-ancestor', base, 'HEAD']).ok) {
     info(`this branch is not on top of ${base}: CI on GitHub tests the merge of the two, this run the branch tip — rebase onto ${base} for the same answer`);
   }
-  // Uncommitted work, but not a Product copy at the record's path (a leftover one is handled later).
+  // Uncommitted work, but not a Product copy at the record's path (one already there gets its own note when the Product gates run).
   let recRel = null;
   try { recRel = safeRecordPath(JSON.parse(git(repoRoot, ['show', `${base}:.sdlc/product-link.json`]).stdout)?.path); } catch { /* none */ }
   const st = spawnSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], { cwd: repoRoot, encoding: 'utf8' });
@@ -320,7 +334,7 @@ export async function runChecks(dir, opts = {}) {
   const live = { child: null, stopped: false };
   const removeProduct = () => {
     if (!placed?.placed) return;
-    removeCopy(repoRoot, placed.dest, placed.created);
+    removeCopy(placed.dest, placed.created);
     placed.placed = false;
   };
   // The gate runs in a session of its own, so a Ctrl-C reaches only yad, which passes it on. It ends the
