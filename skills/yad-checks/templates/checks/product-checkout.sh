@@ -216,7 +216,7 @@ if [ -n "$_api" ] && command -v curl >/dev/null 2>&1; then
   elif [ "$_code" = 403 ] && [ "$_kind" = gitlab ]; then
     # A clone-only token (read_repository) may not call GitLab's API at all: its expiry is then read by
     # `yad doctor`, from the Product's own list of access tokens.
-    echo "note [product-checkout]: ${_host} would not tell this token its own expiry date (HTTP 403 — a token with only read_repository cannot use the API); \`yad doctor\` warns about the Product's access tokens that expire soon."
+    echo "note [product-checkout]: ${_host} would not tell this token its own expiry date (HTTP 403 — a token with only read_repository cannot use the API); \`yad doctor\` warns about the Product's project access tokens that expire soon."
   else
     echo "note [product-checkout]: could not read YAD_PRODUCT_TOKEN's expiry date from ${_host} (${_code:+HTTP }${_code:-no answer}); going on with the clone."
   fi
@@ -225,7 +225,13 @@ fi
 # The token never goes on a command line or into a URL, so no process list or log line shows it; git
 # reads the header from its environment (GIT_CONFIG_COUNT, git 2.31+). GitHub is told to mask the
 # encoded form too — it only masks the secret as written.
-case "${GITLAB_CI:-}" in true) _user=oauth2 ;; *) _user=x-access-token ;; esac
+# The user name the host expects with a token: by the host's kind when the API choice above named one
+# (review 2), else by the CI this runs in.
+case "${_kind:-}" in
+  gitlab) _user=oauth2 ;;
+  github) _user=x-access-token ;;
+  *) case "${GITLAB_CI:-}" in true) _user=oauth2 ;; *) _user=x-access-token ;; esac ;;
+esac
 _auth="$(printf '%s:%s' "$_user" "$YAD_PRODUCT_TOKEN" | base64 | tr -d '\n')"
 [ "${GITHUB_ACTIONS:-}" != true ] || echo "::add-mask::${_auth}"
 if ! GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="Authorization: Basic ${_auth}" \

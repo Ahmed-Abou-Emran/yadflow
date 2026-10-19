@@ -701,14 +701,14 @@ never on a command line or in a URL; on GitHub the encoded form is masked too. A
 (`git@host:org/repo.git`) is cloned as the same repo over `https`.
 
 **The token's expiry (#345).** Before the clone, the script makes one call to the Product host's API with
-the token, handed to `curl` in a header file (`-H @file`), never on its command line, and only ever to the
-Product's own host. The API is chosen by that host first — `github.com` and `*.ghe.com` are GitHub, a host
+the token, handed to `curl` in a header file (`-H @file`), never on its command line, and only to the
+Product's own host — or, for GitHub's cloud, its API host (`api.github.com`, `api.<sub>.ghe.com`). The API is chosen by that host first — `github.com` and `*.ghe.com` are GitHub, a host
 with `gitlab` in its name is GitLab — and only for any other host by the CI it runs in. GitHub:
 `rate_limit`, whose `github-authentication-token-expiration` response header carries a personal access
 token's expiry. GitLab: `/api/v4/personal_access_tokens/self`, whose `expires_at` is the token's. A
 token with only `read_repository` — the least it needs to clone — may not call GitLab's API at all
-(HTTP 403); the note then points at `yad doctor`, which lists the Product's access tokens that expire
-soon. A token with no expiry, an app token or no `curl` gives a note too, never a failure — only the clone
+(HTTP 403); the note then points at `yad doctor`, which warns about the Product's **project** access
+tokens that expire soon (not group or personal ones). A token with no expiry, an app token or no `curl` gives a note too, never a failure — only the clone
 decides that. `yad doctor` checks where the token is SET (see
 `docs/CLI.md`); it never sees the token itself.
 

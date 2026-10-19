@@ -2551,7 +2551,7 @@ export function productTokenChecks(checks, root, { runner, env, today } = {}) {
     return repoRoot && isCheckout(root, repo) && gitHead(repoRoot) ? (run('git', ['remote', 'get-url', 'origin'], { cwd: repoRoot }).stdout || null) : null;
   };
   const listed = repos.map(({ repo, i }) => ({ repo, i, url: urlOf(repo), at: where(urlOf(repo)) }));
-  let gitlabSeen = false;
+  let checked = 0;
   const topOf = (dir) => {
     const r = run('git', ['rev-parse', '--show-toplevel'], { cwd: dir });
     if (!r.ok || !r.stdout) return null;
@@ -2566,11 +2566,16 @@ export function productTokenChecks(checks, root, { runner, env, today } = {}) {
     if (onDisk && rootTop && onDisk === rootTop) continue;
     if (!onDisk && at && product && at.host === product.host && at.repo === product.repo) continue;
     // A repo on disk with no product-link record has no checkout that reads the token (review 1): CI only
-    // speaks where the record is, and so does this.
-    if (onDisk && !exists(path.join(repoRoot, PRODUCT_LINK))) continue;
+    // speaks where the record is, and so does this. CI reads it from the default branch, so a record
+    // committed there counts though this clone sits on a branch without it (review 2) — as E120's check.
+    if (onDisk && !exists(path.join(repoRoot, PRODUCT_LINK))) {
+      const branch = typeof repo.default_branch === 'string' && repo.default_branch ? repo.default_branch : 'main';
+      const ref = run('git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { cwd: repoRoot }).ok ? `origin/${branch}` : 'HEAD';
+      if (!run('git', ['cat-file', '-e', `${ref}:${PRODUCT_LINK}`], { cwd: repoRoot }).ok) continue;
+    }
     const platform = repo.platform || detectPlatform(url || '') || null;
     if (platform !== 'github' && platform !== 'gitlab') continue;
-    if (platform === 'gitlab') gitlabSeen = true;
+    checked++;
     const others = (group) => listed
       .filter((o) => o.repo !== repo && o.at && at && o.at.host === at.host && o.at.repo.startsWith(`${group.toLowerCase()}/`))
       .map((o) => shown(o.repo.name));
@@ -2579,17 +2584,19 @@ export function productTokenChecks(checks, root, { runner, env, today } = {}) {
     check(checks, id, 'product-token', line.status, line.message, line.hint || '');
   }
   const productPlatform = productConfig.platform || detectPlatform(productConfig.git_url) || null;
-  if (gitlabSeen && productPlatform === 'gitlab') {
+  // Whatever platform the code repos are on (review 2): a GitHub repo can hold a GitLab Product's token.
+  if (checked && productPlatform === 'gitlab') {
     const r = readExpiringProductTokens({ gitUrl: productConfig.git_url }, { ...opts, ...(today ? { today } : {}) });
     if (!r.known) {
       check(checks, 'product-token-expiry', 'product-token', 'warn', `whether one of the Product's access tokens that can clone it expires soon is not known — ${r.why}`);
     } else {
       for (const [k, t] of r.soon.entries()) {
         const when = t.days < 0 ? `expired on ${t.expires}` : `expires on ${t.expires} (in ${t.days} day(s))`;
-        // One id per token, as the per-repo lines have (review 1); a name that may be an address is its place.
-        check(checks, hideAddresses(t.name) === t.name ? `product-token-expiry:${t.name}` : `product-token-expiry:#${k + 1}`, 'product-token', 'warn',
+        // One id per token (review 1): GitLab's own token id, since two tokens may share a name (a rotation
+        // often keeps it, review 2); its place in the list when GitLab gave none.
+        check(checks, Number.isInteger(t.id) ? `product-token-expiry:${t.id}` : `product-token-expiry:#${k + 1}`, 'product-token', 'warn',
           `the Product's access token ${shown(t.name)} (${t.scopes.map(shown).join(', ')}) ${when} — if it is the ${TOKEN_NAME} of a code repo, the Product-reading gates there will fail their checkout`,
-          'make a new token that can read the Product and set it as YAD_PRODUCT_TOKEN on each code repo that used the old one (yad cannot see which token a variable holds)');
+          `${t.days < 0 ? '' : 'make a new token that can read the Product and set it as YAD_PRODUCT_TOKEN on each code repo that used the old one (yad cannot see which token a variable holds); '}revoke the old one in the Product's Settings → Access tokens once it is replaced, which clears this line`);
       }
     }
   }

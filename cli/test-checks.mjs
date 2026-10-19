@@ -2472,6 +2472,21 @@ test('product-checkout: #345 GitLab reads expires_at with PRIVATE-TOKEN; no date
   assert.match(fs.readFileSync(path.join(rig.rig, 'argv.txt'), 'utf8'), /^https:\/\/api\.github\.com\/rate_limit$/m);
   assert.match(fs.readFileSync(path.join(rig.rig, 'sent-header.txt'), 'utf8'), /^Authorization: Bearer /m);
   rig.done();
+  // GitHub Enterprise Cloud: the API is api.<sub>.ghe.com. A host that names neither platform takes the
+  // CI's API, and a port stays on the API url (review 2).
+  rig = expiryRig({ host: 'acme.ghe.com', head: `github-authentication-token-expiration: ${inDays(90)} 00:00:00 UTC\r\n` });
+  runCheckout(rig.T, [rig.base], { ...rig.env, GITHUB_ACTIONS: 'true' });
+  assert.match(fs.readFileSync(path.join(rig.rig, 'argv.txt'), 'utf8'), /^https:\/\/api\.acme\.ghe\.com\/rate_limit$/m);
+  rig.done();
+  rig = expiryRig({ host: 'git.example.com:8443', body: `{"expires_at":"${inDays(90)}"}` });
+  r = runCheckout(rig.T, [rig.base], { ...rig.env, GITLAB_CI: 'true' });
+  assert.match(fs.readFileSync(path.join(rig.rig, 'argv.txt'), 'utf8'), /^https:\/\/git\.example\.com:8443\/api\/v4\/personal_access_tokens\/self$/m);
+  assert.match(r.out, /expires on/);
+  rig.done();
+  rig = expiryRig({ host: 'git.example.com' });
+  runCheckout(rig.T, [rig.base], { ...rig.env, GITHUB_ACTIONS: 'true' });
+  assert.match(fs.readFileSync(path.join(rig.rig, 'argv.txt'), 'utf8'), /^https:\/\/git\.example\.com\/api\/v3\/rate_limit$/m);
+  rig.done();
   // Outside CI, a host that names neither platform has no known API: no call at all.
   rig = expiryRig({ host: 'git.example.com' });
   r = runCheckout(rig.T, [rig.base], rig.env);

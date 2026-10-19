@@ -82,16 +82,14 @@ export function readTokenPlacement({ platform, gitUrl }, { runner = run, env = p
   // project under it. Reading a group's variables needs a maintainer or owner there.
   const parts = repo.split('/');
   const groups = [];
-  for (let i = parts.length - 1; i >= 1; i--) {
+  // A project in a user's own namespace (`someone/app`) has no groups. The project's own answer says whose
+  // namespace it is, and anyone who can read its variables can read it — `namespaces/<user>` answers 404
+  // to all but that user and an admin (review 2).
+  const proj = api(runner, 'glab', host, `projects/${enc(repo)}`);
+  const userNs = proj.ok && proj.body?.namespace?.kind === 'user';
+  for (let i = userNs ? 0 : parts.length - 1; i >= 1; i--) {
     const g = parts.slice(0, i).join('/');
     const gr = api(runner, 'glab', host, `groups/${enc(g)}/variables?per_page=${PAGE}`);
-    // A user's own namespace (`someone/app`) is not a group and has no group variables: GitLab answers 404
-    // for it (review 1). A group the login cannot see answers 404 too, so a 404 is read as "no group here"
-    // only when GitLab says the namespace is a user's.
-    if (!gr.ok && gr.status === 404) {
-      const ns = api(runner, 'glab', host, `namespaces/${enc(g)}`);
-      if (ns.ok && ns.body?.kind === 'user') continue;
-    }
     if (!gr.ok || !Array.isArray(gr.body)) {
       groups.push({ path: g, set: null, vars: [], why: gr.ok ? 'GitLab answered with something yad could not read' : whyFailed(gr, { platform: 'gitlab', host, what: `the CI/CD variables of the group ${shown(g)}`, plural: true }) });
       continue;
@@ -177,7 +175,7 @@ export function readExpiringProductTokens({ gitUrl }, { runner = run, env = proc
     const exp = typeof tok.expires_at === 'string' && /^\d{4}-\d{2}-\d{2}/.test(tok.expires_at) ? tok.expires_at.slice(0, 10) : null;
     if (!exp) continue;
     const days = Math.round(day(exp) - day(today));
-    if (days <= EXPIRY_WARN_DAYS) soon.push({ name: typeof tok.name === 'string' ? tok.name : `#${tok.id}`, expires: exp, days, scopes });
+    if (days <= EXPIRY_WARN_DAYS) soon.push({ id: Number.isInteger(tok.id) ? tok.id : null, name: typeof tok.name === 'string' ? tok.name : `#${tok.id}`, expires: exp, days, scopes });
   }
   // A full page proves nothing about the tokens past it (review 1).
   if (r.body.length >= PAGE) return unknown('partial', `${shown(base.repo)} has more than ${PAGE} access tokens, and yad reads one page`);
