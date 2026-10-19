@@ -420,3 +420,40 @@ test('yad build done: a lane with no steps is half-seeded, not shipped; a clone 
     assert.doesNotMatch(r.out, /SECRET/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('yad build ship: an epic slug that reads like a task still matches its own branch (#346 review 4)', async () => {
+  const { tasksInBranch } = await import('./build.mjs');
+  assert.deepEqual(tasksInBranch('feat/EP-aws-s3-t2-backup-S01-T01-x'), ['ep-aws-s3-t2'], 'the general scan alone would refuse it');
+  // The exact id is matched first, so a branch whose slug after the task reads like another task passes too.
+  const { W, P } = workspace();
+  try {
+    const { buildShip } = await import('./build.mjs');
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
+    const answer = { state: 'MERGED', mergedAt: '2026-10-18T10:00:00Z', mergeCommit: { oid: 'c'.repeat(40) }, headRefName: 'feat/EP-l-S01-T01-s3-t2-x', url: 'u', body: '', statusCheckRollup: [] };
+    const runner = (cmd, args) => (cmd === 'gh' && args[0] === 'pr' ? { ok: true, stdout: JSON.stringify(answer), stderr: '' } : { ok: false, stdout: '', stderr: 'x' });
+    const r = await buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', pr: '7', today: '2026-10-20', runner, prReader: () => ({ ok: true, reviews: [] }) });
+    assert.equal(r.changed, true);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build done: a status write that fails puts the lanes back; another build-state file claiming the story is refused (#346 review 4)', { skip: (process.getuid && process.getuid() === 0) && 'root writes read-only files' }, () => {
+  const { W, P, dir } = workspace({ tasks: '- T01 one\n' });
+  try {
+    yad(P, 'skip', 'EP-l', 'EP-l-S01', '--repo', 'web', '--reason', 'no UI change');
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    walk(P);
+    yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'e'.repeat(40));
+    const file = path.join(dir, '.sdlc/build-state/EP-l-S01.json');
+    fs.writeFileSync(path.join(dir, '.sdlc/build-state/copy.json'), JSON.stringify({ story: 'EP-l-S01', repos: {} }));
+    let r = yad(P, 'build', 'done', 'EP-l-S01');
+    assert.match(r.out, /build-state\/copy\.json also says story: EP-l-S01/);
+    fs.rmSync(path.join(dir, '.sdlc/build-state/copy.json'));
+    const before = fs.readFileSync(file, 'utf8');
+    fs.chmodSync(story(dir), 0o444);
+    try {
+      r = yad(P, 'build', 'done', 'EP-l-S01');
+      assert.notEqual(r.code, 0, r.out);
+      assert.equal(fs.readFileSync(file, 'utf8'), before, 'the lanes are exactly as they were');
+    } finally { fs.chmodSync(story(dir), 0o644); }
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
