@@ -389,13 +389,23 @@ catches a free-form description that bypassed it:
 **GitLab truncates the description this gate reads.** `$CI_MERGE_REQUEST_DESCRIPTION` stops at **2700
 characters**, so a long but perfectly valid MR can lose a required section *before the gate sees it* —
 the author then reads "does not use the template" while looking at a description that visibly contains
-it (#164). GitHub is unaffected (`github.event.pull_request.body` is not truncated). Two mitigations,
-both shipped:
+it (#164). GitHub is unaffected (`github.event.pull_request.body` is not truncated). Three mitigations,
+all shipped:
+
+- **the gate reads the whole description (#343).** In GitLab CI, when the description it was handed has
+  reached 2700 characters, the gate reads it again in full from the merge request API
+  (`$CI_API_V4_URL/projects/$CI_MERGE_REQUEST_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID`) and checks
+  that instead. The token is the `GITLAB_TOKEN` (or `SDLC_API_TOKEN`) CI/CD variable — the same
+  `read_api` token `yad-verified-commits` already needs — or, without one, the job's own `CI_JOB_TOKEN`,
+  which some GitLab versions allow to read a merge request. It goes to `curl` in a header file, never on
+  its command line, and only to that GitLab's own API; `node` decodes the answer. If the full text
+  cannot be read (no token that works, no `curl` or `node`, no answer), the cut body is checked as
+  before and the note below also says why and to set `GITLAB_TOKEN`;
 
 - the GitLab MR templates (`yad-pr-template` `templates/gitlab/…` and `templates/product/gitlab/…`) carry
   the constraint as a comment and keep every required section early, so a truncated body still passes;
-- when a required section is missing **and** the body it read is ≥ 2700 characters, the gate prints a
-  `NOTE` naming the truncation and the fix — reorder the required sections above the cutoff and push
+- when a required section is missing **and** the body it read is ≥ 2700 characters (and the full text
+  could not be read), the gate prints a `NOTE` naming the truncation and the fix — reorder the required sections above the cutoff and push
   the long narrative to the end. Never delete a section: reordering is always allowed.
 
 ## 8. Phase 6 — feature-thread gates (`lineage-check.sh`, `epic-open.sh`, `reconcile-debt-check.sh`)
