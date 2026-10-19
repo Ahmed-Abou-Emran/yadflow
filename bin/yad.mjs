@@ -325,8 +325,9 @@ ${c.bold('Build helpers')}
 ${c.bold('Feature threads (post-lock change management)')}
   yad thread                           List every feature thread (genesis → changes → defects)
   yad thread <epic> [--json]           Show one thread: its epics, the resolved current truth, open debt
-  yad reconcile [check|refresh|wire]   Flag orphan drift + open hotfix debt across threads (advisory,
-                                       never a gate — the gates block at merge)
+  yad reconcile [check|refresh|wire]   Flag orphan drift + open hotfix debt across threads, and merged
+                                       tasks with no build-log ship (advisory, never a gate — the gates
+                                       block at merge)
 
 ${c.bold('Interactive docs (generated sites)')}
   yad docs list                        Show the docs target + per-site freshness
@@ -906,7 +907,10 @@ async function main() {
         // own epic) so a `..` or a slash can never traverse out of the epic's stories dir, and a typo'd
         // cross-epic id is caught here rather than failing obscurely later.
         if (!story || !/^EP-[a-z0-9-]+-S\d+$/.test(story) || !story.startsWith(`${epic}-S`)) { refuse(`invalid --retro-ship: expected <epic>/<story> with story <epic>-S<NN> (got ${o['retro-ship']})`); break; }
-        retroShip = { epic, story, repo: o.repo, task: o.task, mergeCommit: o['merge-commit'], today };
+        // A SHA, never a ref or a search (`main`, `HEAD`, `:/text`): `yad reconcile check` reads a retro ship's
+        // merge commit as the point it covers up to (#365 review 2), and a ref would cover every later merge.
+        if (o['merge-commit'] != null && !/^[0-9a-f]{7,64}$/i.test(String(o['merge-commit']))) { refuse('invalid --merge-commit: expected a commit SHA (7 to 64 hex characters), never a branch name or a ref'); break; }
+        retroShip = { epic, story, repo: o.repo, task: o.task, mergeCommit: o['merge-commit'] == null ? undefined : String(o['merge-commit']).toLowerCase(), today };
       }
       result = await commands.runCheckpoint(o.dir, { push: o.push, allowBranch: o.allowBranch, dryRun: o.dryRun, retroShip });
       break;
