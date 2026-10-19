@@ -28981,11 +28981,14 @@ test('#345 product token: a GitLab Product\'s access tokens that can clone it an
     { id: 4, name: 'lapsed', scopes: ['api'], expires_at: '2026-10-10', active: false },
     // Expired long ago: no news, and GitLab gives no way to clear it from the list (review 3).
     { id: 8, name: 'ancient', scopes: ['api'], expires_at: '2025-01-01', active: false },
+    // The window's lower edge (review 4): 30 days after the expiry is still said, 31 is not.
+    { id: 10, name: 'minus30', scopes: ['api'], expires_at: '2026-09-19', active: false },
+    { id: 11, name: 'minus31', scopes: ['api'], expires_at: '2026-09-18', active: false },
     { id: 7, name: 'revoked', scopes: ['api'], expires_at: '2026-10-20', active: false, revoked: true },
     { id: 5, name: 'no-expiry', scopes: ['api'], expires_at: null, active: true },
     { id: 6, name: 'edge', scopes: ['api'], expires_at: '2026-11-18', active: true },
   ]);
-  assert.deepEqual(r.soon.map((t) => [t.name, t.expires, t.days]), [['ci-read', '2026-11-01', 13], ['lapsed', '2026-10-10', -9], ['edge', '2026-11-18', 30]]);
+  assert.deepEqual(r.soon.map((t) => [t.name, t.expires, t.days]), [['ci-read', '2026-11-01', 13], ['lapsed', '2026-10-10', -9], ['minus30', '2026-09-19', -30], ['edge', '2026-11-18', 30]]);
   // A full page proves nothing about the next one.
   assert.equal(read(Array.from({ length: PAGE }, (_, i) => ({ id: i, name: `t${i}`, scopes: ['api'], expires_at: '2030-01-01' }))).known, false);
 });
@@ -29017,17 +29020,21 @@ test('#345 doctor: one product-token line per connected code repo, none for the 
     const f = fakePlatform({ calls: [
       [/^projects\/acme%2Fteam%2Fapi\/variables/, 200, []], [/^projects\/acme%2Fteam%2Fweb\/variables/, 200, []],
       [/^groups\/acme%2Fteam\/variables/, 200, [{ key: 'YAD_PRODUCT_TOKEN', value: 'glpat-PLANTED', protected: false, environment_scope: '*' }]], [/^groups\/acme\/variables/, 200, []],
-      [/^projects\/acme%2Fproduct\/access_tokens/, 200, [{ id: 9, name: 'prod-read', scopes: ['read_repository'], expires_at: '2026-10-25', active: true }]],
+      [/^projects\/acme%2Fproduct\/access_tokens/, 200, [{ id: 9, name: 'prod-read', scopes: ['read_repository'], expires_at: '2026-10-25', active: true }, { id: 12, name: 'old-read', scopes: ['read_repository'], expires_at: '2026-10-10', active: false }]],
     ] });
     let checks = [];
     productTokenChecks(checks, T, { runner: f.runner, env: ON, today: '2026-10-19' });
     assert.deepEqual(checks.map((x) => [x.id, x.section, x.status]), [
-      ['product-token:api', 'product-token', 'warn'], ['product-token:web', 'product-token', 'warn'], ['product-token-expiry:9', 'product-token', 'warn'],
+      ['product-token:api', 'product-token', 'warn'], ['product-token:web', 'product-token', 'warn'], ['product-token-expiry:9', 'product-token', 'warn'], ['product-token-expiry:12', 'product-token', 'warn'],
     ]);
     assert.match(checks[0].message, /comes from the group acme\/team, .*\(registered here: web\)/);
     assert.match(checks[2].message, /the Product's access token prod-read \(read_repository\) expires on 2026-10-25 \(in 6 day\(s\)\)/);
     assert.doesNotMatch(JSON.stringify(checks), /PLANTED|glpat/);
     assert.match(checks[2].hint, /revoking the old one/);
+    // An expired one: said as expired, and its hint never asks for a revoke GitLab may not offer (review 4).
+    assert.match(checks[3].message, /old-read \(read_repository\) expired on 2026-10-10 —/);
+    assert.match(checks[3].hint, /this line stops 30 days after the expiry date$/);
+    assert.doesNotMatch(checks[3].hint, /revok/);
     // A GitLab Product read from GitHub code repos still has its tokens' expiry checked (review 2).
     fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [{ name: 'gh', platform: 'github', git_url: 'https://github.com/acme/gh.git' }] }));
     const g = fakePlatform({ calls: [[/actions\/secrets/, 200, { secrets: [{ name: 'YAD_PRODUCT_TOKEN' }] }], [/^projects\/acme%2Fproduct\/access_tokens/, 200, []]] });
@@ -29075,10 +29082,11 @@ test('#345 doctor: an on-disk repo is skipped when it is the Product\'s own repo
     }
     fs.mkdirSync(path.join(T, 'linked/.sdlc'));
     fs.writeFileSync(path.join(T, 'linked/.sdlc/product-link.json'), '{}');
-    // `onmain` has the record on its default branch only; this clone sits on a branch without it (review 3).
+    // `onmain` has the record on its default branch (`trunk`, named in repos.json) only; this clone sits on a
+    // branch without it (review 3, 4).
     const onmain = path.join(T, 'onmain');
     fs.mkdirSync(path.join(onmain, '.sdlc'), { recursive: true });
-    git(onmain, 'init', '-q', '-b', 'main');
+    git(onmain, 'init', '-q', '-b', 'trunk');
     fs.writeFileSync(path.join(onmain, '.sdlc/product-link.json'), '{}');
     git(onmain, 'add', '-A');
     git(onmain, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'record');
@@ -29086,12 +29094,12 @@ test('#345 doctor: an on-disk repo is skipped when it is the Product\'s own repo
     git(onmain, 'rm', '-rq', '--cached', '.');
     fs.rmSync(path.join(onmain, '.sdlc'), { recursive: true, force: true });
     git(onmain, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'old');
-    git(onmain, 'update-ref', 'refs/remotes/origin/main', 'main');
+    git(onmain, 'update-ref', 'refs/remotes/origin/trunk', 'trunk');
     fs.writeFileSync(path.join(T, '.sdlc/repos.json'), JSON.stringify({ repos: [
       { name: 'svc', path: 'svc', platform: 'github', git_url: 'https://github.com/acme/mirror.git' }, // inside the Product's git repo
       { name: 'linked', path: 'linked', platform: 'github', git_url: 'https://github.com/acme/linked.git' },
       { name: 'bare', path: 'bare', platform: 'github', git_url: 'https://github.com/acme/bare.git' }, // no record
-      { name: 'onmain', path: 'onmain', platform: 'github', default_branch: 'main', git_url: 'https://github.com/acme/onmain.git' },
+      { name: 'onmain', path: 'onmain', platform: 'github', default_branch: 'trunk', git_url: 'https://github.com/acme/onmain.git' },
       { name: 'remote', platform: 'github', git_url: 'https://github.com/acme/remote.git' }, // not on disk: checked
     ] }));
     const f = fakePlatform({ calls: [[/actions\/secrets/, 200, { secrets: [{ name: 'YAD_PRODUCT_TOKEN' }] }]] });
