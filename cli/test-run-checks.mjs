@@ -343,7 +343,7 @@ test('yad run checks: Ctrl-C stops the run even when the gate catches it, and th
       // Ctrl-C reaches the whole group; a plain kill reaches yad alone.
       if (sig === 'SIGINT') process.kill(-child.pid, sig); else process.kill(child.pid, sig);
       const code = await new Promise((r) => child.on('close', r));
-      assert.equal(code, 130, `${sig}: ${out}`);
+      assert.equal(code, sig === 'SIGINT' ? 130 : 143, `${sig}: ${out}`);
       assert.match(out, /stopped \(SIG(INT|TERM)\) — nothing after that gate ran/, out);
       assert.doesNotMatch(out, /\ncontract-check\n/, `${sig}: no later gate ran`);
       assert.ok(Date.now() - started < 25000, `${sig}: it stopped promptly`);
@@ -451,16 +451,22 @@ test('yad run checks: a stop during a Product gate removes the copy; a gate that
 test('yad run checks: a copy another live run is using is not touched; a product-checkout FAIL skips the four gates; uncommitted work is named', () => {
   const { W, backend } = workspace();
   try {
-    write(backend, { '.yad/product/.yad-run-checks': `${process.pid} ${os.hostname()}\n`, '.yad/product/x.md': 'busy\n' });
+    // This test's own process stands for a live run (its command line holds "yad", from yadflow's path).
+    write(backend, { '.yad/product/.yad-run-checks': `${process.pid} ${Date.now()} .yad ${os.hostname()}\n`, '.yad/product/x.md': 'busy\n' });
     let r = yad(backend, ['run', 'checks', '--no-build']);
-    assert.match(r.out, /another yad run checks is using \.yad\/product right now/);
+    assert.match(r.out, /another yad run checks is using \.yad\/product right now — this run reads it as it is \(remove \.yad\/product if no other run is going\)/);
     assert.ok(fs.existsSync(path.join(backend, '.yad/product/x.md')));
-    fs.rmSync(path.join(backend, '.yad'), { recursive: true });
+    // A reused process id — here pid 1, never a yad run — is not a live run: the copy is replaced, and the
+    // .yad folder that run made goes with it.
+    write(backend, { '.yad/product/.yad-run-checks': `1 ${Date.now()} .yad ${os.hostname()}\n` });
+    r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.match(r.out, /is written to \.yad\/product/);
+    assert.ok(!fs.existsSync(path.join(backend, '.yad')), 'the killed run\'s folder is gone too');
     write(backend, { 'src/new.js': 'not added\n' });
     fs.mkdirSync(path.join(W, 'shared'));
     fs.symlinkSync(path.join(W, 'shared'), path.join(backend, '.yad'));
     r = yad(backend, ['run', 'checks', '--no-build']);
-    assert.match(r.out, /uncommitted changes are built and tested here but are not in the push/);
+    assert.match(r.out, /uncommitted changes are built and tested here but are not in the push \(src\/new\.js\)/);
     assert.match(r.out, /skipped: contract-check — product-checkout failed, so it was not run \(as in CI\)/);
     assert.match(r.out, /✗ product-checkout — the Product could not be put where CI puts it/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
