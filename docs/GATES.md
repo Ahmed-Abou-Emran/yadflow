@@ -176,7 +176,7 @@ a changed slice on the repo's [first spec](#contract-check).
 | Message (after `FAIL [<gate>]: …`) | What to change |
 |---|---|
 | `product-repo resolves to '<path>', a folder the gate cannot enter … Point <the file and field that was read> at a folder the job can read …` | Fix the path, or the folder's permissions. |
-| `product-repo resolves to '<path>', inside this repo's own git folder … Point <the file and field> at the Product checkout (.yad/product, from the repo root — or ../../.yad/product, from the story's folder) …` | The path points into `.git/`. Point it at the Product checkout. |
+| `product-repo resolves to '<path>', inside this repo's own git folder … Point <the file and field> at the Product checkout (<example path>) …` | The path points into `.git/`. Point it at the Product checkout: `.yad/product` in the record (from the repo root), or `../../.yad/product` in a `link.md` (from the story's folder). |
 | `<what>, and <base> keeps more than one Product holding <epic> (<list>) — the gate cannot tell which is meant. Set <the file and field> to one of them …` | Set the value to one of the listed folders. |
 | `product-repo reaches the Product through '<path>', a symlink, submodule or file this repo tracks … Point <the file and field> at the Product itself …` | Point it at the real Product folder, not at a link. |
 | `product-repo resolves to '<path>', which holds files this repo tracks, but <base> does not track '.sdlc/product.json' … Untrack those files (git rm -r --cached '<path>'), or point <the file and field> at the Product …` | A pull request cannot add its own Product. Untrack the folder, or point at the real Product. |

@@ -444,6 +444,8 @@ KEPT
   prod_note="${prod_note:+$prod_note
 }${_what} here; the Product this repo keeps at '${_k}' on ${BASE} holds ${_epic_of}, so that one is read."
   product_rel="$_k"
+  # The value read did not resolve to it: the gate picked it. Say so in what base_product prints.
+  _src="${_what}, so the Product this repo keeps"
   [ "$_k" != . ] || _k=""
   base_product "$_k"
   return 0

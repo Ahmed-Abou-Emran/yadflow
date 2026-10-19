@@ -3178,6 +3178,25 @@ for (const g of GATES) {
     fs.rmSync(T, { recursive: true, force: true });
   });
 
+  test(`${g.name} gate: a record path the gate cannot enter is named as the record (#351)`, { skip: (process.getuid && process.getuid() === 0) && 'root enters any folder' }, () => {
+    const T = scaffoldRepo();
+    clean(path.join(T, '.yad/product'));
+    onBase(T, { '.gitignore': '.yad/\n', '.sdlc/product-link.json': JSON.stringify({ path: '.yad/product' }) });
+    commit(T, g.subject || 'feat: add thing\n\nTask: EP-demo-S01-T01', {
+      'src/thing.js': 'x', ...(g.files || {}), 'specs/EP-demo-S01/link.md': linkFor(g, '../../.yad/product'),
+    });
+    fs.chmodSync(path.join(T, '.yad/product'), 0o600);
+    try {
+      const r = runGate(g.script, T);
+      assert.equal(r.code, 1, r.out);
+      assert.ok(r.out.includes("path '.yad/product' in .sdlc/product-link.json resolves to "), r.out);
+      assert.ok(r.out.includes('so it is not read. Point path in .sdlc/product-link.json at a folder the job can read, and merge that change on its own first: a value counts once main has it.'), r.out);
+    } finally {
+      fs.chmodSync(path.join(T, '.yad/product'), 0o755);
+      fs.rmSync(T, { recursive: true, force: true });
+    }
+  });
+
   test(`${g.name} gate: a record path that reaches nothing, with two kept Products, is named as the record (#351)`, () => {
     const T = scaffoldRepo();
     productFiles(T, 'a', g.seed, { settings: true });
