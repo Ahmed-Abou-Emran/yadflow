@@ -85,26 +85,35 @@ RAW_CHARS="$(LC_ALL=C tr -d '\200-\277' < "$BODY" | wc -c | tr -d '[:space:]')"
 # #343: the cut is GitLab's, not the author's, so in GitLab CI a description that reached it is read again
 # IN FULL from the MR API, and that is what the gate checks. Needs a token that can read the MR: the
 # GITLAB_TOKEN (or SDLC_API_TOKEN) CI/CD variable verified-commits already asks for, else the job's own
-# CI_JOB_TOKEN, which some GitLab versions let read it. The token goes to curl in a header file, never
+# CI_JOB_TOKEN, which GitLab's job-token access list lets read a single merge request (an older GitLab, or
+# a fork's pipeline reading the target project, may not). The token goes to curl in a header file, never
 # on its command line, and only to this GitLab's own API ($CI_API_V4_URL). JSON is decoded by node,
 # which every yad job image has; without node, curl, a token or an answer, the cut body is checked as
 # before and the note below says how to get the full one read.
 FULL_READ=""
 FULL_WHY=""
 _fd=""
-if [ "${GITLAB_CI:-}" = true ] && [ "$RAW_CHARS" -ge "$GITLAB_DESC_LIMIT" ]; then
+# GitLab says itself when it cut the variable (CI_MERGE_REQUEST_DESCRIPTION_IS_TRUNCATED); the length
+# is the fallback for a GitLab that does not set it (review 1).
+FORK=""
+[ "${CI_PROJECT_ID:-}" = "${CI_MERGE_REQUEST_PROJECT_ID:-}" ] || FORK=1
+if [ "${GITLAB_CI:-}" = true ] && { [ "${CI_MERGE_REQUEST_DESCRIPTION_IS_TRUNCATED:-}" = true ] || [ "$RAW_CHARS" -ge "$GITLAB_DESC_LIMIT" ]; }; then
   if [ -z "${CI_API_V4_URL:-}" ] || [ -z "${CI_MERGE_REQUEST_PROJECT_ID:-}" ] || [ -z "${CI_MERGE_REQUEST_IID:-}" ]; then
     FULL_WHY="this is not a merge request pipeline"
   elif ! command -v curl >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
     FULL_WHY="curl or node is not on this runner"
   else
     _fd="$(mktemp -d)"
+    # At once, so a cancelled job leaves neither the header file nor the MR's text behind (review 1). The
+    # trap set further down replaces this one and removes the same folder.
+    trap '[ -z "$_fd" ] || rm -rf "$_fd"' EXIT
     _tok="${GITLAB_TOKEN:-${SDLC_API_TOKEN:-}}"
     ( umask 077
       if [ -n "$_tok" ]; then printf 'PRIVATE-TOKEN: %s\n' "$_tok"; else printf 'JOB-TOKEN: %s\n' "${CI_JOB_TOKEN:-}"; fi > "$_fd/h" )
     _code="$(curl -sS --max-time 20 -o "$_fd/mr.json" -w '%{http_code}' -H @"$_fd/h" -- \
       "${CI_API_V4_URL}/projects/${CI_MERGE_REQUEST_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}" 2>/dev/null)" || _code=""
     rm -f "$_fd/h"
+    _decoded=""
     if [ "$_code" = 200 ] && node -e '
       const fs = require("fs");
       let d;
@@ -112,11 +121,16 @@ if [ "${GITLAB_CI:-}" = true ] && [ "$RAW_CHARS" -ge "$GITLAB_DESC_LIMIT" ]; the
       if (typeof d !== "string") process.exit(3);
       fs.writeFileSync(process.argv[2], d);
     ' "$_fd/mr.json" "$_fd/full.md" 2>/dev/null; then
+      _decoded=1
+    fi
+    if [ -n "$_decoded" ]; then
       BODY="$_fd/full.md"
       FULL_READ=1
       echo "note [pr-template]: the description reached GitLab's ${GITLAB_DESC_LIMIT}-character CI cut, so the gate read it in full from the merge request API."
     else
-      FULL_WHY="the merge request API answered ${_code:+HTTP }${_code:-nothing}$([ -n "$_tok" ] && printf '' || printf ' to the job token')"
+      _with="$([ -n "$_tok" ] && printf 'GITLAB_TOKEN' || printf 'the job token')"
+      if [ "$_code" = 200 ]; then FULL_WHY="the merge request API answered ${_with} without a description yad could read"
+      else FULL_WHY="the merge request API answered ${_code:+HTTP }${_code:-nothing} to ${_with}"; fi
     fi
   fi
 fi
@@ -194,9 +208,15 @@ else
   check_code_body
 fi
 
-if [ "$rc" != 0 ] && [ "$RAW_CHARS" -ge "$GITLAB_DESC_LIMIT" ] && [ -z "$FULL_READ" ]; then
+if [ "$rc" != 0 ] && { [ "${CI_MERGE_REQUEST_DESCRIPTION_IS_TRUNCATED:-}" = true ] || [ "$RAW_CHARS" -ge "$GITLAB_DESC_LIMIT" ]; } && [ -z "$FULL_READ" ]; then
   echo "NOTE [pr-template]: the description this gate read is ${RAW_CHARS} characters. On GitLab the gate reads \$CI_MERGE_REQUEST_DESCRIPTION, which is TRUNCATED at ${GITLAB_DESC_LIMIT} — a section below that cutoff is invisible here even though the MR shows it."
-  [ -z "$FULL_WHY" ] || echo "NOTE [pr-template]: the full description could not be read instead: ${FULL_WHY}. Set a GITLAB_TOKEN CI/CD variable (read_api, masked) so the gate reads the whole description."
+  if [ -n "$FULL_WHY" ] && [ -n "$FORK" ]; then
+    # A fork's pipeline runs in the fork: it gets neither the target project's variables nor a job token
+    # that may read its merge request (review 1). Only the order of the sections helps there.
+    echo "NOTE [pr-template]: the full description could not be read instead: ${FULL_WHY} — this pipeline runs in a fork, which cannot read the target project's merge request."
+  elif [ -n "$FULL_WHY" ]; then
+    echo "NOTE [pr-template]: the full description could not be read instead: ${FULL_WHY}. Set a GITLAB_TOKEN CI/CD variable (read_api, masked, not protected) so the gate reads the whole description."
+  fi
   echo "NOTE [pr-template]: if the missing section IS in your description, move the required sections above the cutoff (reorder, never delete) and push the long narrative to the end."
 fi
 

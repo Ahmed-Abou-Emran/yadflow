@@ -4429,13 +4429,14 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -z "$hfile" ] || cp "$hfile" "${bin}/sent-header.txt"
-cp "${bin}/answer.json" "$out"
-printf '%s' "${code}"
+[ -z "$hfile" ] || { cp "$hfile" "${bin}/sent-header.txt"; dirname "$hfile" > "${bin}/tmpdir.txt"; }
+${code === 'fail' ? 'printf 000; exit 28' : `cp "${bin}/answer.json" "$out"
+printf '%s' "${code}"`}
 `, { mode: 0o755 });
   const env = {
     PATH: `${bin}:${process.env.PATH}`, GITLAB_CI: 'true', CI_API_V4_URL: 'https://gitlab.example.com/api/v4',
-    CI_MERGE_REQUEST_PROJECT_ID: '7', CI_MERGE_REQUEST_IID: '42', GITLAB_TOKEN: '', SDLC_API_TOKEN: '', CI_JOB_TOKEN: 'job-tok',
+    CI_PROJECT_ID: '7', CI_MERGE_REQUEST_PROJECT_ID: '7', CI_MERGE_REQUEST_IID: '42', CI_MERGE_REQUEST_DESCRIPTION_IS_TRUNCATED: '',
+    GITLAB_TOKEN: '', SDLC_API_TOKEN: '', CI_JOB_TOKEN: 'job-tok',
   };
   return { bin, env, done: () => fs.rmSync(bin, { recursive: true, force: true }) };
 }
@@ -4455,7 +4456,25 @@ test('pr-template gate: #343 in GitLab CI a cut description is read in full from
   assert.doesNotMatch(argv, /s3cret/);
   assert.match(fs.readFileSync(path.join(rig.bin, 'sent-header.txt'), 'utf8'), /^PRIVATE-TOKEN: glpat-s3cret$/m);
   assert.doesNotMatch(r.out, /s3cret/);
+  // Nothing is left behind: not the header file, not the MR's text (review 1).
+  assert.ok(!fs.existsSync(fs.readFileSync(path.join(rig.bin, 'tmpdir.txt'), 'utf8').trim()), 'the temp folder is gone');
   rig.done();
+  // SDLC_API_TOKEN is the other name for it.
+  const alt = mrApiRig(T, { json: { description: LONG_VALID } });
+  assert.equal(runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...alt.env, SDLC_API_TOKEN: 'alt-tok' }).code, 0);
+  assert.match(fs.readFileSync(path.join(alt.bin, 'sent-header.txt'), 'utf8'), /^PRIVATE-TOKEN: alt-tok$/m);
+  alt.done();
+  // GitLab's own flag says it was cut, whatever the length (review 1).
+  const flagged = mrApiRig(T, { json: { description: LONG_VALID } });
+  const short = body(T, '## Summary\nx\n');
+  assert.equal(runGate(PR_TEMPLATE, T, ['--profile', 'code', short], { ...flagged.env, CI_MERGE_REQUEST_DESCRIPTION_IS_TRUNCATED: 'true' }).code, 0);
+  flagged.done();
+  // The Product's own MRs run the same gate.
+  const PRODUCT_LONG = fs.readFileSync(PRODUCT_GITLAB_TPL, 'utf8').replace('## Artifact under review', `${'narrative '.repeat(300)}\n\n## Artifact under review`);
+  const prod = mrApiRig(T, { json: { description: PRODUCT_LONG } });
+  const pr = runGate(PR_TEMPLATE, T, ['--profile', 'product', '--head', 'review/EP-demo', body(T, PRODUCT_LONG.slice(0, 2700))], prod.env);
+  assert.equal(pr.code, 0, pr.out);
+  prod.done();
   // No variable: the job's own token is tried.
   const job = mrApiRig(T, { json: { description: LONG_VALID } });
   assert.equal(runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], job.env).code, 0);
@@ -4474,17 +4493,27 @@ test('pr-template gate: #343 in GitLab CI a cut description is read in full from
 test('pr-template gate: #343 when the full description cannot be read, the cut body is checked and the note says why', () => {
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-prtpl-'));
   const cut = body(T, LONG_VALID.slice(0, 2700));
-  for (const [rig, why] of [
-    [mrApiRig(T, { code: '401' }), /answered HTTP 401 to the job token/],
-    [mrApiRig(T, { json: { iid: 42 } }), /answered HTTP 200 to the job token/],
+  for (const [rig, why, extra] of [
+    [mrApiRig(T, { code: '401' }), /answered HTTP 401 to the job token/, {}],
+    [mrApiRig(T, { json: { iid: 42 } }), /answered the job token without a description yad could read/, {}],
+    [mrApiRig(T, { code: 'fail' }), /answered HTTP 000 to the job token|answered nothing to the job token/, {}],
+    [mrApiRig(T, { code: '401' }), /answered HTTP 401 to GITLAB_TOKEN/, { GITLAB_TOKEN: 't' }],
+    [mrApiRig(T), /this is not a merge request pipeline/, { CI_MERGE_REQUEST_IID: '' }],
   ]) {
-    const r = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], rig.env);
+    const r = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...rig.env, ...extra });
     assert.equal(r.code, 1, r.out);
     assert.match(r.out, /TRUNCATED at 2700/);
     assert.match(r.out, why);
     assert.match(r.out, /Set a GITLAB_TOKEN CI\/CD variable/);
     rig.done();
   }
+  // A fork's pipeline cannot read the target's MR: told so, not sent to set a variable (review 1).
+  const fork = mrApiRig(T, { code: '404' });
+  const rf = runGate(PR_TEMPLATE, T, ['--profile', 'code', cut], { ...fork.env, CI_PROJECT_ID: '9' });
+  assert.equal(rf.code, 1, rf.out);
+  assert.match(rf.out, /this pipeline runs in a fork/);
+  assert.doesNotMatch(rf.out, /Set a GITLAB_TOKEN/);
+  fork.done();
   // Below the cut, or outside GitLab CI: no call at all.
   const quiet = mrApiRig(T, { json: { description: LONG_VALID } });
   runGate(PR_TEMPLATE, T, ['--profile', 'code', body(T, '## Summary\nshort\n')], quiet.env);

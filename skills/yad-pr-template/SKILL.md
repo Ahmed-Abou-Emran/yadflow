@@ -38,7 +38,7 @@ routing helper.
   Sections may be reordered freely; deleting one fails the gate. GitHub is unaffected. Since #343 the gate
   reads a cut description again in full from the merge request API, with the `GITLAB_TOKEN` CI/CD
   variable (`read_api`) or the job's own token where GitLab allows it — so order matters only when
-  neither can read it (see `yad-checks` `references/check-gates.md`).
+  neither can read it, as in a fork's pipeline (see `yad-checks` `references/check-gates.md`).
 - **Installed code-repo templates are yad-managed.** `yad update` rewrites them on upgrade (the Product
   variants under `templates/product/` are copied by hand in Step 2 and are not managed). An edit yad can
   prove — the file's sha differs from the one it recorded when it wrote the template — is reported as
