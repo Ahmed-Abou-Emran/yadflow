@@ -154,8 +154,11 @@ default branch. (local mode keeps `yad gate sync` as the local writer.)
      `bash`, `git`, `curl` and Node with `npx` on the runner user's `PATH`. The job also installs a
      pinned `glab` package with `dpkg -i` (root) and puts `jq` (and `git-lfs` when the Product uses LFS)
      in `/usr/local/bin`, all `linux_amd64` builds — so a shell runner must be an x86-64 Debian-family
-     host whose runner user may do that; otherwise use a docker executor for this job. `yad doctor` warns on a fragment that still runs a
-     fixed `node:<n>` image (`YAD-CI-002`); `yad update` replaces it.
+     host whose runner user may do that; otherwise use a docker executor for this job. `yad doctor`
+     warns on a fragment that still runs a fixed `node:<n>` image (`YAD-CI-002`); `yad update`
+     replaces it — or, if `yad check` lists the file as `modified` (edited by hand), move the change
+     into the CI/CD variables, then run `yad update --overwrite-local`, which keeps a `.yad-orig` copy
+     of each file it replaces.
    - **Git LFS needs nothing extra.** For a Product that uses Git LFS, the runner installs LFS git
      hooks that fail without `git-lfs`, and the job's node image has none — so the job downloads a
      pinned `git-lfs` itself before its checkout (#327; a Product without LFS skips it). A
