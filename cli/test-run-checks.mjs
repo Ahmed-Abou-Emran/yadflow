@@ -301,7 +301,7 @@ test('yad run checks: a folder already there is read as it is and kept; a copy a
     assert.ok(!fs.existsSync(path.join(backend, '.yad/product')), 'only the copy is removed');
     write(backend, { '.yad/product/epics/x.md': 'hand-made\n' });
     r = yad(backend, ['run', 'checks', '--no-build']);
-    assert.match(r.out, /\.yad\/product is already there, so it is read as it is — it may not be the Product's main/);
+    assert.match(r.out, /\.yad\/product is already there, so it is read as it is — it may not be the Product's default branch/);
     assert.ok(fs.existsSync(path.join(backend, '.yad/product/epics/x.md')), 'a folder the run did not write is left in place');
     fs.rmSync(path.join(backend, '.yad/product'), { recursive: true });
     write(backend, { '.yad/product/.yad-run-checks': 'left\n', '.yad/product/stale.md': 'old\n' });
@@ -381,5 +381,87 @@ test('yad run checks: the base follows the registry like yad open-pr, and GitLab
     const r = yad(backend, ['run', 'checks', '--no-build', '--body', body]);
     assert.match(r.out, /base origin\/develop/);
     assert.match(r.out, /the description is \d+ characters; GitLab hands CI only the first 2700/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad run checks: a gate that exits 143 on its own is a FAIL, and the gates after it still run', () => {
+  const { W, backend } = workspace();
+  try {
+    fs.writeFileSync(path.join(backend, 'checks/risk-map-check.sh'), '#!/usr/bin/env bash\necho "FAIL [risk-map]: a helper got SIGTERM"\nexit 143\n');
+    const r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /✗ risk-map/);
+    assert.match(r.out, /PASS \[epic-open\]/, 'the gates after it ran');
+    assert.doesNotMatch(r.out, /stopped/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad run checks: the Product copy is gone before any other gate, whichever Product gates are installed', () => {
+  const { W, backend } = workspace();
+  try {
+    fs.rmSync(path.join(backend, 'checks/reconcile-debt-check.sh'));
+    fs.writeFileSync(path.join(backend, 'checks/backfill-check.sh'), '#!/usr/bin/env bash\nif [ -e .yad/product ]; then echo "FAIL [backfill]: COPY PRESENT"; exit 1; fi\necho "PASS [backfill]: no copy"\n');
+    const r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.match(r.out, /PASS \[epic-open\]/);
+    assert.match(r.out, /PASS \[backfill\]: no copy/, r.out);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad run checks: a record with no default_branch reads the Product clone\'s own default branch', () => {
+  const { W, product, backend } = workspace({ storyStatus: 'shipped' });
+  try {
+    // The Product's trunk is master; main is gone.
+    git(product, 'branch', '-m', 'main', 'master');
+    git(product, 'push', '-q', 'origin', 'master');
+    git(path.join(W, 'remotes/product.git'), 'symbolic-ref', 'HEAD', 'refs/heads/master');
+    git(product, 'push', '-q', 'origin', '--delete', 'main');
+    git(product, 'remote', 'set-head', 'origin', '-a');
+    git(backend, 'checkout', '-q', 'main');
+    commitAll(backend, 'chore: record with no branch', { '.sdlc/product-link.json': JSON.stringify({ git_url: path.join(W, 'remotes/product.git'), path: '.yad/product', default_branch: null }) });
+    git(backend, 'push', '-q', 'origin', 'main');
+    git(backend, 'checkout', '-q', 'feature');
+    git(backend, 'rebase', '-q', 'main');
+    const r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.match(r.out, /the record names no default_branch, so the Product clone's origin\/HEAD says it: master/);
+    assert.match(r.out, /FAIL \[epic-open\]: \w+ EP-demo-S01-T01 targets SEALED epic EP-demo/, 'master was read');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad run checks: a stop during a Product gate removes the copy; a gate that ignores the signal is killed', { skip: process.platform === 'win32' && 'process groups' }, async () => {
+  const { W, backend } = workspace();
+  try {
+    fs.writeFileSync(path.join(backend, 'checks/lineage-check.sh'), '#!/usr/bin/env bash\necho "lineage started"\ntrap "" INT TERM HUP\nsleep 30\n');
+    const { spawn } = await import('node:child_process');
+    const child = spawn(process.execPath, [YAD, 'run', 'checks', '--no-build'], { cwd: backend, env: { ...ENV, PWD: backend, YAD_NO_REPORT: '1' } });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    const started = Date.now();
+    while (!/lineage started/.test(out) && Date.now() - started < 20000) await sleep(100);
+    assert.ok(fs.existsSync(path.join(backend, '.yad/product')), 'the copy is there while the gate runs');
+    child.kill('SIGINT');
+    const t = Date.now();
+    const code = await new Promise((r) => child.on('close', r));
+    assert.equal(code, 130, out);
+    assert.ok(Date.now() - t < 12000, 'killed after the grace period, not after the gate\'s 30 seconds');
+    assert.ok(!fs.existsSync(path.join(backend, '.yad')), 'the copy is gone');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad run checks: a copy another live run is using is not touched; a product-checkout FAIL skips the four gates; uncommitted work is named', () => {
+  const { W, backend } = workspace();
+  try {
+    write(backend, { '.yad/product/.yad-run-checks': `${process.pid} ${os.hostname()}\n`, '.yad/product/x.md': 'busy\n' });
+    let r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.match(r.out, /another yad run checks is using \.yad\/product right now/);
+    assert.ok(fs.existsSync(path.join(backend, '.yad/product/x.md')));
+    fs.rmSync(path.join(backend, '.yad'), { recursive: true });
+    write(backend, { 'src/new.js': 'not added\n' });
+    fs.mkdirSync(path.join(W, 'shared'));
+    fs.symlinkSync(path.join(W, 'shared'), path.join(backend, '.yad'));
+    r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.match(r.out, /uncommitted changes are built and tested here but are not in the push/);
+    assert.match(r.out, /skipped: contract-check — product-checkout failed, so it was not run \(as in CI\)/);
+    assert.match(r.out, /✗ product-checkout — the Product could not be put where CI puts it/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });

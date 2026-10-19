@@ -135,7 +135,8 @@ yad run checks --body pr-description.md
 - What is judged only in CI, and the output says so: the platform's **Verified** badge, and
   `member-check` when a member file changes (it needs the pull request's author). The build gates use
   this machine's Node and tools, and CI on GitHub tests the merge of the branch into the base: rebase
-  onto the base for the same answer.
+  onto the base for the same answer. Uncommitted changes are built and tested but not pushed: commit
+  them first. On Windows the gates need Git Bash on the `PATH`.
 
 See [`docs/CLI.md`](CLI.md#commands) for every flag.
 
