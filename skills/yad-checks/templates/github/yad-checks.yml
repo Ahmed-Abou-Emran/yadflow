@@ -32,9 +32,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { fetch-depth: 0 }
       # E120: check the Product out where .sdlc/product-link.json says, when the YAD_PRODUCT_TOKEN
-      # secret is set; without it this prints a note and the gate defers, as before.
+      # secret is set; without it the gate defers, with a WARNING unless the PR comes from a fork (#345).
       - run: bash checks/product-checkout.sh "origin/${{ github.base_ref }}"
-        env: { YAD_PRODUCT_TOKEN: "${{ secrets.YAD_PRODUCT_TOKEN }}" }
+        env: { YAD_PRODUCT_TOKEN: "${{ secrets.YAD_PRODUCT_TOKEN }}", YAD_PR_FORK: "${{ github.event.pull_request.head.repo.full_name != github.repository }}" }
       - run: bash checks/contract-check.sh "origin/${{ github.base_ref }}"
 
   # E65/E66 — the risk map (.sdlc/risk-map: a risk level per directory, no names). Warnings, and the
@@ -93,9 +93,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { fetch-depth: 0 }
       # E120: check the Product out where .sdlc/product-link.json says, when the YAD_PRODUCT_TOKEN
-      # secret is set; without it this prints a note and the gate defers, as before.
+      # secret is set; without it the gate defers, with a WARNING unless the PR comes from a fork (#345).
       - run: bash checks/product-checkout.sh "origin/${{ github.base_ref }}"
-        env: { YAD_PRODUCT_TOKEN: "${{ secrets.YAD_PRODUCT_TOKEN }}" }
+        env: { YAD_PRODUCT_TOKEN: "${{ secrets.YAD_PRODUCT_TOKEN }}", YAD_PR_FORK: "${{ github.event.pull_request.head.repo.full_name != github.repository }}" }
       - run: bash checks/lineage-check.sh "origin/${{ github.base_ref }}"
 
   epic-open:
@@ -105,9 +105,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { fetch-depth: 0 }
       # E120: check the Product out where .sdlc/product-link.json says, when the YAD_PRODUCT_TOKEN
-      # secret is set; without it this prints a note and the gate defers, as before.
+      # secret is set; without it the gate defers, with a WARNING unless the PR comes from a fork (#345).
       - run: bash checks/product-checkout.sh "origin/${{ github.base_ref }}"
-        env: { YAD_PRODUCT_TOKEN: "${{ secrets.YAD_PRODUCT_TOKEN }}" }
+        env: { YAD_PRODUCT_TOKEN: "${{ secrets.YAD_PRODUCT_TOKEN }}", YAD_PR_FORK: "${{ github.event.pull_request.head.repo.full_name != github.repository }}" }
       - run: bash checks/epic-open.sh "origin/${{ github.base_ref }}"
 
   reconcile-debt:
@@ -117,9 +117,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { fetch-depth: 0 }
       # E120: check the Product out where .sdlc/product-link.json says, when the YAD_PRODUCT_TOKEN
-      # secret is set; without it this prints a note and the gate defers, as before.
+      # secret is set; without it the gate defers, with a WARNING unless the PR comes from a fork (#345).
       - run: bash checks/product-checkout.sh "origin/${{ github.base_ref }}"
-        env: { YAD_PRODUCT_TOKEN: "${{ secrets.YAD_PRODUCT_TOKEN }}" }
+        env: { YAD_PRODUCT_TOKEN: "${{ secrets.YAD_PRODUCT_TOKEN }}", YAD_PR_FORK: "${{ github.event.pull_request.head.repo.full_name != github.repository }}" }
       - run: bash checks/reconcile-debt-check.sh "origin/${{ github.base_ref }}"
 
   # Pattern gates: commit subject + PR title + PR body all follow the convention (profile: code).

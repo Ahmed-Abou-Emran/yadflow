@@ -38,6 +38,8 @@ in CI on every PR/MR and must pass before merge (build plan §C). Each is a smal
    Product lives is a repo fact once `yad check --fix --push` has merged `.sdlc/product-link.json` into
    the code repo (E120): the gates read it from the base first, and `checks/product-checkout.sh` clones
    the Product there in CI when the `YAD_PRODUCT_TOKEN` secret is set (see `references/check-gates.md`).
+   A missing token on a PR that is not from a fork is a `WARNING` in CI, and a token that expires within
+   30 days is warned about there too (#345); `yad doctor` reports where each code repo's CI gets it.
 3. **build/test/lint** — standard quality stage; tests must actually exercise new behavior, not just pass.
    CI installs and runs through the package manager declared by the repo's standard
    `package.json#packageManager` field (`npm` and `pnpm` are supported; any other manager stays on

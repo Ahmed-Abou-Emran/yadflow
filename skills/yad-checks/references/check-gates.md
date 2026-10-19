@@ -686,7 +686,10 @@ What it does in each case:
 
 | Case | Result |
 | --- | --- |
-| No record on the base, no `YAD_PRODUCT_TOKEN` (every PR from a fork), or no `git_url` in the record | A note; nothing is cloned, and the gates defer as before. |
+| No record on the base, no `git_url` in the record, or no `YAD_PRODUCT_TOKEN` on a PR from a fork (a fork is never given secrets) or outside CI | A note; nothing is cloned, and the gates defer as before. |
+| No `YAD_PRODUCT_TOKEN` on a PR/MR that is **not** from a fork, while the base record names the Product (#345) | A `WARNING [product-checkout]` line (and a `::warning` annotation on GitHub); nothing is cloned and the gates defer — the job does not fail. On GitHub the workflow passes `YAD_PR_FORK` (head repo ≠ this repo); on GitLab the pipeline is a fork's when it runs outside the MR's target project (`CI_PROJECT_ID` ≠ `CI_MERGE_REQUEST_PROJECT_ID`) — a fork's MR pipeline a maintainer runs in the target project gets its variables, and warns. A Dependabot PR is told to add the token as a Dependabot secret too. |
+| A token whose expiry the Product host reports within 30 days (#345) | A `WARNING` naming the date; the clone goes on. More than 30 days: a note with the date. |
+| The host rejects the token on its API (HTTP 401) | If the clone then fails: **FAIL**, saying the token has expired or been revoked. If the clone works: a `WARNING`. |
 | The record's `path` is outside the repo, `.`, absolute, or under `.git` | **FAIL** — CI can only check a second repo out inside the workspace. |
 | A folder on the way to `path` is a symlink (one the PR tracks, say) | **FAIL** — git would clone through it, to wherever it points. |
 | The `path` holds files this repo tracks | **FAIL** — the gates refuse a tracked Product path anyway. |
@@ -696,6 +699,18 @@ What it does in each case:
 The token is handed to git through its environment (`GIT_CONFIG_COUNT`, git 2.31+) as an HTTP header,
 never on a command line or in a URL; on GitHub the encoded form is masked too. An `ssh` `git_url`
 (`git@host:org/repo.git`) is cloned as the same repo over `https`.
+
+**The token's expiry (#345).** Before the clone, the script makes one call to the Product host's API with
+the token, handed to `curl` in a header file (`-H @file`), never on its command line, and only to the
+Product's own host — or, for GitHub's cloud, its API host (`api.github.com`, `api.<sub>.ghe.com`). The API is chosen by that host first — `github.com` and `*.ghe.com` are GitHub, a host
+with `gitlab` in its name is GitLab — and only for any other host by the CI it runs in. GitHub:
+`rate_limit`, whose `github-authentication-token-expiration` response header carries a personal access
+token's expiry. GitLab: `/api/v4/personal_access_tokens/self`, whose `expires_at` is the token's. A
+token with only `read_repository` — the least it needs to clone — may not call GitLab's API at all
+(HTTP 403); the note then points at `yad doctor`, which warns about the Product's **project** access
+tokens that expire soon (not group or personal ones). A token with no expiry, an app token or no `curl` gives a note too, never a failure — only the clone
+decides that. `yad doctor` checks where the token is SET (see
+`docs/CLI.md`); it never sees the token itself.
 
 ## Sync with existing CI (merge, never clobber)
 

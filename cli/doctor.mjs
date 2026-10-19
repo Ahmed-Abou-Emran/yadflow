@@ -15,12 +15,13 @@ import { loadDebt } from './thread.mjs';
 import { readShips } from './ledger.mjs';
 import { gitHead, insideWorkspace } from './setup.mjs';
 import { judgeRepo, runnable, shown as forTerminal } from './workspace.mjs';
-import { cliFor, hostFromGitUrl, ambiguousLegacyNames, plainHost } from './platform.mjs';
+import { cliFor, hostFromGitUrl, ambiguousLegacyNames, plainHost, detectPlatform } from './platform.mjs';
 import { legacyLogins, stampLegacyLogins } from './gate.mjs';
 import { checkRepo } from './riskmap-command.mjs';
 import { checkCodeowners, codeownersFindings } from './codeowners-command.mjs';
 import { RISK_MAP_FILE } from './riskmap.mjs';
-import { readProtection, protectionLine, protectionJSON, hideAddresses } from './protection.mjs';
+import { readProtection, protectionLine, protectionJSON, hideAddresses, repoPathFromGitUrl, shown } from './protection.mjs';
+import { readTokenPlacement, tokenLine, readExpiringProductTokens, TOKEN_NAME } from './product-token.mjs';
 import { soloTeamHint, TEAM_CMD } from './people.mjs';
 import { pagesWorkflowPath, pagesWorkflowFailsOnBuild, wiredPagesPlatform } from './docs.mjs';
 import { indexFreshness, INDEX_FILE } from './product-index.mjs';
@@ -2527,6 +2528,82 @@ export function protectionChecks(checks, root, { runner, env } = {}) {
   }
 }
 
+// #345 — does each connected code repo's CI get YAD_PRODUCT_TOKEN, the token checks/product-checkout.sh
+// clones the Product with? Only when the Product names its git_url (otherwise the record names no Product
+// to clone, and the checkout says so itself), and never for a repo that IS the Product's git repo (a
+// monorepo reads its Product from the base, with no token). Names only — see cli/product-token.mjs.
+export function productTokenChecks(checks, root, { runner, env, today } = {}) {
+  const productConfig = readJSON(productConfigPath(root), null);
+  if (!isPlainObject(productConfig) || typeof productConfig.git_url !== 'string' || !productConfig.git_url.trim()) return;
+  const opts = { ...(runner ? { runner } : {}), ...(env ? { env } : {}), authCache: new Map() };
+  const where = (url) => {
+    const host = plainHost(hostFromGitUrl(url || ''));
+    const repo = repoPathFromGitUrl(url || '');
+    return host && repo ? { host, repo: repo.toLowerCase() } : null;
+  };
+  const product = where(productConfig.git_url);
+  const registry = readJSON(path.join(root, PROJECT_FILES.reposRegistry), { repos: [] });
+  const repos = (Array.isArray(registry?.repos) ? registry.repos : []).map((repo, i) => ({ repo, i }))
+    .filter(({ repo }) => isPlainObject(repo) && typeof repo.name === 'string' && repo.name);
+  const urlOf = (repo) => {
+    if (typeof repo.git_url === 'string' && repo.git_url) return repo.git_url;
+    const repoRoot = typeof repo.path === 'string' && repo.path ? path.resolve(root, repo.path) : null;
+    return repoRoot && isCheckout(root, repo) && gitHead(repoRoot) ? (run('git', ['remote', 'get-url', 'origin'], { cwd: repoRoot }).stdout || null) : null;
+  };
+  const listed = repos.map(({ repo, i }) => ({ repo, i, url: urlOf(repo), at: where(urlOf(repo)) }));
+  let checked = 0;
+  const topOf = (dir) => {
+    const r = run('git', ['rev-parse', '--show-toplevel'], { cwd: dir });
+    if (!r.ok || !r.stdout) return null;
+    try { return fs.realpathSync(r.stdout.trim()); } catch { return r.stdout.trim(); }
+  };
+  const rootTop = topOf(root);
+  for (const { repo, i, url, at } of listed) {
+    // The Product's own repo (a monorepo) needs no token: on disk, the record writer's own test — the same
+    // git top as the Product (review 1); else the same host and path.
+    const repoRoot = typeof repo.path === 'string' && repo.path ? path.resolve(root, repo.path) : null;
+    const onDisk = repoRoot && exists(repoRoot) ? topOf(repoRoot) : null;
+    if (onDisk && rootTop && onDisk === rootTop) continue;
+    if (!onDisk && at && product && at.host === product.host && at.repo === product.repo) continue;
+    // A repo on disk with no product-link record has no checkout that reads the token (review 1): CI only
+    // speaks where the record is, and so does this. CI reads it from the default branch, so a record
+    // committed there counts though this clone sits on a branch without it (review 2) — as E120's check.
+    if (onDisk && !exists(path.join(repoRoot, PRODUCT_LINK))) {
+      const branch = typeof repo.default_branch === 'string' && repo.default_branch ? repo.default_branch : 'main';
+      const ref = run('git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { cwd: repoRoot }).ok ? `origin/${branch}` : 'HEAD';
+      if (!run('git', ['cat-file', '-e', `${ref}:${PRODUCT_LINK}`], { cwd: repoRoot }).ok) continue;
+    }
+    const platform = repo.platform || detectPlatform(url || '') || null;
+    if (platform !== 'github' && platform !== 'gitlab') continue;
+    checked++;
+    const others = (group) => listed
+      .filter((o) => o.repo !== repo && o.at && at && o.at.host === at.host && o.at.repo.startsWith(`${group.toLowerCase()}/`))
+      .map((o) => shown(o.repo.name));
+    const line = tokenLine(readTokenPlacement({ platform, gitUrl: url }, opts), { name: forTerminal(repo.name), others });
+    const id = hideAddresses(repo.name) === repo.name ? `product-token:${repo.name}` : `product-token:#${i + 1}`;
+    check(checks, id, 'product-token', line.status, line.message, line.hint || '');
+  }
+  const productPlatform = productConfig.platform || detectPlatform(productConfig.git_url) || null;
+  // Whatever platform the code repos are on (review 2): a GitHub repo can hold a GitLab Product's token.
+  if (checked && productPlatform === 'gitlab') {
+    const r = readExpiringProductTokens({ gitUrl: productConfig.git_url }, { ...opts, ...(today ? { today } : {}) });
+    if (!r.known) {
+      check(checks, 'product-token-expiry', 'product-token', 'warn', `whether one of the Product's access tokens that can clone it expires soon is not known — ${r.why}`);
+    } else {
+      for (const [k, t] of r.soon.entries()) {
+        const when = t.days < 0 ? `expired on ${t.expires}` : `expires on ${t.expires} (in ${t.days} day(s))`;
+        // One id per token (review 1): GitLab's own token id, since two tokens may share a name (a rotation
+        // often keeps it, review 2); its place in the list when GitLab gave none.
+        check(checks, Number.isInteger(t.id) ? `product-token-expiry:${t.id}` : `product-token-expiry:#${k + 1}`, 'product-token', 'warn',
+          `the Product's access token ${shown(t.name)} (${t.scopes.map(shown).join(', ')}) ${when} — if it is the ${TOKEN_NAME} of a code repo, the Product-reading gates there will fail their checkout`,
+          t.days < 0
+            ? 'make a new token that can read the Product and set it as YAD_PRODUCT_TOKEN on each code repo that used the expired one (yad cannot see which token a variable holds); this line stops 30 days after the expiry date'
+            : 'make a new token that can read the Product and set it as YAD_PRODUCT_TOKEN on each code repo that used the old one (yad cannot see which token a variable holds); revoking the old one in the Product\'s Settings → Access tokens once it is replaced clears this line');
+      }
+    }
+  }
+}
+
 // Phase 6 — feature-thread integrity. A change-epic must thread to a real parent and its denormalized
 // `thread` cache must equal the computed root; an open hotfix reconcile-debt is a warn (the next change
 // on that thread is blocked at the gate until it is paid). Pure reporting, like the other sections.
@@ -2609,6 +2686,7 @@ export function collectDoctor(root, { headCount = null } = {}) {
   riskMapChecks(checks, root);
   codeownersChecks(checks, root);
   protectionChecks(checks, root);
+  productTokenChecks(checks, root);
   foundationChecks(checks, root);
   shapeChecks(checks, root);
   indexChecks(checks, root);

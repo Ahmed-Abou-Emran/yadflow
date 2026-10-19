@@ -7,9 +7,12 @@
 # the BASE, never as the PR leaves it: a PR must not choose what CI clones, or where.
 #
 # Needs the YAD_PRODUCT_TOKEN secret (a token that can read the Product: a GitHub fine-grained token or
-# App token, a GitLab project/group access token). Without it — the default, and every PR from a fork —
-# nothing is cloned and the gates defer, as before. With it, a clone that fails FAILS the job: a broken
-# setup must not read like a deferral.
+# App token, a GitLab project/group access token). Without it nothing is cloned and the gates defer. A PR
+# from a fork never gets a secret, so there that is a note; on any other PR in CI the record says the team
+# wants the Product read, so a missing token is a loud WARNING (#345) — still not a failure. With a token,
+# a clone that fails FAILS the job: a broken setup must not read like a deferral. Before the clone, one
+# call to the Product host's API with the token reads its expiry date, so CI warns 30 days before the
+# token stops working and says "rejected" when the platform refuses it (#345).
 set -euo pipefail
 
 # --- shared Product settings file (byte-identical across the gates; they are standalone by design, so
@@ -77,8 +80,31 @@ url="$(field git_url)"
 dest="$(field path)"
 branch="$(field default_branch)"
 
+# A warning the CI shows as one: a GitHub annotation on the run (and its PR), and a WARNING line in the log
+# on every platform (GitLab has no annotation from a script).
+warn() {
+  echo "WARNING [product-checkout]: $1"
+  [ "${GITHUB_ACTIONS:-}" != true ] || echo "::warning title=product-checkout::$1"
+}
 if [ -z "${YAD_PRODUCT_TOKEN:-}" ]; then
+  # Whether this PR comes from a fork, which never gets a secret: GitHub's workflow passes YAD_PR_FORK
+  # (head repo != this repo); GitLab names both projects. Outside CI nothing is known, and it is a note.
+  _fork=""
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then _fork="${YAD_PR_FORK:-}"
+  elif [ "${GITLAB_CI:-}" = true ] && [ -n "${CI_MERGE_REQUEST_PROJECT_ID:-}" ]; then
+    # A pipeline that runs OUTSIDE the MR's target project (a fork's own pipeline) never gets the target's
+    # variables; a fork's MR pipeline a maintainer runs IN the target project does (review 1).
+    if [ "${CI_PROJECT_ID:-}" != "${CI_MERGE_REQUEST_PROJECT_ID}" ]; then _fork=true; else _fork=false; fi
+  fi
+  if [ -n "$url" ] && { [ "${GITHUB_ACTIONS:-}" = true ] || [ "${GITLAB_CI:-}" = true ]; } && [ "$_fork" != true ]; then
+    warn "no YAD_PRODUCT_TOKEN secret — the Product is not checked out, so contract-check, lineage-check, epic-open and reconcile-debt-check cannot read it and only defer on this PR."
+    echo "  ${rec} on ${BASE} names the Product, so this repo is meant to read it in CI. Add a token that can read the Product"
+    echo "  as the YAD_PRODUCT_TOKEN secret (GitHub: Actions secret; GitLab: a masked, NOT protected CI/CD variable on this project)."
+    [ "${GITHUB_ACTOR:-}" != 'dependabot[bot]' ] || echo "  This run is a Dependabot PR, which gets Dependabot secrets only: add the token there too."
+    exit 0
+  fi
   echo "note [product-checkout]: no YAD_PRODUCT_TOKEN secret — the Product is not checked out, and the gates defer."
+  [ "$_fork" != true ] || echo "  This PR comes from a fork, which is never given secrets."
   echo "  To check it out here, add a token that can read the Product as the YAD_PRODUCT_TOKEN secret (CI variable)."
   exit 0
 fi
@@ -126,16 +152,97 @@ case "$url" in
   http://*) echo "FAIL [product-checkout]: ${rec} on ${BASE} has an http:// git_url — the token is not sent over plain http. Use the https url."; exit 1 ;;
   *) echo "FAIL [product-checkout]: ${rec} on ${BASE} has a git_url git cannot clone over https: '${url}'."; exit 1 ;;
 esac
+# --- the token's expiry (#345) ---
+# One call to the Product host's API with the token: GitHub answers a personal access token's expiry in
+# the `github-authentication-token-expiration` header of any call; GitLab answers a personal, project or
+# group access token's `expires_at` at /personal_access_tokens/self (GitLab 15.5+). The token goes to curl
+# in a header FILE (`-H @file`), never on its command line. Anything this cannot read is a note and the
+# clone goes on: only the clone decides whether the job fails. A file:// url (a local test) has no API.
+days_from_civil() { # YYYY-MM-DD -> days since 1970-01-01, in shell arithmetic (GNU and BSD date differ)
+  local y=$((10#${1:0:4})) m=$((10#${1:5:2})) d=$((10#${1:8:2}))
+  [ "$m" -le 2 ] && y=$((y - 1))
+  local era=$(( (y >= 0 ? y : y - 399) / 400 ))
+  local yoe=$(( y - era * 400 ))
+  local mp=$(( m > 2 ? m - 3 : m + 9 ))
+  local doy=$(( (153 * mp + 2) / 5 + d - 1 ))
+  local doe=$(( yoe * 365 + yoe / 4 - yoe / 100 + doy ))
+  echo $(( era * 146097 + doe - 719468 ))
+}
+_rejected=""
+_host=""
+case "$url" in https://*) _h="${url#https://}"; _host="${_h%%/*}"; _host="${_host##*@}" ;; esac
+_api=""
+_kind=""
+# Which API, from the Product's HOST first (review 1: a GitHub-run code repo can read a GitLab Product),
+# and only for a host that names neither platform, from the CI it runs in. Always the Product's own host
+# (or api.github.com / api.<sub>.ghe.com for GitHub's cloud): the token goes nowhere the clone does not.
+_hn="$(printf '%s' "${_host%%:*}" | tr '[:upper:]' '[:lower:]')"
+if [ -n "$_hn" ]; then
+  case "$_hn" in
+    github.com) _api="https://api.github.com/rate_limit"; _kind=github ;;
+    *.ghe.com) _api="https://api.${_hn}/rate_limit"; _kind=github ;;
+    gitlab.com|*gitlab*) _api="https://${_host}/api/v4/personal_access_tokens/self"; _kind=gitlab ;;
+    *) if [ "${GITLAB_CI:-}" = true ]; then _api="https://${_host}/api/v4/personal_access_tokens/self"; _kind=gitlab
+       elif [ "${GITHUB_ACTIONS:-}" = true ]; then _api="https://${_host}/api/v3/rate_limit"; _kind=github
+       fi ;;
+  esac
+fi
+if [ -n "$_api" ] && command -v curl >/dev/null 2>&1; then
+  _tmp="$(mktemp -d)"
+  trap 'rm -rf "$_tmp"' EXIT
+  ( umask 077
+    if [ "$_kind" = github ]; then printf 'Authorization: Bearer %s\n' "$YAD_PRODUCT_TOKEN"; else printf 'PRIVATE-TOKEN: %s\n' "$YAD_PRODUCT_TOKEN"; fi > "$_tmp/h" )
+  _code="$(curl -sS --max-time 15 -o "$_tmp/body" -D "$_tmp/head" -w '%{http_code}' -H @"$_tmp/h" -- "$_api" 2>/dev/null)" || _code=""
+  rm -f "$_tmp/h"
+  _exp=""
+  if [ "$_code" = 200 ]; then
+    if [ "$_kind" = github ]; then
+      _exp="$(tr -d '\r' < "$_tmp/head" | sed -nE 's/^[Gg][Ii][Tt][Hh][Uu][Bb]-[Aa][Uu][Tt][Hh][Ee][Nn][Tt][Ii][Cc][Aa][Tt][Ii][Oo][Nn]-[Tt][Oo][Kk][Ee][Nn]-[Ee][Xx][Pp][Ii][Rr][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/p' | head -1)" || _exp=""
+    else
+      _exp="$(tr -d '\n\r' < "$_tmp/body" | sed -nE 's/.*"expires_at"[[:space:]]*:[[:space:]]*"([0-9]{4}-[0-9]{2}-[0-9]{2})[^"]*".*/\1/p')" || _exp=""
+    fi
+    if [ -n "$_exp" ]; then
+      _left=$(( $(days_from_civil "$_exp") - $(days_from_civil "$(date -u +%Y-%m-%d)") ))
+      if [ "$_left" -le 30 ]; then
+        warn "YAD_PRODUCT_TOKEN expires on ${_exp} (in ${_left} day(s)) — renew it before then, or every Product-reading gate on this repo fails its checkout."
+      else
+        echo "note [product-checkout]: YAD_PRODUCT_TOKEN expires on ${_exp}."
+      fi
+    else
+      echo "note [product-checkout]: the platform did not say when YAD_PRODUCT_TOKEN expires (a token with no expiry date, or an app token)."
+    fi
+  elif [ "$_code" = 401 ]; then
+    _rejected=1
+  elif [ "$_code" = 403 ] && [ "$_kind" = gitlab ]; then
+    # A clone-only token (read_repository) may not call GitLab's API at all: its expiry is then read by
+    # `yad doctor`, from the Product's own list of access tokens.
+    echo "note [product-checkout]: ${_host} would not tell this token its own expiry date (HTTP 403 — a token with only read_repository cannot use the API); \`yad doctor\` warns about the Product's project access tokens that expire soon."
+  else
+    echo "note [product-checkout]: could not read YAD_PRODUCT_TOKEN's expiry date from ${_host} (${_code:+HTTP }${_code:-no answer}); going on with the clone."
+  fi
+fi
+
 # The token never goes on a command line or into a URL, so no process list or log line shows it; git
 # reads the header from its environment (GIT_CONFIG_COUNT, git 2.31+). GitHub is told to mask the
 # encoded form too — it only masks the secret as written.
-case "${GITLAB_CI:-}" in true) _user=oauth2 ;; *) _user=x-access-token ;; esac
+# The user name the host expects with a token: by the host's kind when the API choice above named one
+# (review 2), else by the CI this runs in.
+case "${_kind:-}" in
+  gitlab) _user=oauth2 ;;
+  github) _user=x-access-token ;;
+  *) case "${GITLAB_CI:-}" in true) _user=oauth2 ;; *) _user=x-access-token ;; esac ;;
+esac
 _auth="$(printf '%s:%s' "$_user" "$YAD_PRODUCT_TOKEN" | base64 | tr -d '\n')"
 [ "${GITHUB_ACTIONS:-}" != true ] || echo "::add-mask::${_auth}"
 if ! GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="Authorization: Basic ${_auth}" \
     GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 ${branch:+--branch "$branch"} -- "$url" "$dest"; then
   echo "FAIL [product-checkout]: could not clone the Product from ${url}${branch:+ (${branch})} into '${dest}'."
-  echo "  Check that YAD_PRODUCT_TOKEN can read that repo, and that git_url and default_branch in ${rec} are right."
+  if [ -n "$_rejected" ]; then
+    echo "  ${_host} rejected YAD_PRODUCT_TOKEN (HTTP 401): it has expired or been revoked. Make a new token that can read the Product and set it as the secret."
+  else
+    echo "  Check that YAD_PRODUCT_TOKEN can read that repo, and that git_url and default_branch in ${rec} are right."
+  fi
   exit 1
 fi
+[ -z "$_rejected" ] || warn "${_host} rejected YAD_PRODUCT_TOKEN on its API (HTTP 401), though the clone worked — check that it has not expired or been revoked."
 echo "note [product-checkout]: the Product is checked out at '${dest}'${branch:+ (${branch})} — the gates read it there."

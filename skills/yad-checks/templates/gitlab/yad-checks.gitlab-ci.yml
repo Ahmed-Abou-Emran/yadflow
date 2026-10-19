@@ -52,7 +52,7 @@ yad-contract-check:
   needs: []
   script:
     # E120: check the Product out where .sdlc/product-link.json says, when the YAD_PRODUCT_TOKEN CI/CD
-    # variable is set (masked); without it this prints a note and the gate defers, as before.
+    # variable is set (masked); without it the gate defers, with a WARNING unless the MR comes from a fork (#345).
     - bash checks/product-checkout.sh "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
     - bash checks/contract-check.sh "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
 
@@ -81,7 +81,7 @@ yad-lineage-check:
   needs: []
   script:
     # E120: check the Product out where .sdlc/product-link.json says, when the YAD_PRODUCT_TOKEN CI/CD
-    # variable is set (masked); without it this prints a note and the gate defers, as before.
+    # variable is set (masked); without it the gate defers, with a WARNING unless the MR comes from a fork (#345).
     - bash checks/product-checkout.sh "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
     - bash checks/lineage-check.sh "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
 
@@ -90,7 +90,7 @@ yad-epic-open:
   needs: []
   script:
     # E120: check the Product out where .sdlc/product-link.json says, when the YAD_PRODUCT_TOKEN CI/CD
-    # variable is set (masked); without it this prints a note and the gate defers, as before.
+    # variable is set (masked); without it the gate defers, with a WARNING unless the MR comes from a fork (#345).
     - bash checks/product-checkout.sh "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
     - bash checks/epic-open.sh "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
 
@@ -99,7 +99,7 @@ yad-reconcile-debt:
   needs: []
   script:
     # E120: check the Product out where .sdlc/product-link.json says, when the YAD_PRODUCT_TOKEN CI/CD
-    # variable is set (masked); without it this prints a note and the gate defers, as before.
+    # variable is set (masked); without it the gate defers, with a WARNING unless the MR comes from a fork (#345).
     - bash checks/product-checkout.sh "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
     - bash checks/reconcile-debt-check.sh "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
 
