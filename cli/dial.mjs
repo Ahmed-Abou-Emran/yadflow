@@ -16,7 +16,7 @@ import path from 'node:path';
 
 import { c, fail, hand, info, ok, readJSONStrict, warn, writeJSON, emitJSON } from './lib.mjs';
 import {
-  effectiveAdvance, epicRel, epicRoot, epicStories, isGateStep, killSwitchOn, loadAutomation, loadLedger, planKill,
+  ACTION_DIALS, effectiveAction, effectiveAdvance, epicRel, epicRoot, epicStories, isGateStep, killSwitchOn, loadAutomation, loadLedger, planKill,
   planLaneDial, planShapeDial, serializeAutomation, stepDef,
 } from './epic-state.mjs';
 import { epicFiles, PROJECT_FILES } from './manifest.mjs';
@@ -77,6 +77,7 @@ function dialShape(root, { step, to, json, bail, automation }) {
   if (!plan.ok) return bail(plan.message, plan.hint);
   const after = to ? plan.automation : automation;
   if (to && plan.changed) writeJSON(path.join(root, PROJECT_FILES.automationConfig), serializeAutomation(plan.automation));
+  if (ACTION_DIALS.includes(step)) return actionAnswer({ step, to, json, plan, automation, after });
   const eff = effectiveAdvance({ id: step }, { ...after, error: automation.error });
   if (json) {
     return emitJSON({
@@ -92,6 +93,25 @@ function dialShape(root, { step, to, json, bail, automation }) {
     info('no run record exists for a Shape step — the yad-run skill records Build steps only');
     info(`recorded, not acted on yet: nothing drives a Shape step on its own until the engine runs agents (E26), so ${step} still waits for its author. Its review gate is always a person`);
   }
+  if (killSwitchOn(automation)) warn(heldLine(automation));
+  if (to && plan.changed) hand(`commit ${PROJECT_FILES.automationConfig}  (reverse with \`yad dial ${step} --to ${to === 'auto' ? 'human' : 'auto'}\`)`);
+}
+
+// An action's dial (#356): `open-pr` lets the yad-run skill open a task's PR/MR once its checks pass,
+// without asking. The answer has the same keys as a step's, with `scope: 'action'`.
+function actionAnswer({ step, to, json, plan, automation, after }) {
+  const eff = effectiveAction({ ...after, error: automation.error }, step);
+  if (json) {
+    return emitJSON({
+      ok: true, scope: 'action', step, set: eff.set, advance: eff.advance, why: eff.why,
+      changed: !!to && plan.changed, kill: automation.kill, trust: null, ...errorKey(automation),
+    });
+  }
+  const label = c.bold(step);
+  if (!to) ok(`${label} — advance: ${eff.set}${eff.why === 'kill' ? ' (held at human)' : ''}`);
+  else if (plan.changed) ok(`${label} set to advance: ${to} for this project`);
+  else ok(`${label} was already advance: ${to} — nothing changed`);
+  if (eff.set === 'auto') info('a task\'s PR/MR is opened without asking once its checks pass (`yad open-pr --via auto`); the merge is always a person\'s');
   if (killSwitchOn(automation)) warn(heldLine(automation));
   if (to && plan.changed) hand(`commit ${PROJECT_FILES.automationConfig}  (reverse with \`yad dial ${step} --to ${to === 'auto' ? 'human' : 'auto'}\`)`);
 }

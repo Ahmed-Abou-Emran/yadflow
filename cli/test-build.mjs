@@ -838,3 +838,130 @@ test('yad build merged: a ship build ship would not write (a file another repo\'
     assert.equal(fs.readFileSync(path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json'), 'utf8'), '{ not json');
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('planAutoOpen: only this task\'s checks close, with a run that passed and was not rejected, opens a PR without asking (#356)', async () => {
+  const { planAutoOpen } = await import('./build.mjs');
+  const at = { story: 'EP-l-S01', repo: 'api' };
+  const run = (uid, over = {}) => ({ uid, story: 'EP-l-S01', repo: 'api', step: 'checks', verdict: 'approved-unchanged', signals: { checks: 'pass' }, ...over });
+  const lane = (checks, extra = {}) => ({ currentStep: 'engineer-review', steps: [{ id: 'implement', status: 'done' }, { id: 'checks', status: 'done', ...checks }], ...extra });
+  const ask = (l, runs, task = 'T01') => planAutoOpen(l, runs, { ...at, task });
+  // No close for the task, or a close for another task.
+  assert.match(ask(lane({}), []).message, /checks has not closed for T01/);
+  assert.match(ask(lane({ closed: { run: 'a', task: 'T02', date: '2026-10-20' } }), [run('a', { task: 'T02' })]).message, /has not closed for T01/);
+  // A close naming a run that is not recorded, a rejected run, a run without checks=pass.
+  assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), []).message, /trust run a, which is not recorded/);
+  assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a', { verdict: 'rejected' })]).message, /is rejected/);
+  assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a', { signals: { checks: 'fail' } })]).message, /did not record checks=pass/);
+  assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a', { signals: {} })]).message, /did not record checks=pass/);
+  // A pass: the close in `closed`, or an earlier one kept in `runs` after the next task reopened the step.
+  assert.equal(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a')]).ok, true);
+  assert.equal(ask(lane({ status: 'todo', task: 'T02', runs: [{ run: 'a', task: 'T01', date: '2026-10-19' }] }), [run('a')]).ok, true);
+  // A close naming no task counts when its run names none, or this one — never another.
+  assert.equal(ask(lane({ closed: { run: 'a' } }), [run('a')]).ok, true);
+  assert.equal(ask(lane({ closed: { run: 'a' } }), [run('a', { task: 'T01' })]).ok, true);
+  assert.equal(ask(lane({ closed: { run: 'a' } }), [run('a', { task: 'T02' })]).ok, false);
+  // The newest close wins: a later rejected re-run is not hidden by an earlier pass.
+  const twice = lane({ closed: { run: 'b', task: 'T01', date: '2026-10-20' }, runs: [{ run: 'a', task: 'T01', date: '2026-10-19' }] });
+  assert.match(ask(twice, [run('a'), run('b', { verdict: 'rejected' })]).message, /\(b\) is rejected/);
+  // Already opened by the dial: not a second time.
+  assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }, { opened: [{ task: 'T01', pr: 12 }] }), [run('a')]).message, /already opened by the dial: #12/);
+  assert.match(ask(null, []).message, /has no lane/);
+});
+
+test('yad dial open-pr: a project-wide action dial every automation.json writer keeps; doctor names a bad value (#356)', async () => {
+  const { automationChecks } = await import('./doctor.mjs');
+  const { W, P } = workspace();
+  try {
+    const file = path.join(P, '.sdlc/automation.json');
+    let r = yad(P, 'dial', 'open-pr', '--json');
+    assert.deepEqual([json(r).scope, json(r).advance, json(r).why], ['action', 'human', 'project']);
+    r = yad(P, 'dial', 'open-pr', '--to', 'auto');
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(read(file).actions, { 'open-pr': 'auto' });
+    // A Shape dial and the kill switch rewrite the file: the action dial survives each.
+    yad(P, 'dial', 'architecture', '--to', 'auto');
+    yad(P, 'kill', '--reason', 'bad deploy');
+    r = yad(P, 'dial', 'open-pr', '--json');
+    assert.deepEqual([json(r).set, json(r).advance, json(r).why], ['auto', 'human', 'kill']);
+    yad(P, 'unkill');
+    assert.deepEqual([read(file).actions, read(file).steps], [{ 'open-pr': 'auto' }, { architecture: 'auto' }]);
+    assert.equal(json(yad(P, 'dial', 'open-pr', '--json')).advance, 'auto');
+    // Set for the project, never per lane.
+    r = yad(P, 'dial', 'EP-l', 'EP-l-S01', '--repo', 'api', 'open-pr', '--to', 'auto');
+    assert.notEqual(r.code, 0);
+    assert.match(r.out, /open-pr is set for the whole project, not per lane/);
+    // Back to human: the key is removed.
+    yad(P, 'dial', 'open-pr', '--to', 'human');
+    assert.equal(read(file).actions, undefined);
+    // Doctor: an unknown value or action is named.
+    fs.writeFileSync(file, JSON.stringify({ steps: {}, actions: { 'open-pr': 'yes', merge: 'auto' } }));
+    const checks = [];
+    automationChecks(checks, P);
+    const unknown = checks.find((x) => x.id === 'automation:unknown');
+    assert.match(unknown.message, /actions\.open-pr: "yes" is not human or auto/);
+    assert.match(unknown.message, /actions\.merge: not an action this release knows/);
+    assert.equal(json(yad(P, 'dial', 'open-pr', '--json')).advance, 'human', '"yes" is not auto');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad open-pr --via auto: opened on the standing approval only after this task\'s checks passed; refusals push nothing; recorded on the lane (#356)', async () => {
+  const { runOpenPr } = await import('./openpr.mjs');
+  const { buildMerged } = await import('./build.mjs');
+  const { W, P, dir, api, sha } = workspace();
+  const prev = process.exitCode;
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github', default_branch: 'main' }, { name: 'web', path: '../web' }] }) });
+    git(P, 'add', '-A');
+    git(P, 'commit', '-q', '-m', 'chore: register api on github');
+    const branch = 'feat/EP-l-S01-T01-orders';
+    git(api, 'checkout', '-q', '-b', branch);
+    write(api, { 'src/orders.js': 'x\n' });
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', 'feat: orders\n\nTask: EP-l-S01-T01');
+    const pushed = () => git(api, 'ls-remote', '--heads', 'origin', branch) !== '';
+    let created = 0;
+    const creator = () => { created += 1; return { ok: true, url: 'https://github.com/o/api/pull/12' }; };
+    const runner = () => ({ ok: false, stdout: '', stderr: 'no platform here' });
+    const open = (over = {}) => runOpenPr(api, { product: P, via: 'auto', creator, runner, today: '2026-10-20', ...over });
+    // The dial is human: refused, nothing pushed.
+    await assert.rejects(open, /the open-pr dial is human/);
+    yad(P, 'dial', 'open-pr', '--to', 'auto');
+    // No lane yet, then checks not closed for T01: refused, nothing pushed.
+    await assert.rejects(open, /has no lane/);
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    for (const step of ['spec', 'tasks']) yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', step, 'done');
+    const impl = json(yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', 'implement', '--verdict', 'approved-unchanged', '--task', 'T01', '--json')).uid;
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'done', '--run', impl, '--task', 'T01');
+    await assert.rejects(open, /checks has not closed for T01/);
+    const checks = json(yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', 'checks', '--verdict', 'approved-unchanged', '--signal', 'checks=pass', '--task', 'T01', '--json')).uid;
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'checks', 'done', '--run', checks, '--task', 'T01');
+    // The kill switch holds it.
+    yad(P, 'kill', '--reason', 'freeze');
+    await assert.rejects(open, /kill switch .* holds it at human/);
+    yad(P, 'unkill');
+    // A bad --via; a branch naming no task.
+    await assert.rejects(() => open({ via: 'yes' }), /--via must be auto or human/);
+    await assert.rejects(() => open({ task: 'nope' }), /names no task/);
+    assert.equal(pushed(), false, 'no refusal pushed the branch');
+    assert.equal(created, 0);
+    // Opened: pushed, created once, and recorded on the lane with the run that earned it.
+    const res = await open();
+    assert.deepEqual([res.via, pushed(), created], ['auto', true, 1]);
+    const lane = read(path.join(dir, '.sdlc/build-state/EP-l-S01.json')).repos.api;
+    assert.deepEqual(lane.opened, [{ task: 'T01', pr: 12, url: 'https://github.com/o/api/pull/12', via: 'auto', run: checks, by: 'alice', date: '2026-10-20' }]);
+    // Not a second time.
+    await assert.rejects(open, /already opened by the dial: #12/);
+    // `yad build merged` reads the recorded number: no search is needed (the listing would fail here).
+    const view = (cmd, args) => (cmd === 'gh' && args[1] === 'view' && args[2] === '12'
+      ? { ok: true, stdout: JSON.stringify({ state: 'OPEN', headRefName: branch, url: 'u12', body: '', statusCheckRollup: [] }), stderr: '' }
+      : { ok: false, stdout: '', stderr: 'x' });
+    const m = await buildMerged(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', today: '2026-10-20', runner: view });
+    assert.deepEqual([m.state, m.pr], ['open', 12]);
+    // A human open is today's open: no dial asked, nothing recorded.
+    git(api, 'checkout', '-q', '-b', 'feat/EP-l-S01-T02-list');
+    const h = await runOpenPr(api, { product: P, creator, runner });
+    assert.equal(h.via, 'human');
+    assert.equal(read(path.join(dir, '.sdlc/build-state/EP-l-S01.json')).repos.api.opened.length, 1);
+    void sha;
+  } finally { process.exitCode = prev; fs.rmSync(W, { recursive: true, force: true }); }
+});
