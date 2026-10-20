@@ -794,3 +794,30 @@ test('yad build merged through the CLI: help names it, and --json carries the st
     assert.match(r.stdout, /cannot see whether EP-l-S01-T01 merged/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('yad build merged: a PR merged off the default branch, or naming another task, is refused, never "merged" (#355 review 1)', async () => {
+  const { buildMerged } = await import('./build.mjs');
+  const { W, P, api, sha } = workspace();
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
+    git(api, 'checkout', '-q', '-b', 'release/1.x');
+    write(api, { 'src/rel.js': 'x\n' });
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', 'feat: release fix\n\nTask: EP-l-S01-T01');
+    const off = git(api, 'rev-parse', 'HEAD');
+    git(api, 'push', '-q', 'origin', 'release/1.x');
+    git(api, 'checkout', '-q', 'main');
+    let oid = off;
+    const runner = (cmd, args) => (cmd === 'gh' && args[1] === 'view'
+      ? { ok: true, stdout: JSON.stringify({ state: 'MERGED', mergedAt: '2026-10-19T10:00:00Z', mergeCommit: oid ? { oid } : null, headRefName: 'feat/EP-l-S01-T01-x', url: 'u', body: '', statusCheckRollup: [] }), stderr: '' }
+      : { ok: false, stdout: '', stderr: 'x' });
+    const ask = () => buildMerged(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', pr: '7', today: '2026-10-20', runner });
+    await assert.rejects(ask, /is not on api's main/);
+    oid = sha.T02;
+    await assert.rejects(ask, /names EP-l-S01-T02, not EP-l-S01-T01/);
+    oid = null;
+    await assert.rejects(ask, /merged, but the platform names no merge commit/);
+    oid = sha.T01;
+    assert.deepEqual([(await ask()).state, (await ask()).mergeCommit], ['merged', sha.T01]);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});

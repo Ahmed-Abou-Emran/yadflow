@@ -710,10 +710,15 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
     hand('open a new PR/MR for the task, or ask the person who closed it');
     return out('closed', facts);
   }
-  ok(`PR/MR #${n} for ${id} merged${got.mergeCommit ? ` (${String(got.mergeCommit).slice(0, 12)})` : ''}`);
+  // Merged, but only an answer `build ship` would accept is `merged`: the same merge-commit checks run here
+  // first (on the default branch, not naming another task), so a PR merged into a release branch or a
+  // stacked parent is a refusal now, not a `merged` the ship then refuses.
+  if (!got.mergeCommit) throw err(CODE, `PR/MR #${n} in ${repo} is merged, but the platform names no merge commit`, 'record it from the commit instead: yad build ship … --merge-commit <sha> with no --pr');
+  const c = checkCommit(where, { story, task, repo, mergeCommit: got.mergeCommit, strict: false, fetch });
+  ok(`PR/MR #${n} for ${id} merged (${c.sha.slice(0, 12)})`);
   if (!ship) {
     hand(`record the ship: ${shipCmd(n)} (or run this again with --ship)`);
-    return out('merged', { ...facts, mergeCommit: got.mergeCommit || null });
+    return out('merged', { ...facts, mergeCommit: c.sha });
   }
   // The ship is written by `build ship` itself, never by a second path.
   const res = await buildShip(root, { story, task, repo, pr: String(n), today, fetch, runner, prReader });
