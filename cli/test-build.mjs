@@ -1168,13 +1168,11 @@ test('a grouped PR: several small tasks of one story in one PR, each shipped fro
     assert.equal(trailerTask('fix: a\n\nTask:\n  EP-l-S01-T01'), 'EP-l-S01-T01');
     assert.equal(trailerTask('fix: a\n\nTask:\nTask: EP-l-S01-T02'), 'EP-l-S01-T02');
     const view = { state: 'MERGED', mergedAt: '2026-10-20T10:00:00Z', mergeCommit: { oid: m }, headRefName: 'feat/EP-l-S01-T01-small-fixes', url: 'https://github.com/o/api/pull/20', body: '', statusCheckRollup: [] };
-    const commits = { commits: [{ messageHeadline: 'fix: small T01', messageBody: 'Task: EP-l-S01-T01' }, { messageHeadline: 'fix: small T02', messageBody: 'Task: EP-l-S01-T02' }] };
+    const commits = { commits: [{ commit: { message: 'fix: small T01\n\nTask: EP-l-S01-T01' } }, { commit: { message: 'fix: small T02\n\nTask: EP-l-S01-T02' } }] };
     let commitsOk = true;
     const runner = (cmd, args) => {
-      if (cmd === 'gh' && args[1] === 'view' && args[2] === '20') {
-        if (args.includes('commits')) return commitsOk ? { ok: true, stdout: JSON.stringify(commits), stderr: '' } : { ok: false, stdout: '', stderr: 'denied' };
-        return { ok: true, stdout: JSON.stringify(view), stderr: '' };
-      }
+      if (cmd === 'gh' && args[0] === 'api' && args[1].startsWith('repos/{owner}/{repo}/pulls/20/commits')) return commitsOk ? { ok: true, stdout: JSON.stringify(commits.commits), stderr: '' } : { ok: false, stdout: '', stderr: 'denied' };
+      if (cmd === 'gh' && args[1] === 'view' && args[2] === '20') return { ok: true, stdout: JSON.stringify(view), stderr: '' };
       if (cmd === 'gh' && args[1] === 'list') return { ok: true, stdout: JSON.stringify([{ number: 20, state: 'MERGED', headRefName: view.headRefName, url: view.url }]), stderr: '' };
       return { ok: false, stdout: '', stderr: 'x' };
     };
@@ -1196,7 +1194,7 @@ test('a grouped PR: several small tasks of one story in one PR, each shipped fro
     commitsOk = true;
     // More than a page of commits: as unread as a failed read (review 1).
     const many = commits.commits;
-    commits.commits = Array.from({ length: 100 }, () => ({ messageHeadline: 'chore: x', messageBody: '' }));
+    commits.commits = Array.from({ length: 100 }, () => ({ commit: { message: 'chore: x' } }));
     await assert.rejects(() => buildShip(P, { ...base, task: 'T02', pr: '20' }), /\(more than one page of them\)/);
     commits.commits = many;
     // Each task ships from the one PR, with the same merge commit.

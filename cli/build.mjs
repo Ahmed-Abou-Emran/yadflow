@@ -665,9 +665,11 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
 // block, the key in any case, folded values), then the FIRST non-empty `Task:` value, and only when it is a
 // task id. Used on messages the platform returns; local commits are read by git itself (`gitTasks`).
 const TASK_ID_ONLY = /^EP-[a-z0-9-]+-S\d+-T\d+$/;
-export function trailerTask(message) {
-  const r = spawnSync('git', ['interpret-trailers', '--parse', '--no-divider'], { input: String(message || ''), encoding: 'utf8' });
-  if (r.status !== 0) return null;
+// Run in the code repo's own checkout (`cwd`), so its git settings apply as they do to `gitTasks`. Throws
+// when git cannot read the message: that is a failed read, never "no task".
+export function trailerTask(message, { cwd } = {}) {
+  const r = spawnSync('git', ['interpret-trailers', '--parse', '--no-divider'], { input: String(message || ''), encoding: 'utf8', cwd });
+  if (r.error || r.status !== 0) throw new Error(`git interpret-trailers failed${r.error ? `: ${r.error.message}` : ''}`);
   for (const line of String(r.stdout).split('\n')) {
     const m = line.match(/^task[ \t]*:[ \t]*(.*?)[ \t]*$/i);
     if (m && m[1]) return TASK_ID_ONLY.test(m[1]) ? m[1] : null;
@@ -695,12 +697,16 @@ export function prTasks(platform, n, { cwd, runner = run } = {}) {
     if (!r.ok) return { ok: false, reason: r.stderr || 'glab api merge_requests commits failed' };
     try { messages = (JSON.parse(r.stdout) || []).map((c) => c?.message || ''); } catch { return { ok: false, reason: 'unreadable glab answer' }; }
   } else {
-    const r = runner('gh', ['pr', 'view', String(n), '--json', 'commits'], { cwd });
-    if (!r.ok) return { ok: false, reason: r.stderr || 'gh pr view failed' };
-    try { messages = ((JSON.parse(r.stdout) || {}).commits || []).map((c) => `${c?.messageHeadline || ''}\n\n${c?.messageBody || ''}`); } catch { return { ok: false, reason: 'unreadable gh answer' }; }
+    // The whole message, as the commit holds it: `gh pr view --json commits` splits it into a headline and a
+    // body, and joining them back can make a trailer the commit does not have.
+    const r = runner('gh', ['api', `repos/{owner}/{repo}/pulls/${n}/commits?per_page=${COMMIT_PAGE}`], { cwd });
+    if (!r.ok) return { ok: false, reason: r.stderr || 'gh api pulls commits failed' };
+    try { messages = (JSON.parse(r.stdout) || []).map((c) => c?.commit?.message || ''); } catch { return { ok: false, reason: 'unreadable gh answer' }; }
   }
   if (!Array.isArray(messages)) return { ok: false, reason: 'unreadable answer' };
-  return { ok: true, tasks: [...new Set(messages.map(trailerTask).filter(Boolean))], partial: messages.length >= COMMIT_PAGE };
+  let tasks;
+  try { tasks = [...new Set(messages.map((m) => trailerTask(m, { cwd })).filter(Boolean))]; } catch (e) { return { ok: false, reason: e.message }; }
+  return { ok: true, tasks, partial: messages.length >= COMMIT_PAGE };
 }
 
 // Does PR/MR `n` (read as `got`) carry `story`-`task`? `this` — its branch names it; `group` — another task's
