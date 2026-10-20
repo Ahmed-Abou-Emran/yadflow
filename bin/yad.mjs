@@ -201,6 +201,10 @@ ${c.bold('Where am I / what next')}
                                        kept in .sdlc/automation.json. No --to shows it. A review gate is
                                        always human. Recorded only for now: nothing drives a Shape step
                                        on its own until the engine runs agents
+  yad dial open-pr [--to auto|human] [--json]
+                                       The standing approval to open a task's PR/MR once its checks
+                                       pass (\`yad open-pr --via auto\`), for the whole project. The
+                                       merge is always a person's; the kill switch holds it at human
   yad dial <epic> <story> --repo <name> <step> [--to auto|human] [--json]
                                        A Build lane step's dial (spec, tasks, implement, checks), in
                                        build-state; on auto the yad-run skill moves past it after a clean
@@ -271,13 +275,15 @@ ${c.bold('Build helpers')}
                                        Verified badge is judged in CI. install-deps runs npm ci (it
                                        replaces node_modules); --no-build skips it and build/test/lint.
                                        Exit 1 on any FAIL, 130 when stopped with Ctrl-C
-  yad open-pr [--repo <name>] [--title <text>]
+  yad open-pr [--repo <name>] [--title <text>] [--via auto]
                                        Open a task PR/MR against the repo's DEFAULT branch (never a
                                        hardcoded main; --base overrides) — stage-aware on the Product: a
                                        review/EP-* branch opens the Shape artifact-review PR
                                        (delegates to gate open), any other Product branch uses the
                                        code-task template. --title sets the PR/MR title (default: -m,
-                                       else the last commit's subject)
+                                       else the last commit's subject). --via auto: opened on the
+                                       standing approval (yad dial open-pr) once this task's checks
+                                       passed, and recorded on its lane
   yad ship --type <t> -m <subject> [--title <text>]
                                        Commit AND open the task PR/MR in one step (stage-aware).
                                        --title sets the PR/MR title (default: the commit subject)
@@ -955,12 +961,14 @@ async function main() {
       break;
     }
     case 'open-pr':
-      result = await commands.runOpenPr(o.dir, { repo: o.repo, product: o.product, platform: o.platform, base: o.base, title: o.title || o.message, task: o.task, risk: o.risk, contractChange: o.contractChange });
+      result = await commands.runOpenPr(o.dir, { repo: o.repo, product: o.product, platform: o.platform, base: o.base, title: o.title || o.message, task: o.task, risk: o.risk, contractChange: o.contractChange, via: o.via, today });
       break;
     case 'ship':
       // The ledger override is its own act (E49): recorded in its own commit, never folded into a
       // commit-and-open-PR run. Refused, never ignored.
       if (o.manual || o.reason !== undefined) { refuse('yad ship takes no --manual/--reason: commit with `yad commit --manual --reason "<why>" …`, then `yad open-pr`'); break; }
+      // Opening on the standing approval follows the checks, not the commit (#356): its own command.
+      if (o.via !== undefined) { refuse('yad ship takes no --via: commit, run the checks, then `yad open-pr --via auto`'); break; }
       result = await commands.runShip(o.dir, { type: o.type, message: o.message, task: o.task, ai: o.ai, contractChange: o.contractChange, dryRun: o.dryRun, force: o.force, repo: o.repo, product: o.product, platform: o.platform, base: o.base, title: o.title, risk: o.risk });
       break;
     case 'checkpoint': {

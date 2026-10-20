@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { ok, info, hand, warn, run, readJSON, readJSONStrict, writeJSON, isPlainObject, exists } from './lib.mjs';
-import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, nextAction, loadAutomation, effectiveAdvance } from './epic-state.mjs';
+import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, nextAction, loadAutomation, effectiveAdvance, effectiveAction } from './epic-state.mjs';
 import { DEFAULT_LIFECYCLE, laneOrder, laneAuthorSteps } from './lifecycle.mjs';
 import { epicFiles, PROJECT_FILES } from './manifest.mjs';
 import { err } from './errors.mjs';
@@ -675,6 +675,23 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
       !where.platform || where.checkout ? `once it has merged, record it by hand: yad build ship ${story} --task ${task} --repo ${repo} --merge-commit <sha>` : `\`yad repo clone ${repo}\` fetches it`);
   }
   let n = pr && pr !== true ? Number(pr) : null;
+  // A PR/MR the dial opened (#356) is recorded on the lane: that number, before any search.
+  const lane = lanes(ctx.buildState, story).repos[repo];
+  const opened = !n && isPlainObject(lane) && Array.isArray(lane.opened) ? lane.opened.filter((o) => o?.task === task && Number(o.pr) > 0).pop() : null;
+  if (opened) {
+    n = Number(opened.pr);
+    info(`PR/MR #${n} was opened by the dial on ${opened.date || 'an earlier day'}`);
+  }
+  // The recorded PR closed without a merge: a person may have opened another, so search as usual.
+  let first = null;
+  if (opened) {
+    first = readMergedPr(where.platform, n, { cwd: where.checkout, runner });
+    if (first.ok && first.state === 'closed') {
+      info(`PR/MR #${n}, opened by the dial, was closed without a merge — looking for another`);
+      n = null;
+      first = null;
+    }
+  }
   if (!n) {
     const found = findTaskPrs(where.platform, { story, task }, { cwd: where.checkout, runner });
     if (!found.ok) throw err(CODE, `could not list the PRs/MRs of ${repo}: ${found.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, or pass --pr <n>`);
@@ -694,7 +711,7 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
     }
     n = live[0].number;
   }
-  const got = readMergedPr(where.platform, n, { cwd: where.checkout, runner });
+  const got = first?.ok ? first : readMergedPr(where.platform, n, { cwd: where.checkout, runner });
   if (!got.ok) throw err(CODE, `could not read PR/MR #${n} in ${repo}: ${got.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, then run this again`);
   // A number given by hand must be this task's PR: its branch may not name another task.
   const carries = branchTask(got.branch, story, task);
@@ -731,6 +748,84 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   // The ship is written by `build ship` itself, never by a second path.
   const res = await buildShip(root, { story, task, repo, pr: String(n), today, fetch, runner, prReader });
   return out('merged', { ...facts, mergeCommit: res.ship.mergeCommit, changed: true, ship: res.ship, file: res.file });
+}
+
+// `yad open-pr --via auto` (issue #356): the standing approval to open a task's PR/MR once its checks pass,
+// without asking. The user's decisions (2026-10-20): one project-wide dial, `yad dial open-pr --to auto`,
+// set by a person (nothing earned); `yad open-pr --via auto` refuses unless the dial is auto and THIS
+// task's `checks` close names a run that passed and was not rejected; the opened PR is recorded on the lane
+// (`opened`), so `yad build merged` and people can see the dial opened it. The merge stays a person's.
+//
+// PURE: may `task`'s PR/MR be opened without asking — `{ ok, close, run }` or `{ ok: false, message, hint }`.
+// One mechanical rule: only the `checks` step's CURRENT close counts. It must be done, and name this task —
+// on the close (`--task`), or on the run it names. An older close kept in `runs` never counts: once the step
+// is reopened, for this task or the next, the work it checked has moved on, so a person opens that PR.
+export function planAutoOpen(lane, trustRuns, { story, repo, task }) {
+  const no = (message, hint) => ({ ok: false, message, hint });
+  const at = `${story} / ${repo}`;
+  if (!isPlainObject(lane) || !Array.isArray(lane.steps)) return no(`${at} has no lane`, 'the yad-run skill walks the lane before a PR is opened');
+  const prior = (Array.isArray(lane.opened) ? lane.opened : []).find((o) => o?.task === task);
+  if (prior) return no(`${story}-${task}'s PR/MR was already opened by the dial: #${prior.pr}`, 'ask the platform whether it merged: yad build merged … --ship; a new PR/MR for the task is opened by a person');
+  const row = lane.steps.find((s) => s?.id === 'checks');
+  const close = isPassed(row) && isPlainObject(row.closed) && row.closed.run ? row.closed : null;
+  const run = close ? (trustRuns || []).find((r) => r?.uid === close.run && r.story === story && r.repo === repo && r.step === 'checks') : null;
+  const closeFor = close?.task || run?.task || null;
+  const closeHint = `run the checks for ${task}, then close the step with its run and the task: yad build step ${story} --repo ${repo} checks done --run <uid> --task ${task}`;
+  if (!close) return no(`${at}: checks is not closed${row?.task ? ` (it is open for ${row.task})` : ''}`, closeHint);
+  if (closeFor !== task) return no(`${at}: the checks close is ${closeFor ? `for ${closeFor}` : 'for no task'}, not ${task}`, closeHint);
+  if (!run) return no(`${at}: the checks close for ${task} names trust run ${close.run}, which is not recorded`, 'record the run with `yad build trust`, then close the step with it');
+  if (run.task && run.task !== task) return no(`${at}: the checks close names run ${run.uid}, which is for ${run.task}`, closeHint);
+  if (run.verdict === 'rejected') return no(`${at}: the checks run for ${task} (${run.uid}) is rejected`, 'fix what failed, run the checks again, and ask a person to open the PR/MR');
+  if (run.signals?.checks !== 'pass') return no(`${at}: the checks run for ${task} (${run.uid}) did not record checks=pass`, 'a PR/MR is opened without asking only after the checks passed: yad build trust … checks --signal checks=pass');
+  return { ok: true, close, run };
+}
+
+// The tasks a branch could carry, as `{ story, task }`, that are stories of this Product. A branch name has
+// no end marker, so every reading is listed — each id starting at the branch's start or after a `/` or `_`,
+// and ending where `-`, `_`, `/` or the end follows — and only those whose story file exists are kept:
+// `feat/EP-x-S01-T01-then-S02-T03` and `feat/EP-aws-s3-t2-backup-S01-T01` each keep the one real task, and a
+// branch carrying two real tasks keeps both (the caller refuses it).
+export function branchTasks(root, branch) {
+  const b = String(branch || '');
+  const seen = new Map();
+  for (let i = 0; i < b.length; i++) {
+    if (i > 0 && !'/_'.includes(b[i - 1])) continue;
+    if (b.slice(i, i + 3).toLowerCase() !== 'ep-') continue;
+    for (let j = i + 1; j <= b.length; j++) {
+      if (j < b.length && !'-_/'.includes(b[j])) continue;
+      const m = b.slice(i, j).toLowerCase().match(/^ep-([a-z0-9-]+)-s(\d+)-t(\d+)$/);
+      if (!m) continue;
+      const story = `EP-${m[1]}-S${m[2]}`;
+      if (!fs.existsSync(path.join(epicRoot(root, storyEpic(story)), 'stories', `${story}.md`))) continue;
+      seen.set(`${story}-T${m[3]}`, { story, task: `T${m[3]}` });
+    }
+  }
+  return [...seen.values()];
+}
+
+// The facts `yad open-pr --via auto` needs from the Product before anything is pushed: the dial, the lane
+// and its checks run. Throws a refusal; returns `{ file }`, the build-state the record is written to.
+export function autoOpenCheck(root, { story, task, repo }) {
+  const eff = effectiveAction(loadAutomation(root), 'open-pr');
+  if (eff.advance !== 'auto') {
+    throw err(CODE, eff.why === 'kill' ? 'the open-pr dial is auto, but the kill switch (or an unreadable .sdlc/automation.json) holds it at human' : 'the open-pr dial is human, so a person approves opening this PR/MR',
+      eff.why === 'kill' ? '`yad unkill` once the reason is gone, or ask a person to open it' : 'ask the person to approve it, then run `yad open-pr` without --via auto; `yad dial open-pr --to auto` is the standing approval');
+  }
+  const ctx = storyContext(root, story);
+  if (!ctx.entry.repos.includes(repo)) throw err(CODE, `${story} does not declare ${repo}`, `its repos: ${ctx.entry.repos.join(', ') || 'none'}`);
+  const lane = lanes(ctx.buildState, story).repos[repo];
+  const plan = planAutoOpen(lane, readTrustRuns(ctx.epicDir), { story, repo, task });
+  if (!plan.ok) throw err(CODE, plan.message, plan.hint);
+  return { file: ctx.file, run: plan.run.uid };
+}
+
+// Record the PR/MR the dial opened on its lane. Re-read strictly: the file may have changed while the PR was
+// being opened, and nothing here writes over content it cannot read.
+export function recordAutoOpen(file, { story, repo, task, pr, url, run, by, date }) {
+  const bs = lanes(readJSONStrict(file, null), story);
+  const lane = liveLane(bs, story, repo);
+  const opened = [...(Array.isArray(lane.opened) ? lane.opened : []), { task, pr, url, via: 'auto', run, by, date }];
+  writeJSON(file, { ...bs, repos: { ...bs.repos, [repo]: { ...lane, opened } } });
 }
 
 export async function buildDone(root, { story, today, fetch = true } = {}) {

@@ -162,6 +162,9 @@ Build by hand"** below.
 11. Set a Build step to run on its own: `yad dial <epic> <story> --repo <repo> <step> --to auto`. It prints
     the step's run record in that repo as advice (runs, % approved unchanged) and never refuses on it. The
     engineer review is a gate, so it is refused. `--to human` puts a step back.
+    `yad dial open-pr --to auto` is the project's standing approval to open each task's PR/MR once its
+    checks pass, without asking (#356): `yad-run` then runs `yad open-pr --via auto`, which checks this
+    task's checks run passed and records the PR on the lane. The merge is always a person's.
 12. Drive a story's Build on the dials: `yad-run story:<id> repo:<repo>` — it advances past a step set to
     auto after a clean run and stops for a human otherwise, always halting at the engineer review. Each iteration
     it runs `yad checkpoint --push` to commit the new `trust-log/` shard + `build-state/` it just wrote (a

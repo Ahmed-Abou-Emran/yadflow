@@ -4092,8 +4092,12 @@ const strOrNull = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
 // `error`, and `killSwitchOn` reads an error as ON: of the two ways to be wrong about a safety switch,
 // holding everything at `human` is the one nobody gets hurt by. `steps` keeps its values as written, so
 // `yad doctor` can name a bad one; the readers honour only `auto`.
+//
+// `actions` (issue #356) holds the dials of the ACTIONS the project allows without asking — today only
+// `open-pr`, a standing approval to open a task's PR/MR once its checks pass. Not under `steps`: an action
+// is not a step of any chain, so nothing that walks the catalogue sees it.
 export function normalizeAutomation(raw) {
-  const out = { kill: null, steps: {}, error: null };
+  const out = { kill: null, steps: {}, actions: {}, error: null };
   if (raw == null) return out;
   if (!isPlainObject(raw)) return { ...out, error: 'is not a JSON object' };
   if (raw.kill != null) {
@@ -4110,6 +4114,10 @@ export function normalizeAutomation(raw) {
     if (!isPlainObject(raw.steps)) return { ...out, error: 'has a `steps` that is not an object' };
     for (const [id, v] of Object.entries(raw.steps)) out.steps[id] = v;
   }
+  if (raw.actions != null) {
+    if (!isPlainObject(raw.actions)) return { ...out, error: 'has an `actions` that is not an object' };
+    for (const [id, v] of Object.entries(raw.actions)) out.actions[id] = v;
+  }
   return out;
 }
 
@@ -4117,7 +4125,7 @@ export function loadAutomation(root) {
   try {
     return normalizeAutomation(readJSONStrict(path.join(root, PROJECT_FILES.automationConfig), null));
   } catch {
-    return { kill: null, steps: {}, error: 'does not parse' };
+    return { kill: null, steps: {}, actions: {}, error: 'does not parse' };
   }
 }
 
@@ -4125,7 +4133,36 @@ export function loadAutomation(root) {
 export const serializeAutomation = (a) => ({
   ...(a.kill ? { kill: a.kill } : {}),
   steps: Object.fromEntries(Object.entries(a.steps || {}).sort(([x], [y]) => cmp(x, y))),
+  ...(a.actions && Object.keys(a.actions).length ? { actions: Object.fromEntries(Object.entries(a.actions).sort(([x], [y]) => cmp(x, y))) } : {}),
 });
+
+// The `actions` a writer carries over: only when there are some, so a file that never had any keeps its shape.
+const keepActions = (a) => (a?.actions && Object.keys(a.actions).length ? { actions: { ...a.actions } } : {});
+
+// The actions a project may allow without asking (#356), each set with `yad dial <action> --to auto|human`.
+export const ACTION_DIALS = ['open-pr'];
+
+// An action's dial as it will be applied: `{ advance, set, why }`, `why` `project` or `kill`. `human` is the
+// key's absence; only the exact value `auto` turns it on, and the kill switch (or a broken file) holds it.
+export function effectiveAction(automation, id) {
+  const set = automation?.actions && Object.hasOwn(automation.actions, id) && automation.actions[id] === 'auto' ? 'auto' : 'human';
+  if (set === 'auto' && killSwitchOn(automation)) return { advance: 'human', set, why: 'kill' };
+  return { advance: set, set, why: 'project' };
+}
+
+// Set an action's dial for the whole project. PURE: takes and returns the automation object.
+export function planActionDial(automation, { action, to }) {
+  if (!ACTION_DIALS.includes(action)) return refusal(`unknown action: ${action}`, `an action's dial is one of ${ACTION_DIALS.join(' · ')}`);
+  if (!ADVANCE_VALUES.includes(to)) return refusal(`--to must be human or auto, not ${to}`);
+  const actions = { ...(automation?.actions || {}) };
+  const before = actions[action] === 'auto' ? 'auto' : 'human';
+  if (to === 'auto') actions[action] = 'auto';
+  else delete actions[action];
+  return {
+    ok: true, before, changed: before !== to || (to === 'human' && Object.hasOwn(automation?.actions || {}, action)),
+    automation: { kill: automation?.kill || null, steps: { ...(automation?.steps || {}) }, actions },
+  };
+}
 
 export const killSwitchOn = (a) => !!a && (a.error != null || a.kill?.on === true);
 
@@ -4152,6 +4189,7 @@ const buildAuthorIds = () => STEPS.filter((d) => d.kind === 'author' && d.phase 
 
 // Set a Shape author step's dial for the whole project. PURE: takes and returns the automation object.
 export function planShapeDial(automation, { step, to }) {
+  if (ACTION_DIALS.includes(step)) return planActionDial(automation, { action: step, to });
   const def = stepDef(step);
   if (!def) return refusal(`unknown step: ${step}`, `a Shape step's dial is one of ${shapeAuthorIds().join(' · ')}`);
   // "Shape author steps" means a feature's chain. The Foundation is the Product level, reviewed once per
@@ -4175,11 +4213,12 @@ export function planShapeDial(automation, { step, to }) {
   // turned on.
   if (to === 'auto') steps[step] = 'auto';
   else delete steps[step];
-  return { ok: true, before, changed: before !== to || (to === 'human' && Object.hasOwn(automation?.steps || {}, step)), automation: { kill: automation?.kill || null, steps } };
+  return { ok: true, before, changed: before !== to || (to === 'human' && Object.hasOwn(automation?.steps || {}, step)), automation: { kill: automation?.kill || null, steps, ...keepActions(automation) } };
 }
 
 // Set one Build step's dial on one lane. PURE: takes the parsed build-state, returns a new one.
 export function planLaneDial(buildState, { story, repo, step, to, declared = [] }) {
+  if (ACTION_DIALS.includes(step)) return refusal(`${step} is set for the whole project, not per lane`, `yad dial ${step} --to ${to || 'auto'}`);
   const def = stepDef(step);
   if (def && def.phase !== 'build' && def.kind === 'author') {
     return refusal(`${step} is a Shape step — its dial is set for the whole project`, `yad dial ${step} --to ${to || 'auto'}`);
@@ -4220,7 +4259,7 @@ export function planKill(automation, { on, reason = null, by = null, date = null
   // The record being replaced is kept as `previous`, without its own `previous` — one level is the audit
   // trail a person reads; the rest is git history.
   const replaced = automation?.kill ? (({ previous: _previous, ...rest }) => rest)(automation.kill) : null;
-  return { ok: true, already: false, automation: { steps: { ...(automation?.steps || {}) }, kill: {
+  return { ok: true, already: false, automation: { steps: { ...(automation?.steps || {}) }, ...keepActions(automation), kill: {
     on, reason: why, by: by || null, date: date || null, ...(replaced ? { previous: replaced } : {}),
   } } };
 }

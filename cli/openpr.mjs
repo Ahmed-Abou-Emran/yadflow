@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { c, log, ok, info, warn, hand, fail, run, exists, readJSON } from './lib.mjs';
 import { PROJECT_FILES , productConfigPath, settingsEditHint } from './manifest.mjs';
 import {
-  detectPlatform, createPr, platformLogin, resolveBaseBranch,
+  detectPlatform, createPr, platformLogin, resolveBaseBranch, prNumberFromUrl,
 } from './platform.mjs';
 import { taskFromBranch } from './commit.mjs';
 import { parseReviewBranch, artifactFromBase, gateCapFor, capLimit, peopleWord, gateRuleSum, gateRuleEnforced, legacyLogins } from './epic-state.mjs';
@@ -18,6 +18,10 @@ import { personLabel } from './riskmap.mjs';
 import { gateOpen } from './gate.mjs';
 import { unfoldedPaths, authorStepOf } from './fold.mjs';
 import { registryEntryFor } from './find-product.mjs';
+import { autoOpenCheck, recordAutoOpen, branchTasks } from './build.mjs';
+import { productDriftError } from './epic-state.mjs';
+import { err } from './errors.mjs';
+import { recordActor } from './skip.mjs';
 
 // Resolve the target code repo: --repo <name> from the registry, else --dir, else cwd. `product` (E80) is
 // the Product found from a code repo beside it: the registry is read there, and a repo run without
@@ -239,6 +243,8 @@ export function suggestReviewers(repoRoot, baseBranch, platform, { remote } = {}
 
 export async function runOpenPr(root, opts = {}) {
   log(c.bold('\nyad open-pr'));
+  const via = opts.via == null ? 'human' : opts.via;
+  if (!['auto', 'human'].includes(via)) throw err('YAD-STATE-009', `--via must be auto or human (got '${via}')`, '--via auto opens it on the standing approval (`yad dial open-pr`)');
   const { repoRoot, meta } = resolveRepo(root, opts);
   if (!exists(path.join(repoRoot, '.git'))) { fail(`not a git repo: ${repoRoot}`); process.exitCode = 1; return; }
 
@@ -248,6 +254,8 @@ export async function runOpenPr(root, opts = {}) {
 
   const branch = run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }).stdout;
   const stage = detectStage(root, repoRoot, branch, meta);
+  // Before the Product review hand-off below, which pushes: --via auto never pushes what it refuses.
+  if (via === 'auto' && stage !== 'code-repo') throw err('YAD-STATE-009', 'only a task PR/MR in a code repo is opened with --via auto', 'a Product review or tooling PR is opened by a person');
 
   // product-shape: this is a Shape artifact-review PR (review/EP-*/<artifact> head on the Product). The
   // artifact-review title, body, and ledger bookkeeping all live in `yad gate open` — delegate to it
@@ -273,6 +281,32 @@ export async function runOpenPr(root, opts = {}) {
     const res = await gateOpen(root, { epic: parsed.epic, artifact: artifactFromBase(parsed.base), head: branch });
     if (!res?.url) process.exitCode = 1;
     return res;
+  }
+
+  // `--via auto` (#356): opened on the project's standing approval, without asking. Everything it needs is
+  // checked HERE, before the push, so a refusal leaves no pushed branch behind.
+  let auto = null;
+  if (via === 'auto') {
+    const productRoot = opts.product || (exists(productConfigPath(root)) ? root : null);
+    if (!productRoot) throw err('YAD-STATE-009', 'no Product found, so the open-pr dial and the lane cannot be read', 'run it from a repo inside the workspace, or pass --product <folder>');
+    if (!meta?.name) throw err('YAD-STATE-009', `${repoRoot} is not a repo the Product registers, so it has no lane`, 'register it with `yad repo add`, or ask a person to open the PR/MR');
+    const drift = productDriftError(productRoot);
+    if (drift) throw drift;
+    // The task the branch carries: of every reading of its name, the ones that are stories of this Product
+    // (`branchTasks`). Exactly one: the branch is what is pushed, so a branch carrying two tasks, or none, is
+    // refused, and a --task only confirms the one it carries — it never names a task the branch does not.
+    const carried = branchTasks(productRoot, branch);
+    if (carried.length > 1) throw err('YAD-STATE-009', `${branch} carries more than one task: ${carried.map((x) => `${x.story}-${x.task}`).join(', ')}`, 'open it from a branch that carries one task; a person opens this one');
+    const m = opts.task ? String(opts.task).toLowerCase().match(/^ep-([a-z0-9-]+)-s(\d+)-t(\d+)$/) : null;
+    if (opts.task && !m) throw err('YAD-STATE-009', `--task must be a task id such as EP-<slug>-S01-T01 (got '${opts.task}')`, '--task EP-<slug>-S<n>-T<n>');
+    if (!carried.length) throw err('YAD-STATE-009', `${branch} carries no task of this Product (expected …EP-<slug>-S<n>-T<n>…, a story that exists)`, 'open it from the task\'s branch; a person opens any other PR/MR');
+    const pick = carried[0];
+    if (m && `EP-${m[1]}-S${m[2]}-T${m[3]}` !== `${pick.story}-${pick.task}`) {
+      throw err('YAD-STATE-009', `--task ${opts.task} is not the task ${branch} carries (${pick.story}-${pick.task})`, 'drop --task, or switch to that task\'s branch');
+    }
+    const { story, task: taskId } = pick;
+    auto = { productRoot, story, task: taskId, repo: meta.name, ...autoOpenCheck(productRoot, { story, task: taskId, repo: meta.name }) };
+    info(`opened on the standing approval: ${story}-${taskId}'s checks passed (run ${auto.run}), and the open-pr dial is auto`);
   }
 
   // The Product's default_branch, which only applies when the PR targets the Product ITSELF
@@ -309,7 +343,8 @@ export async function runOpenPr(root, opts = {}) {
   const push = run('git', ['push', '-u', 'origin', branch], { cwd: repoRoot });
   if (!push.ok) { fail(`git push failed — ${push.stderr.split('\n')[0] || 'unknown'}`); process.exitCode = 1; return; }
 
-  const task = opts.task || taskFromBranch(branch);
+  // Under --via auto, the task it was checked for, written the canonical way.
+  const task = auto ? `${auto.story}-${auto.task}` : opts.task || taskFromBranch(branch);
   const subject = run('git', ['log', '-1', '--format=%s'], { cwd: repoRoot }).stdout;
   const title = opts.title || subject || `task ${task || branch}`;
   // Summary = commit subject (Conventional-Commits "type:" prefix stripped) + body paragraphs,
@@ -338,6 +373,15 @@ export async function runOpenPr(root, opts = {}) {
   const r = creator(platform, { title, body, base: baseBranch, head: branch, assignees, cwd: repoRoot });
   if (!r.ok) { fail(`could not open PR/MR — ${r.reason || 'unknown'}`); process.exitCode = 1; return; }
   ok(`opened ${r.url}`);
+  if (auto) {
+    // The PR is open whatever happens next: a record that cannot be written is said, never a failure.
+    try {
+      recordAutoOpen(auto.file, { story: auto.story, repo: auto.repo, task: auto.task, pr: Number(prNumberFromUrl(r.url)) || null, url: r.url, run: auto.run, by: recordActor(auto.productRoot), date: opts.today || new Date().toISOString().slice(0, 10) });
+      hand('recorded on the lane; commit it from the Product with `yad checkpoint --push`');
+    } catch (e) {
+      warn(`the PR/MR is open, but it could not be recorded on the lane: ${e.message}`);
+    }
+  }
   hand('no reviewers were requested — ask them on the PR itself');
   // The Product-wide active count (E71), read ONCE here and handed down: `routeCount` works inside a
   // code repo and must not go looking for a Product itself.
@@ -366,5 +410,5 @@ export async function runOpenPr(root, opts = {}) {
   if (stage === 'code-repo') for (const [say, line] of suggestReviewers(repoRoot, baseBranch, platform, { remote }).lines) say(line);
   // The --json answer (E1). The count and the reviewer suggestion are said in prose, and a warning among
   // them reaches `warnings`; nothing here is a request — no reviewer is ever asked for (E62).
-  return { url: r.url, platform, stage, base: baseBranch, baseSource, branch, title, task: task || null };
+  return { url: r.url, platform, stage, base: baseBranch, baseSource, branch, title, task: task || null, via };
 }

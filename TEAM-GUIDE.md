@@ -585,7 +585,8 @@ Solo mode (`yad mode solo --reason "<why>"`) waives the approval, and the merge 
 - **Automation is opt-in.** You can ignore `yad-run` entirely at first — every step is
   human-approved by default. When the team wants a Build step to run on its own, `yad dial` switches it
   to auto and shows that step's run record as advice; nothing has to be earned. Every review gate — the
-  engineer review and each Shape review — is **never** automatic.
+  engineer review and each Shape review — is **never** automatic. `yad dial open-pr --to auto` is a standing
+  approval to open each task's PR/MR once its checks pass, without asking; the merge stays a person's.
 - **Global "back to manual" switch:** `yad kill --reason "<why>"` holds every step at human approval
   instantly, recorded in `.sdlc/automation.json`; `yad unkill` turns it off.
 - **Solo or team:** `yad mode` shows who must approve. `yad mode solo --reason "<why>"` waives approvals
