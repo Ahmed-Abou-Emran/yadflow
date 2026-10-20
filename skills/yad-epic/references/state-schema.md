@@ -364,7 +364,7 @@ step is *not* done, and `blocked` is read by whether it has one, so the two neve
 | `review-passed` | `yad gate sync` / `yad gate ci`, or that skill | Its author step, closed when its gate passed because nothing closed it earlier |
 | `review-opened` | `yad gate open` (local ledger) / `yad gate sync` | An author step, closed when its review opened |
 | `repair` | `yad gate repair` | A stranded author step — an escape hatch, so it says so |
-| `auto` / `human` | `yad build step … done [--via auto]`, in `build-state` | A Build lane step: the dial let the run go on by itself, or it stopped for a person |
+| `auto` / `human` | `yad build step … done [--via auto --run <uid>]`, in `build-state` | A Build lane step: the dial let the run go on by itself, or it stopped for a person |
 
 - **Optional keys are left out**, never written as `null`: a close with no PR has no `pr`.
 - **The first close wins.** A step that already has a `closed` keeps it; a re-sync never rewrites it.
