@@ -780,6 +780,29 @@ export function planAutoOpen(lane, trustRuns, { story, repo, task }) {
   return { ok: true, close, run };
 }
 
+// The tasks a branch could carry, as `{ story, task }`, that are stories of this Product. A branch name has
+// no end marker, so every reading is listed — each id starting at the branch's start or after a `/` or `_`,
+// and ending where `-`, `_`, `/` or the end follows — and only those whose story file exists are kept:
+// `feat/EP-x-S01-T01-then-S02-T03` and `feat/EP-aws-s3-t2-backup-S01-T01` each keep the one real task, and a
+// branch carrying two real tasks keeps both (the caller refuses it).
+export function branchTasks(root, branch) {
+  const b = String(branch || '');
+  const seen = new Map();
+  for (let i = 0; i < b.length; i++) {
+    if (i > 0 && !'/_'.includes(b[i - 1])) continue;
+    if (b.slice(i, i + 3).toLowerCase() !== 'ep-') continue;
+    for (let j = i + 1; j <= b.length; j++) {
+      if (j < b.length && !'-_/'.includes(b[j])) continue;
+      const m = b.slice(i, j).toLowerCase().match(/^ep-([a-z0-9-]+)-s(\d+)-t(\d+)$/);
+      if (!m) continue;
+      const story = `EP-${m[1]}-S${m[2]}`;
+      if (!fs.existsSync(path.join(epicRoot(root, storyEpic(story)), 'stories', `${story}.md`))) continue;
+      seen.set(`${story}-T${m[3]}`, { story, task: `T${m[3]}` });
+    }
+  }
+  return [...seen.values()];
+}
+
 // The facts `yad open-pr --via auto` needs from the Product before anything is pushed: the dial, the lane
 // and its checks run. Throws a refusal; returns `{ file }`, the build-state the record is written to.
 export function autoOpenCheck(root, { story, task, repo }) {

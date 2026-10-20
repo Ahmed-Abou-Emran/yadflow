@@ -18,7 +18,7 @@ import { personLabel } from './riskmap.mjs';
 import { gateOpen } from './gate.mjs';
 import { unfoldedPaths, authorStepOf } from './fold.mjs';
 import { registryEntryFor } from './find-product.mjs';
-import { autoOpenCheck, recordAutoOpen, branchTask } from './build.mjs';
+import { autoOpenCheck, recordAutoOpen, branchTask, branchTasks } from './build.mjs';
 import { productDriftError } from './epic-state.mjs';
 import { err } from './errors.mjs';
 import { recordActor } from './skip.mjs';
@@ -292,16 +292,19 @@ export async function runOpenPr(root, opts = {}) {
     if (!meta?.name) throw err('YAD-STATE-009', `${repoRoot} is not a repo the Product registers, so it has no lane`, 'register it with `yad repo add`, or ask a person to open the PR/MR');
     const drift = productDriftError(productRoot);
     if (drift) throw drift;
-    // The task: --task, else the LONGEST id the branch carries, in any case and under any folders — an epic
-    // slug may itself read like a task (`EP-aws-s3-t2-backup`), so the shortest would be the wrong one. The
-    // branch is what is pushed, so a --task it does not carry is refused, never believed: the same test
-    // `yad build merged` applies (`branchTask`).
-    const longest = (String(branch).match(/(?:^|[/_])(ep-[a-z0-9-]+-s\d+-t\d+)(?=$|[-_/])/i) || [])[1] || null;
-    const m = String(opts.task || longest || '').toLowerCase().match(/^ep-([a-z0-9-]+)-s(\d+)-t(\d+)$/);
-    if (!m) throw err('YAD-STATE-009', `${branch} names no task (expected …EP-<slug>-S<n>-T<n>…)`, 'open it from the task branch, or pass --task EP-<slug>-S<n>-T<n>');
-    const story = `EP-${m[1]}-S${m[2]}`;
-    const taskId = `T${m[3]}`;
-    if (opts.task && branchTask(branch, story, taskId) === 'other') throw err('YAD-STATE-009', `--task ${opts.task} is not the task ${branch} carries`, 'drop --task, or switch to that task\'s branch');
+    // The task the branch carries: of every reading of its name, the ones that are stories of this Product
+    // (`branchTasks`). Exactly one, or none and a --task. The branch is what is pushed, so a branch carrying
+    // two tasks is refused, and a --task it does not carry is refused, never believed.
+    const carried = branchTasks(productRoot, branch);
+    if (carried.length > 1) throw err('YAD-STATE-009', `${branch} carries more than one task: ${carried.map((x) => `${x.story}-${x.task}`).join(', ')}`, 'open it from a branch that carries one task; a person opens this one');
+    const m = opts.task ? String(opts.task).toLowerCase().match(/^ep-([a-z0-9-]+)-s(\d+)-t(\d+)$/) : null;
+    if (opts.task && !m) throw err('YAD-STATE-009', `--task must be a task id such as EP-<slug>-S01-T01 (got '${opts.task}')`, '--task EP-<slug>-S<n>-T<n>');
+    const pick = m ? { story: `EP-${m[1]}-S${m[2]}`, task: `T${m[3]}` } : carried[0];
+    if (!pick) throw err('YAD-STATE-009', `${branch} names no task of this Product (expected …EP-<slug>-S<n>-T<n>…)`, 'open it from the task branch, or pass --task EP-<slug>-S<n>-T<n>');
+    if (m && (carried.length ? `${carried[0].story}-${carried[0].task}` !== `${pick.story}-${pick.task}` : branchTask(branch, pick.story, pick.task) === 'other')) {
+      throw err('YAD-STATE-009', `--task ${opts.task} is not the task ${branch} carries`, 'drop --task, or switch to that task\'s branch');
+    }
+    const { story, task: taskId } = pick;
     auto = { productRoot, story, task: taskId, repo: meta.name, ...autoOpenCheck(productRoot, { story, task: taskId, repo: meta.name }) };
     info(`opened on the standing approval: ${story}-${taskId}'s checks passed (run ${auto.run}), and the open-pr dial is auto`);
   }

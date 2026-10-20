@@ -964,11 +964,22 @@ test('yad open-pr --via auto: opened on the standing approval only after this ta
     git(api, 'checkout', '-q', '-b', 'amn/feat/ep-l-s01-t01-again');
     await assert.rejects(open, /already opened by the dial: #12/);
     git(api, 'checkout', '-q', branch);
-    // An epic slug that reads like a task: the longest id is the task, never the shortest (review 3).
-    git(api, 'checkout', '-q', '-b', 'feat/EP-aws-s3-t2-backup-S01-T01');
-    await assert.rejects(open, /no epic state at epics\/EP-aws-s3-t2-backup/);
-    await assert.rejects(() => open({ task: 'EP-aws-s3-t2-backup-S01-T01' }), /no epic state at epics\/EP-aws-s3-t2-backup/);
-    await assert.rejects(() => open({ task: 'EP-l-S01-T01' }), /is not the task feat\/EP-aws-s3-t2-backup-S01-T01 carries/);
+    // Every reading of a branch name is tried; only a story of this Product counts (reviews 3 and 4).
+    const { branchTasks } = await import('./build.mjs');
+    write(P, { 'epics/EP-aws-s3-t2-backup/stories/EP-aws-s3-t2-backup-S01.md': '---\nid: EP-aws-s3-t2-backup-S01\n---\n', 'epics/EP-l/stories/EP-l-S02.md': '---\nid: EP-l-S02\n---\n' });
+    const ids = (b) => branchTasks(P, b).map((x) => `${x.story}-${x.task}`);
+    assert.deepEqual(ids('feat/EP-aws-s3-t2-backup-S01-T01'), ['EP-aws-s3-t2-backup-S01-T01'], 'a slug that reads like a task');
+    assert.deepEqual(ids('feat/EP-l-S01-T01-then-S02-T03'), ['EP-l-S01-T01'], 'words after the task');
+    assert.deepEqual(ids('feat/EP-l-S01-T01-add-s3-t2-support'), ['EP-l-S01-T01']);
+    assert.deepEqual(ids('amn/feat/ep-l-s01-t01-again'), ['EP-l-S01-T01'], 'any case, any folders');
+    assert.deepEqual(ids('feat/EP-l-S01-T01_EP-l-S02-T02'), ['EP-l-S01-T01', 'EP-l-S02-T02'], 'two real tasks');
+    assert.deepEqual(ids('feat/EP-zz-S01-T01'), [], 'not a story here');
+    git(api, 'checkout', '-q', '-b', 'feat/EP-l-S01-T01_EP-l-S02-T02');
+    await assert.rejects(open, /carries more than one task: EP-l-S01-T01, EP-l-S02-T02/);
+    await assert.rejects(() => open({ task: 'EP-l-S01-T01' }), /carries more than one task/);
+    git(api, 'checkout', '-q', '-b', 'feat/EP-l-S01-T01-then-S02-T03');
+    await assert.rejects(open, /already opened by the dial: #12/, 'read as EP-l-S01-T01');
+    await assert.rejects(() => open({ task: 'EP-l-S02-T03' }), /is not the task feat\/EP-l-S01-T01-then-S02-T03 carries/);
     git(api, 'checkout', '-q', branch);
     // `yad build merged` reads the recorded number: no search is needed (the listing would fail here).
     const view = (cmd, args) => (cmd === 'gh' && args[1] === 'view' && args[2] === '12'
