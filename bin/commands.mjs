@@ -22,7 +22,7 @@ export { runSkillBind, runSkillList, runSkillRecommend, runSkillUnbind } from '.
 export { runCommit } from '../cli/commit.mjs';
 export { runOpenPr } from '../cli/openpr.mjs';
 export { runChecks } from '../cli/run-checks.mjs';
-export { buildStart, buildStep, buildTrust, buildShip, buildDone } from '../cli/build.mjs';
+export { buildStart, buildStep, buildTrust, buildShip, buildMerged, buildDone } from '../cli/build.mjs';
 export { reviewTrailer, reviewContext, reviewNudge, reviewReconcile, reviewWalkthrough } from '../cli/review.mjs';
 export { runShip } from '../cli/ship.mjs';
 export { runCheckpoint } from '../cli/checkpoint.mjs';

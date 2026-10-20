@@ -131,8 +131,18 @@ engineer-review rule is satisfied (Step 2). Then:
   `status: skipped`, it was set aside as needing no change: stop, and run
   `yad unskip <epic> <story> --repo <repo>` before recording a ship, so the two records never say opposite
   things (`yad doctor` fails that as `lane:…:contradiction`; `yad checkpoint --retro-ship` refuses it).
-- **Record the ship** — `yad build ship <story> --task <task> --repo <repo> --pr <n>`, once the PR/MR
-  has merged. It reads the merge commit, the branch, the checks that passed, the approvers (with the
+- **See whether it merged — ask, do not wait (#355).** The merge is a person's, but you do not need them
+  to tell you it happened: run `yad build merged <story> --task <task> --repo <repo> --ship`. It asks the
+  platform about the task's PR/MR (found by its branch; `--pr <n>` names it) and answers one `state`
+  (`--json`): `merged` — the ship is recorded (through `yad build ship`), go on; `shipped` — it already was;
+  `open` — stop and report "waiting for PR/MR #<n> to merge", and run it again when you resume; `closed`
+  — closed without a merge: stop and report it; `none` — no PR/MR carries the task yet: open one with
+  `yad open-pr`. It asks once and returns; it never waits. It refuses where the platform cannot be read
+  (no platform, the repo not cloned here, `gh`/`glab` not logged in), when two PRs/MRs that are not
+  closed carry the task, or when a merged PR's merge commit is not on the default branch or names
+  another task, or its ship file cannot be written — stop and report what it says.
+- **Record the ship** — `yad build ship <story> --task <task> --repo <repo> --pr <n>` (what `--ship` runs),
+  once the PR/MR has merged. It reads the merge commit, the branch, the checks that passed, the approvers (with the
   engagement signal), the body's `Risk level:` and the merge date from the platform, refuses a PR that is
   not merged or that comes from another task's branch, and writes the ship to its own shard
   `epics/<epic>/.sdlc/build-log/<story>-<task>-<repo>.json` (shape: `references/ship-and-record.md`). A

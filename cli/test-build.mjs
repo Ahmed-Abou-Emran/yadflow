@@ -690,3 +690,151 @@ test('yad build: a by-hand ship records the commit date; --via auto needs the di
     assert.match(r.out, /the kill switch is on/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('yad build merged: asks the platform about the task\'s PR, found by its branch; --ship records it once (#355)', async () => {
+  const { buildMerged } = await import('./build.mjs');
+  const { W, P, dir, sha } = workspace();
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
+    let list = [];
+    const views = {};
+    const asked = [];
+    const runner = (cmd, args) => {
+      asked.push(args.slice(0, 2).join(' '));
+      if (cmd === 'gh' && args[0] === 'pr' && args[1] === 'list') return { ok: true, stdout: JSON.stringify(list), stderr: '' };
+      if (cmd === 'gh' && args[0] === 'pr' && args[1] === 'view' && views[args[2]]) return { ok: true, stdout: JSON.stringify(views[args[2]]), stderr: '' };
+      return { ok: false, stdout: '', stderr: 'x' };
+    };
+    const prReader = () => ({ ok: true, reviews: [{ login: 'bob', state: 'APPROVED', body: '' }], headOid: null });
+    const ask = (over = {}) => buildMerged(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', today: '2026-10-20', runner, prReader, ...over });
+    const view = (state, branch = 'feat/EP-l-S01-T01-orders', oid = sha.T01) => ({
+      state, mergedAt: state === 'MERGED' ? '2026-10-19T10:00:00Z' : null, mergeCommit: state === 'MERGED' ? { oid } : null,
+      headRefName: branch, url: 'https://github.com/o/api/pull/7', body: '', statusCheckRollup: [],
+    });
+    // No PR carries the task yet. Another task's PR and a branch with the id inside a longer one do not count.
+    list = [{ number: 3, state: 'OPEN', headRefName: 'feat/EP-l-S01-T02-x', url: 'u3' }, { number: 4, state: 'OPEN', headRefName: 'feat/EP-l-S01-T012-x', url: 'u4' }];
+    assert.equal((await ask()).state, 'none');
+    // An open PR: not merged yet, and nothing written.
+    list.push({ number: 7, state: 'OPEN', headRefName: 'feat/EP-l-S01-T01-orders', url: 'u7' });
+    views['7'] = view('OPEN');
+    let r = await ask({ ship: true });
+    assert.deepEqual([r.state, r.pr, r.changed], ['open', 7, false]);
+    assert.equal(fs.existsSync(path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json')), false);
+    // Two live PRs for the task: refused, naming both. A closed one alongside a live one does not count.
+    list.push({ number: 8, state: 'OPEN', headRefName: 'fix/ep-l-s01-t01', url: 'u8' });
+    await assert.rejects(() => ask(), /more than one PR\/MR carries EP-l-S01-T01: #7 \(open\), #8 \(open\)/);
+    list[list.length - 1].state = 'CLOSED';
+    // Merged: the merge commit is named; without --ship nothing is written.
+    views['7'] = view('MERGED');
+    r = await ask();
+    assert.deepEqual([r.state, r.pr, r.mergeCommit, r.changed], ['merged', 7, sha.T01, false]);
+    assert.equal(fs.existsSync(path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json')), false);
+    // --ship records it through `build ship`, with the PR's approvers.
+    r = await ask({ ship: true });
+    assert.deepEqual([r.state, r.changed, r.ship.engineer_review], ['merged', true, [{ approver: 'bob', engagement: 'none' }]]);
+    assert.equal(read(path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json')).mergeCommit, sha.T01);
+    assert.equal(status(dir), 'in-build');
+    // Asked again: already shipped, the same answer with or without --ship, and the platform is not asked.
+    asked.length = 0;
+    r = await ask({ ship: true });
+    assert.deepEqual([r.state, r.changed, r.mergeCommit], ['shipped', false, sha.T01]);
+    assert.deepEqual(asked, []);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build merged: closed, a cut-short list, a --pr for another task, and no platform to ask (#355)', async () => {
+  const { buildMerged, findTaskPrs } = await import('./build.mjs');
+  const { W, P } = workspace();
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'gitlab' }, { name: 'web', path: '../web' }] }) });
+    let mrs = [];
+    const mr = {};
+    const runner = (cmd, args) => {
+      if (cmd !== 'glab') return { ok: false, stdout: '', stderr: 'x' };
+      if (args[1].startsWith('projects/:id/merge_requests?')) return { ok: true, stdout: JSON.stringify(mrs), stderr: '' };
+      const n = (args[1].match(/merge_requests\/(\d+)$/) || [])[1];
+      return n && mr[n] ? { ok: true, stdout: JSON.stringify(mr[n]), stderr: '' } : { ok: false, stdout: '', stderr: 'x' };
+    };
+    const ask = (over = {}) => buildMerged(P, { story: 'EP-l-S01', task: 'T02', repo: 'api', today: '2026-10-20', runner, ...over });
+    // Only a closed MR: closed, naming it.
+    mrs = [{ iid: 5, state: 'closed', source_branch: 'feat/EP-l-S01-T02-y', web_url: 'w5' }];
+    assert.deepEqual([(await ask()).state, (await ask()).pr], ['closed', 5]);
+    // A locked MR is mid-merge: still open.
+    mr['6'] = { iid: 6, state: 'locked', source_branch: 'feat/EP-l-S01-T02-y', web_url: 'w6' };
+    assert.equal((await ask({ pr: '6' })).state, 'open');
+    // A full page with no match: none, and the answer says the list was cut short.
+    mrs = Array.from({ length: 100 }, (_, i) => ({ iid: i + 10, state: 'merged', source_branch: `feat/x-${i}` }));
+    const r = await ask();
+    assert.deepEqual([r.state, r.partial], ['none', true]);
+    assert.equal(findTaskPrs('gitlab', { story: 'EP-l-S01', task: 'T02' }, { runner }).partial, true);
+    // --pr naming another task's MR: refused. A bad number: refused.
+    mr['9'] = { iid: 9, state: 'merged', source_branch: 'feat/EP-l-S01-T01-x', merge_commit_sha: 'abc1234' };
+    await assert.rejects(() => ask({ pr: '9' }), /feat\/EP-l-S01-T01-x, which names another task than EP-l-S01-T02/);
+    await assert.rejects(() => ask({ pr: 'x9' }), /--pr must be the PR\/MR number/);
+    // The listing fails: refused, never "none".
+    await assert.rejects(() => ask({ runner: () => ({ ok: false, stdout: '', stderr: 'denied' }) }), /could not list the PRs\/MRs of api: denied/);
+    // No platform recorded: refused with the by-hand way.
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api' }, { name: 'web', path: '../web' }] }) });
+    fs.rmSync(path.join(W, 'api/.git/refs/remotes'), { recursive: true, force: true });
+    execFileSync('git', ['remote', 'remove', 'origin'], { cwd: path.join(W, 'api') });
+    await assert.rejects(() => ask(), /api has no platform to ask, so yad cannot see whether EP-l-S01-T02 merged/);
+    // A story the repo is not declared for: the same refusal `build ship` gives.
+    await assert.rejects(() => buildMerged(P, { story: 'EP-l-S01', task: 'T02', repo: 'ops', runner }), /does not declare ops/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build merged through the CLI: help names it, and --json carries the state (#355)', () => {
+  const { W, P } = workspace();
+  try {
+    const h = yad(P, '--help');
+    assert.match(h.out, /yad build merged <story> --task <T> --repo <r>/);
+    const r = yad(P, 'build', 'merged', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--json');
+    // api has an origin on disk but no platform: refused with the by-hand hint, as JSON.
+    assert.notEqual(r.code, 0);
+    assert.match(r.stdout, /cannot see whether EP-l-S01-T01 merged/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build merged: a PR merged off the default branch, or naming another task, is refused, never "merged" (#355 review 1)', async () => {
+  const { buildMerged } = await import('./build.mjs');
+  const { W, P, api, sha } = workspace();
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
+    git(api, 'checkout', '-q', '-b', 'release/1.x');
+    write(api, { 'src/rel.js': 'x\n' });
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', 'feat: release fix\n\nTask: EP-l-S01-T01');
+    const off = git(api, 'rev-parse', 'HEAD');
+    git(api, 'push', '-q', 'origin', 'release/1.x');
+    git(api, 'checkout', '-q', 'main');
+    let oid = off;
+    const runner = (cmd, args) => (cmd === 'gh' && args[1] === 'view'
+      ? { ok: true, stdout: JSON.stringify({ state: 'MERGED', mergedAt: '2026-10-19T10:00:00Z', mergeCommit: oid ? { oid } : null, headRefName: 'feat/EP-l-S01-T01-x', url: 'u', body: '', statusCheckRollup: [] }), stderr: '' }
+      : { ok: false, stdout: '', stderr: 'x' });
+    const ask = () => buildMerged(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', pr: '7', today: '2026-10-20', runner });
+    await assert.rejects(ask, /is not on api's main/);
+    oid = sha.T02;
+    await assert.rejects(ask, /names EP-l-S01-T02, not EP-l-S01-T01/);
+    oid = null;
+    await assert.rejects(ask, /merged, but the platform names no merge commit/);
+    oid = sha.T01;
+    assert.deepEqual([(await ask()).state, (await ask()).mergeCommit], ['merged', sha.T01]);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build merged: a ship build ship would not write (a file another repo\'s name shares) is refused, not "merged" (#355 review 3)', async () => {
+  const { buildMerged } = await import('./build.mjs');
+  const { W, P, dir, sha } = workspace();
+  try {
+    write(P, {
+      '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }),
+      // A shard under api's file name that the ledger cannot read: build ship would refuse to write over it.
+      'epics/EP-l/.sdlc/build-log/EP-l-S01-T01-api.json': '{ not json',
+    });
+    const runner = (cmd, args) => (cmd === 'gh' && args[1] === 'view'
+      ? { ok: true, stdout: JSON.stringify({ state: 'MERGED', mergedAt: '2026-10-19T10:00:00Z', mergeCommit: { oid: sha.T01 }, headRefName: 'feat/EP-l-S01-T01-x', url: 'u', body: '', statusCheckRollup: [] }), stderr: '' }
+      : { ok: false, stdout: '', stderr: 'x' });
+    await assert.rejects(() => buildMerged(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', pr: '7', today: '2026-10-20', runner }), /api shares a ship file name/);
+    assert.equal(fs.readFileSync(path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json'), 'utf8'), '{ not json');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});

@@ -20,7 +20,7 @@ import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, is
 import { DEFAULT_LIFECYCLE, laneOrder, laneAuthorSteps } from './lifecycle.mjs';
 import { epicFiles, PROJECT_FILES } from './manifest.mjs';
 import { err } from './errors.mjs';
-import { readShips, readTrustRuns, writeShip, writeTrustRun, updateTrustRun } from './ledger.mjs';
+import { readShips, readTrustRuns, writeShip, shipBlocked, writeTrustRun, updateTrustRun } from './ledger.mjs';
 import { setBuildStatus, readStoryStatus } from './artifact-status.mjs';
 import { readPr, mapApprovers, detectPlatform, cliFor, platformReady } from './platform.mjs';
 import { repoPathFromGitUrl } from './protection.mjs';
@@ -412,6 +412,11 @@ function registeredRepo(root, repo) {
   return { meta, checkout, platform: meta?.platform || detectPlatform(remote) || product.platform || null, defaultBranch: named };
 }
 
+// A PR/MR's state in one vocabulary: open, merged or closed (closed without a merge). GitLab's `locked` is
+// an MR mid-merge, so still open.
+const ghState = (v) => ({ OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' })[v] || null;
+const glState = (v) => ({ opened: 'open', locked: 'open', merged: 'merged', closed: 'closed' })[v] || null;
+
 // The merged PR/MR's facts the ship record holds. `runner` is injectable for tests.
 export function readMergedPr(platform, n, { cwd, runner = run } = {}) {
   if (platform === 'gitlab') {
@@ -429,7 +434,7 @@ export function readMergedPr(platform, n, { cwd, runner = run } = {}) {
     }
     return {
       // A fast-forward merge has no merge commit: the MR's head is what landed.
-      ok: true, merged: mr.state === 'merged', mergeCommit: mr.merge_commit_sha || mr.squash_commit_sha || (mr.state === 'merged' ? mr.sha : null) || null, checksRead,
+      ok: true, state: glState(mr.state), merged: mr.state === 'merged', mergeCommit: mr.merge_commit_sha || mr.squash_commit_sha || (mr.state === 'merged' ? mr.sha : null) || null, checksRead,
       mergedAt: mr.merged_at || null, branch: mr.source_branch || null, url: mr.web_url || null, body: mr.description || '', checks,
     };
   }
@@ -441,7 +446,7 @@ export function readMergedPr(platform, n, { cwd, runner = run } = {}) {
     .filter((c) => (c.conclusion || c.state || '').toUpperCase() === 'SUCCESS')
     .map((c) => c.name || c.context).filter(Boolean))].sort();
   return {
-    ok: true, merged: pr.state === 'MERGED', mergeCommit: pr.mergeCommit?.oid || null, mergedAt: pr.mergedAt || null, checksRead: true,
+    ok: true, state: ghState(pr.state), merged: pr.state === 'MERGED', mergeCommit: pr.mergeCommit?.oid || null, mergedAt: pr.mergedAt || null, checksRead: true,
     branch: pr.headRefName || null, url: pr.url || null, body: pr.body || '', checks,
   };
 }
@@ -454,12 +459,20 @@ export function tasksInBranch(branch) {
   return [...String(branch || '').matchAll(/(?:^|[/_])(ep-[a-z0-9-]+?-s\d+-t\d+)(?=$|[-_/])/gi)].map((m) => m[1].toLowerCase());
 }
 
+// Which task a PR's branch carries, for `story`-`task`: 'this' (it names this task), 'other' (it names
+// another) or 'none'. The expected id first: an epic slug may itself read like a task (`EP-aws-s3-t2-backup`).
+export function branchTask(branch, story, task) {
+  const esc = `${story}-${task}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`(?:^|[/_])${esc}(?=$|[-_/])`, 'i').test(branch || '')) return 'this';
+  return tasksInBranch(branch).length ? 'other' : 'none';
+}
+
 // A commit in the repo's own checkout: it exists and is on the default branch (origin's, fetched first
 // unless --no-fetch; the local one when there is no origin). `strict` (a ship read with the platform's help)
 // also asks that it names the task, by the rules `yad reconcile check` reads every commit with — a `Task:`
 // trailer, a task branch a merge brought in, or the full id in the subject. By hand, where the platform
 // cannot be read, the person vouches for it: it may not name a DIFFERENT task, and naming none is a warning.
-function checkCommit(where, { story, task, repo, mergeCommit, strict = true, fetch = true }) {
+function checkCommit(where, { story, task, repo, mergeCommit, strict = true, fetch = true, noTask = 'recorded as you say it ships' }) {
   const cwd = where.checkout;
   const hasOrigin = run('git', ['remote', 'get-url', 'origin'], { cwd }).ok;
   const head = run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { cwd }).stdout;
@@ -488,7 +501,7 @@ function checkCommit(where, { story, task, repo, mergeCommit, strict = true, fet
       throw err(CODE, named.length ? `${mergeCommit} names ${named.join(', ')}, not ${want}` : `${mergeCommit} does not name ${want}`,
         'the commit must name the task it ships: its Task: trailer, the task branch a merge commit brought in, or the full id in its subject');
     }
-    warn(`${mergeCommit} names no task — recorded as you say it ships ${want}`);
+    if (noTask) warn(`${mergeCommit} names no task — ${noTask} ${want}`);
   }
   const body = run('git', ['log', '-1', '--format=%b', sha], { cwd }).stdout;
   return { sha, rec, body, date: run('git', ['log', '-1', '--format=%cs', sha], { cwd }).stdout };
@@ -525,11 +538,12 @@ function shipWithoutPr(where, { story, task, repo, mergeCommit, today, runner, f
 
 const riskFromBody = (body) => (String(body).match(/^\s*Risk level:\s*(low|medium|high)\b/im) || [])[1]?.toLowerCase() || null;
 
-export async function buildShip(root, { story, task, repo, pr, mergeCommit = null, approvers = [], today, fetch = true, runner = run, prReader = readPr } = {}) {
-  repoArg(repo, `yad build ship ${story || '<story>'} --task <T01> --repo <name> --pr <n>`);
-  if (!TASK_RE.test(String(task || ''))) throw err(CODE, `--task must be a task id such as T01 (got '${task ?? ''}')`, `yad build ship ${story} --task T01 --repo ${repo} --pr <n>`);
+// What a ship of `story`/`task` in `repo` needs before anything is asked or written — shared by `build ship`
+// and `build merged`, so `merged` never answers "merged" for a ship `ship` would then refuse.
+function shipContext(root, { story, task, repo, pr, verb }) {
+  repoArg(repo, `yad build ${verb} ${story || '<story>'} --task <T01> --repo <name>`);
+  if (!TASK_RE.test(String(task || ''))) throw err(CODE, `--task must be a task id such as T01 (got '${task ?? ''}')`, `yad build ${verb} ${story} --task T01 --repo ${repo}`);
   if (pr && pr !== true && !/^[1-9]\d*$/.test(String(pr))) throw err(CODE, `--pr must be the PR/MR number (got '${pr}')`, 'the number, not a URL or a branch');
-  if (mergeCommit && mergeCommit !== true && !/^[0-9a-f]{7,64}$/i.test(String(mergeCommit))) throw err(CODE, `--merge-commit must be a commit SHA (got '${mergeCommit}')`, 'the merge commit, 7 to 64 hex characters');
   const ctx = storyContext(root, story);
   if (!ctx.storiesPassed) throw err(CODE, `the stories review has not passed, so ${story} is not approved for Build yet`, 'pass the stories review first (yad gate)');
   if (!ctx.entry.repos.includes(repo)) throw err(CODE, `${story} does not declare ${repo}`, `its repos: ${ctx.entry.repos.join(', ') || 'none'}`);
@@ -538,7 +552,18 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
   if (isPlainObject(lane) && lane.status === 'skipped' && !laneStarted(lane)) {
     throw err(CODE, `${story} / ${repo} is skipped`, `\`yad unskip ${ctx.epic} ${story} --repo ${repo}\` before recording a ship there`);
   }
-  const where = registeredRepo(root, repo);
+  return { ctx, where: registeredRepo(root, repo) };
+}
+
+// The refusal for a ship `writeShip` (or `shipBlocked`) will not write.
+function shipRefused(res, { story, task, repo }) {
+  if (res.reason === 'exists') throw err(CODE, `${story} / ${task} already has a ship in ${repo}`, 'one ship per task and repo');
+  throw err(CODE, `${repo} shares a ship file name with ${res.repo || 'another repo'}`, 'repo names that differ only in punctuation cannot both ship this task');
+}
+
+export async function buildShip(root, { story, task, repo, pr, mergeCommit = null, approvers = [], today, fetch = true, runner = run, prReader = readPr } = {}) {
+  if (mergeCommit && mergeCommit !== true && !/^[0-9a-f]{7,64}$/i.test(String(mergeCommit))) throw err(CODE, `--merge-commit must be a commit SHA (got '${mergeCommit}')`, 'the merge commit, 7 to 64 hex characters');
+  const { ctx, where } = shipContext(root, { story, task, repo, pr, verb: 'ship' });
   let ship;
   // Read from the platform only in the repo's own checkout: from anywhere else `gh pr view <n>` reads that
   // folder's repo — the Product's own PR #n.
@@ -560,12 +585,9 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     if (!got.merged) throw err(CODE, `PR #${pr} in ${repo} is not merged`, 'a ship is recorded once the PR/MR merges');
     if (!got.mergeCommit) throw err(CODE, `PR #${pr} in ${repo} is merged, but the platform names no merge commit`, 'record it from the commit instead: yad build ship … --merge-commit <sha> with no --pr');
     // The PR's branch names the task it carries (`feat/EP-x-S01-T01-…`): the ship is never put on another.
-    // The expected id first: an epic slug may itself read like a task (`EP-aws-s3-t2-backup`).
-    const esc = `${story}-${task}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const exact = new RegExp(`(?:^|[/_])${esc}(?=$|[-_/])`, 'i').test(got.branch || '');
-    const named = exact ? [] : tasksInBranch(got.branch);
-    if (!exact && named.length) throw err(CODE, `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, 'check --task and --pr');
-    if (!exact && !named.length) warn(`PR #${pr} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${story}-${task}`);
+    const carries = branchTask(got.branch, story, task);
+    if (carries === 'other') throw err(CODE, `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, 'check --task and --pr');
+    if (carries === 'none') warn(`PR #${pr} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${story}-${task}`);
     const pull = prReader(where.platform, pr, { cwd: where.checkout, runner });
     const seen = new Set();
     const engineerReview = [];
@@ -601,16 +623,114 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     };
   }
   const res = writeShip(ctx.epicDir, ship);
-  if (!res.written) {
-    if (res.reason === 'exists') throw err(CODE, `${story} / ${task} already has a ship in ${repo}`, 'one ship per task and repo');
-    throw err(CODE, `${repo} shares a ship file name with ${res.repo || 'another repo'}`, 'repo names that differ only in punctuation cannot both ship this task');
-  }
+  if (!res.written) shipRefused(res, { story, task, repo });
   // The story is in Build now (the skill's rule); `build done` sets it shipped once every task is.
   const moved = setBuildStatus(ctx.storyFile, 'in-build');
   ok(`ship recorded: ${story} / ${task} in ${repo}${ship.mergeCommit ? ` (${String(ship.mergeCommit).slice(0, 12)})` : ''}`);
   if (moved.changed) info(`${story} is now in-build`);
   hand(`when every task has shipped: yad build done ${story}; commit with \`yad checkpoint --push\``);
   return { story, task, repo, changed: true, ship, file: rel(root, res.file) };
+}
+
+// The PRs/MRs whose source branch carries `story`-`task`, newest first, from one page of the repo's PRs/MRs
+// (any state). `{ ok, prs: [{ number, state, branch, url }], partial }` — `partial` when the page was full,
+// so an older PR may not be in it — or `{ ok: false, reason }`. Run in the repo's own checkout: from anywhere
+// else gh and glab read that folder's repo.
+const PR_PAGE = 100;
+export function findTaskPrs(platform, { story, task }, { cwd, runner = run } = {}) {
+  let rows;
+  if (platform === 'gitlab') {
+    const r = runner('glab', ['api', `projects/:id/merge_requests?state=all&order_by=updated_at&sort=desc&per_page=${PR_PAGE}`], { cwd });
+    if (!r.ok) return { ok: false, reason: r.stderr || 'glab api merge_requests failed' };
+    try { rows = (JSON.parse(r.stdout) || []).map((m) => ({ number: Number(m?.iid), state: glState(m?.state), branch: m?.source_branch || null, url: m?.web_url || null })); } catch { return { ok: false, reason: 'unreadable glab answer' }; }
+  } else {
+    const r = runner('gh', ['pr', 'list', '--state', 'all', '--limit', String(PR_PAGE), '--json', 'number,state,headRefName,url'], { cwd });
+    if (!r.ok) return { ok: false, reason: r.stderr || 'gh pr list failed' };
+    try { rows = (JSON.parse(r.stdout) || []).map((p) => ({ number: Number(p?.number), state: ghState(p?.state), branch: p?.headRefName || null, url: p?.url || null })); } catch { return { ok: false, reason: 'unreadable gh answer' }; }
+  }
+  if (!Array.isArray(rows)) return { ok: false, reason: 'unreadable answer' };
+  return { ok: true, prs: rows.filter((x) => x.number > 0 && x.state && branchTask(x.branch, story, task) === 'this'), partial: rows.length >= PR_PAGE };
+}
+
+// `yad build merged <story> --task <T> --repo <r> [--pr <n>] [--ship]` (issue #355) — asks the platform
+// whether the task's PR/MR has merged, so the agent need not wait for a person to say so. The user's
+// decisions (2026-10-20): one check per run (the agent runs it again later; nothing waits); the PR is found
+// by the task's branch unless --pr names it; --ship records the ship through `build ship` once merged.
+// Every answer is a `state`: shipped (a ship is already recorded), merged, open, closed (closed without a
+// merge) or none (no PR/MR carries the task yet). A refusal is only for what the agent must fix.
+export async function buildMerged(root, { story, task, repo, pr = null, ship = false, today, fetch = true, runner = run, prReader = readPr } = {}) {
+  const { ctx, where } = shipContext(root, { story, task, repo, pr, verb: 'merged' });
+  const id = `${story}-${task}`;
+  const shipCmd = (n) => `yad build ship ${story} --task ${task} --repo ${repo} --pr ${n}`;
+  const out = (state, extra = {}) => ({ story, task, repo, state, pr: null, url: null, mergeCommit: null, changed: false, ...extra });
+  // Already recorded: the same answer every time it is asked, with or without --ship.
+  const had = readShips(ctx.epicDir).find((s) => s.story === story && s.task === task && s.repo === repo);
+  if (had) {
+    ok(`${id} already has a ship in ${repo}${had.mergeCommit ? ` (${String(had.mergeCommit).slice(0, 12)})` : ''}`);
+    return out('shipped', { mergeCommit: had.mergeCommit || null });
+  }
+  if (!where.platform || !where.checkout || !(runner !== run || platformReady(where.platform))) {
+    const why = !where.platform ? `${repo} has no platform to ask` : !where.checkout ? `${repo} is not checked out here` : `${cliFor(where.platform)} is not available`;
+    throw err(CODE, `${why}, so yad cannot see whether ${id} merged`,
+      !where.platform || where.checkout ? `once it has merged, record it by hand: yad build ship ${story} --task ${task} --repo ${repo} --merge-commit <sha>` : `\`yad repo clone ${repo}\` fetches it`);
+  }
+  let n = pr && pr !== true ? Number(pr) : null;
+  if (!n) {
+    const found = findTaskPrs(where.platform, { story, task }, { cwd: where.checkout, runner });
+    if (!found.ok) throw err(CODE, `could not list the PRs/MRs of ${repo}: ${found.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, or pass --pr <n>`);
+    // A PR closed without a merge never competes with a later one for the same task.
+    const live = found.prs.filter((x) => x.state !== 'closed');
+    if (live.length > 1) throw err(CODE, `more than one PR/MR carries ${id}: ${live.map((x) => `#${x.number} (${x.state})`).join(', ')}`, `name the one that ships it: yad build merged ${story} --task ${task} --repo ${repo} --pr <n>`);
+    if (!live.length && found.prs.length) {
+      const last = found.prs[0];
+      warn(`PR/MR #${last.number} for ${id} was closed without a merge`);
+      hand('open a new PR/MR for the task, or ask the person who closed it');
+      return out('closed', { pr: last.number, url: last.url });
+    }
+    if (!live.length) {
+      info(`no PR/MR carries ${id} in ${repo} yet${found.partial ? ` among its newest ${PR_PAGE}` : ''}`);
+      hand(found.partial ? `if it is older, name it: yad build merged ${story} --task ${task} --repo ${repo} --pr <n>` : 'open it with `yad open-pr`, then run this again');
+      return out('none', { partial: found.partial });
+    }
+    n = live[0].number;
+  }
+  const got = readMergedPr(where.platform, n, { cwd: where.checkout, runner });
+  if (!got.ok) throw err(CODE, `could not read PR/MR #${n} in ${repo}: ${got.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, then run this again`);
+  // A number given by hand must be this task's PR: its branch may not name another task.
+  const carries = branchTask(got.branch, story, task);
+  if (carries === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}`, 'check --task and --pr');
+  const state = got.state || (got.merged ? 'merged' : null);
+  // Once, here — unless --ship hands a merged PR to `build ship`, which gives this warning itself.
+  if (carries === 'none' && !(ship && state === 'merged')) warn(`PR/MR #${n} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${id}`);
+  if (!state) throw err(CODE, `${where.platform} gave PR/MR #${n} a state yad does not know`, 'check it on the platform');
+  const facts = { pr: n, url: got.url };
+  if (state === 'open') {
+    info(`PR/MR #${n} for ${id} is open — not merged yet`);
+    hand(`run this again later; a person merges it`);
+    return out('open', facts);
+  }
+  if (state === 'closed') {
+    warn(`PR/MR #${n} for ${id} was closed without a merge`);
+    hand('open a new PR/MR for the task, or ask the person who closed it');
+    return out('closed', facts);
+  }
+  // Merged, but only an answer `build ship` would accept is `merged`: the same merge-commit checks run here
+  // first (on the default branch, not naming another task), so a PR merged into a release branch or a
+  // stacked parent is a refusal now, not a `merged` the ship then refuses.
+  if (!got.mergeCommit) throw err(CODE, `PR/MR #${n} in ${repo} is merged, but the platform names no merge commit`, 'record it from the commit instead: yad build ship … --merge-commit <sha> with no --pr');
+  // The warning for a commit naming no task is `build ship`'s to give, once, when it records; a read only asks.
+  const c = checkCommit(where, { story, task, repo, mergeCommit: got.mergeCommit, strict: false, fetch, noTask: ship ? null : 'check it ships' });
+  // A ship file `build ship` would not write (another repo's of the same file name, or one it cannot read).
+  const blocked = shipBlocked(ctx.epicDir, { story, task, repo });
+  if (blocked) shipRefused(blocked, { story, task, repo });
+  ok(`PR/MR #${n} for ${id} merged (${c.sha.slice(0, 12)})`);
+  if (!ship) {
+    hand(`record the ship: ${shipCmd(n)} (or run this again with --ship)`);
+    return out('merged', { ...facts, mergeCommit: c.sha });
+  }
+  // The ship is written by `build ship` itself, never by a second path.
+  const res = await buildShip(root, { story, task, repo, pr: String(n), today, fetch, runner, prReader });
+  return out('merged', { ...facts, mergeCommit: res.ship.mergeCommit, changed: true, ship: res.ship, file: res.file });
 }
 
 export async function buildDone(root, { story, today, fetch = true } = {}) {

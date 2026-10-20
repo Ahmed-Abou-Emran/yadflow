@@ -241,6 +241,18 @@ export function writeRetroShip(epicDir, { story, repo, task = 'retro', mergeComm
   }, lockOpts);
 }
 
+// Why a ship of (story, task, repo) cannot be written now — `{ reason: 'exists' | 'collision', repo?, file? }` —
+// or null. `yad build merged` asks it too, so it never answers "merged" for a ship this would refuse.
+export function shipBlocked(epicDir, { story, task, repo }) {
+  const ships = readShips(epicDir).filter((s) => s.story === story && s.task === task);
+  if (ships.some((s) => s.repo === repo)) return { reason: 'exists' };
+  const clash = ships.find((s) => safe(s.repo) === safe(repo));
+  if (clash) return { reason: 'collision', repo: clash.repo };
+  const file = path.join(epicFiles(epicDir).buildLogDir, buildShardName({ story, task, repo }));
+  if (fs.existsSync(file)) return { reason: 'collision', file };
+  return null;
+}
+
 // Record a ship (`yad build ship`, #346): one shard per (story, task, repo), refused when that ship is
 // already recorded, or when another repo's ship shares its file name (`safe()` folds `api.v2` and `api_v2`
 // into one name, and writing the second would overwrite the first). The guard, the collision check and the
@@ -249,12 +261,9 @@ export function writeShip(epicDir, ship, lockOpts = {}) {
   const { story, task, repo } = ship;
   if (!story || !task || !repo) throw new Error('writeShip: story, task and repo are required');
   return withLedgerLock(buildLogLock(epicDir), () => {
-    const ships = readShips(epicDir).filter((s) => s.story === story && s.task === task);
-    if (ships.some((s) => s.repo === repo)) return { written: false, reason: 'exists' };
-    const clash = ships.find((s) => safe(s.repo) === safe(repo));
-    if (clash) return { written: false, reason: 'collision', repo: clash.repo };
+    const blocked = shipBlocked(epicDir, ship);
+    if (blocked) return { written: false, ...blocked };
     const file = path.join(epicFiles(epicDir).buildLogDir, buildShardName(ship));
-    if (fs.existsSync(file)) return { written: false, reason: 'collision', file };
     writeJSON(file, ship);
     return { written: true, file, ship };
   }, lockOpts);

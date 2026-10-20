@@ -258,6 +258,10 @@ ${c.bold('Build helpers')}
                                        Merged with no PR/MR: --merge-commit <sha> (no --pr) — the
                                        platform is asked which PR merged it. [--no-fetch]
                                        No platform to read: --merge-commit <sha> [--approver <login>]…
+  yad build merged <story> --task <T> --repo <r> [--pr <n>] [--ship] [--no-fetch]
+                                       Ask the platform whether the task's PR/MR merged (found by
+                                       its branch): shipped | merged | open | closed | none. One
+                                       check, nothing waits; --ship records the ship once merged
   yad build done <story> [--no-fetch]  Every task shipped: status shipped, review step closed
   yad run checks [--title <text>] [--body <file>] [--base <ref>] [--no-build] [--no-fetch]
                                        Run every PR/MR gate here before you push, as CI would: this
@@ -420,6 +424,7 @@ function parseArgs(argv) {
     else if (a === '--allow-branch') o.allowBranch = true;
     else if (a === '--overwrite-local') o.overwriteLocal = true;
     else if (a === '--merged') o.merged = true;
+    else if (a === '--ship') o.ship = true;
     else if (a === '--overview') o.overview = true;
     // `--check` is a bare boolean for `docs sync --check`, but takes a value for
     // `next <epic> --check <step>`. Only the `next` command consumes the following token as a value —
@@ -510,7 +515,7 @@ const ACTIONS = {
   toolbox: { known: ['list', 'check', 'add', 'remove'], default: 'list' },
   member: { known: ['add', 'list', 'remove'], default: 'list' },
   run: { known: ['checks'] },
-  build: { known: ['start', 'step', 'trust', 'ship', 'done'] },
+  build: { known: ['start', 'step', 'trust', 'ship', 'merged', 'done'] },
 };
 // E80 — how each command finds its folder. A PRODUCT command works on the Product; a REPO command works
 // on the code repo it runs in and reads the Product beside it. The rest take their folder as given:
@@ -527,7 +532,9 @@ const REPO_CMDS = new Set(['commit', 'open-pr', 'ship', 'review', 'run']);
 // already refuse a folder that is not a Product.
 function writesProduct(cmd, o) {
   const action = o._[1];
-  if (cmd === 'update' || cmd === 'kill' || cmd === 'unkill' || cmd === 'build') return true;
+  if (cmd === 'update' || cmd === 'kill' || cmd === 'unkill') return true;
+  // `build merged` only asks the platform, unless --ship records what it found.
+  if (cmd === 'build') return action !== 'merged' || !!o.ship;
   if (cmd === 'check') return !!o.fix;
   if (cmd === 'epic' || cmd === 'foundation') return action === 'new';
   if (cmd === 'skill') return action === 'bind' || action === 'unbind';
@@ -937,6 +944,7 @@ async function main() {
       else if (action === 'step') result = await commands.buildStep(o.dir, { story, repo: o.repo, step: a3, to: a4, reason: o.reason, via: o.via || 'human', run: o.run || null, task: o.task || null, today });
       else if (action === 'trust') result = await commands.buildTrust(o.dir, { story, repo: o.repo, step: a3, verdict: o.verdict, signals, ranBy: o['ran-by'] || 'human', note: o.note || null, uid: o.uid || null, task: o.task || null, today });
       else if (action === 'ship') result = await commands.buildShip(o.dir, { story, task: o.task, repo: o.repo, pr: o.pr, mergeCommit: o['merge-commit'] || null, approvers: o.approver || [], today, fetch: !o.noFetch });
+      else if (action === 'merged') result = await commands.buildMerged(o.dir, { story, task: o.task, repo: o.repo, pr: o.pr || null, ship: !!o.ship, today, fetch: !o.noFetch });
       else result = await commands.buildDone(o.dir, { story, today, fetch: !o.noFetch });
       break;
     }

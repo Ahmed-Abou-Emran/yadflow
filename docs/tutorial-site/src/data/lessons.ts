@@ -575,10 +575,10 @@ export const MODULES: Module[] = [
         summary: 'AI review (advisory) → engineer review (human) → merge.',
         body: [
           { kind: 'p', text: 'Finally, `yad-engineer-review`: an AI review (CodeRabbit) runs first as an **advisory** pass — never the authority. Then a human engineer approves, under the same count rule: 1 approver, who should not be the author, with high risk, a contract surface, or a `high` directory on the base branch\'s risk map raising the advisory count — and that directory asking for an approver who has worked there in the last 30 days. yadflow requests no reviewers — ask them on the PR itself. To help you choose, `yad open-pr` prints a suggestion: who has committed in the folders the change touches in the last 30 days, and what CODEOWNERS lists. It is a hint about who may know the code, never a list of owners.' },
-          { kind: 'p', text: 'On merge, `yad build ship` records the ship in the build log from the merged PR and moves the story to `in-build`; once every task has shipped, `yad build done` moves it to `shipped`. The epic → story → task → PR → merge-commit chain stays traceable both ways.' },
+          { kind: 'p', text: 'On merge, `yad build ship` records the ship in the build log from the merged PR and moves the story to `in-build` (`yad build merged … --ship` asks the platform whether it merged, so nobody has to say so); once every task has shipped, `yad build done` moves it to `shipped`. The epic → story → task → PR → merge-commit chain stays traceable both ways.' },
           { kind: 'callout', tone: 'key', text: 'A story tagged for multiple repos runs the whole Build in each repo independently, all from the one locked contract.' },
         ],
-        commands: [{ cmd: 'run yad-engineer-review' }, { cmd: 'yad build ship <story> --task <T> --repo <r> --pr <n>' }, { cmd: 'yad build done <story>' }],
+        commands: [{ cmd: 'run yad-engineer-review' }, { cmd: 'yad build merged <story> --task <T> --repo <r> --ship' }, { cmd: 'yad build done <story>' }],
         produces: ['.sdlc/build-log/<story>-<task>-<repo>.json (one per ship)', 'story status → shipped'],
         quiz: [
           {
