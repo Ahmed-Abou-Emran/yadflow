@@ -677,6 +677,8 @@ test('yad build: a by-hand ship records the commit date; --via auto needs the di
     assert.equal(r.code, 0, r.out);
     r = yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', 'spec', '--verdict', 'rejected', '--json');
     const bad = json(r).uid;
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'done', '--via', 'auto');
+    assert.match(r.out, /--via auto needs --run <uid>/);
     r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'done', '--via', 'auto', '--run', bad);
     assert.match(r.out, /is rejected, so spec does not advance on its own/);
     r = yad(P, 'kill', '--reason', 'a bad week');

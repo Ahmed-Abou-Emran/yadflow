@@ -335,6 +335,10 @@ export async function buildStep(root, { story, repo, step, to, reason, via = 'hu
       && !(r.task && forTask && r.task !== forTask));
     if (!known) throw err(CODE, `no trust run ${runUid} for ${story} / ${repo} / ${step}`, `\`yad build trust ${story} --repo ${repo} ${step} --verdict …\` prints the uid of the run it records`);
   }
+  // An automatic close names the run that earned it: without one, nothing shows the run was not rejected.
+  if (to === 'done' && via === 'auto' && (!runUid || runUid === true)) {
+    throw err(CODE, '--via auto needs --run <uid>, the trust run that advanced the step', `yad build trust ${story} --repo ${repo} ${step} --verdict … prints it`);
+  }
   if (runUid && runUid !== true && to === 'done' && via === 'auto') {
     const r = readTrustRuns(ctx.epicDir).find((x) => x.uid === runUid && x.story === story && x.repo === repo && x.step === step);
     if (r?.verdict === 'rejected') throw err(CODE, `trust run ${runUid} is rejected, so ${step} does not advance on its own`, `halt instead: yad build step ${story} --repo ${repo} ${step} blocked --reason "<why>"`);
