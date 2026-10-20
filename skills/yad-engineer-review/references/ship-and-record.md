@@ -82,7 +82,7 @@ without the `{ epic, ships }` wrapper):
 
 **Grouped PRs (#350).** Several small tasks of one story may share a PR/MR, each commit keeping its own
 `Task:` line. Each task ships from it with `yad build ship <story> --task <T> --repo <r> --pr <n>`: the PR
-carries a task when its branch names it **or** its commits' `Task:` lines do (asked of the platform), so
+carries a task when its branch names it **or** its commits' `Task:` trailers do (each commit's first, read as spec-link reads it; asked of the platform), so
 every ship of the group records the same PR and merge commit. By hand, where the platform cannot be read,
 the merge commit's own merged range (`<sha>^1..<sha>^2`) is read for the `Task:` lines; a squash merge has
 none, so only the task it names ships that way.

@@ -1151,12 +1151,16 @@ function groupedMerge(api, { merge = true } = {}) {
 }
 
 test('a grouped PR: several small tasks of one story in one PR, each shipped from it (#350)', async () => {
-  const { buildShip, buildMerged, prTasks, taskLines } = await import('./build.mjs');
+  const { buildShip, buildMerged, prTasks, trailerTask } = await import('./build.mjs');
   const { W, P, dir, api } = workspace({ tasks: '# Tasks\n\n- [ ] T01 — a\n- [ ] T02 — b\n- [ ] T03 — c\n' });
   try {
     write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
     const m = groupedMerge(api);
-    assert.deepEqual(taskLines('fix: x\n\nTask: EP-l-S01-T01\nTask:  EP-l-S01-T02 \nnot Task: EP-l-S01-T09'), ['EP-l-S01-T01', 'EP-l-S01-T02']);
+    // A Task: trailer as git reads it: the last paragraph, the key in any case, the first one (review 1).
+    assert.equal(trailerTask('fix: x\n\nTask: EP-l-S01-T01\nTask: EP-l-S01-T02'), 'EP-l-S01-T01');
+    assert.equal(trailerTask('fix: x\r\n\r\ntask:  EP-l-S01-T02 \r\n'), 'EP-l-S01-T02');
+    assert.equal(trailerTask('fix: x\n\nTask: EP-l-S01-T07\nmore words\n\nTask: EP-l-S01-T04'), 'EP-l-S01-T04', 'a Task: line in a middle paragraph is not a trailer');
+    assert.equal(trailerTask('fix: x\n\nTask: not-an-id'), null);
     const view = { state: 'MERGED', mergedAt: '2026-10-20T10:00:00Z', mergeCommit: { oid: m }, headRefName: 'feat/EP-l-S01-T01-small-fixes', url: 'https://github.com/o/api/pull/20', body: '', statusCheckRollup: [] };
     const commits = { commits: [{ messageHeadline: 'fix: small T01', messageBody: 'Task: EP-l-S01-T01' }, { messageHeadline: 'fix: small T02', messageBody: 'Task: EP-l-S01-T02' }] };
     let commitsOk = true;
@@ -1176,10 +1180,19 @@ test('a grouped PR: several small tasks of one story in one PR, each shipped fro
     r = await buildMerged(P, { ...base, task: 'T02', pr: '20' });
     assert.deepEqual([r.state, r.mergeCommit], ['merged', m]);
     // A task the PR does not carry is refused; commits that cannot be read are a refusal, never a guess.
-    await assert.rejects(() => buildMerged(P, { ...base, task: 'T03', pr: '20' }), /names another task than EP-l-S01-T03/);
+    await assert.rejects(() => buildMerged(P, { ...base, task: 'T03', pr: '20' }), /PR\/MR #20's commits carry EP-l-S01-T01, EP-l-S01-T02, not EP-l-S01-T03/);
+    // A branch naming no task whose commits carry other tasks: that is evidence, not a warning (review 1).
+    view.headRefName = 'fix/typo';
+    await assert.rejects(() => buildShip(P, { ...base, task: 'T03', pr: '20' }), /PR #20's commits carry EP-l-S01-T01, EP-l-S01-T02, not EP-l-S01-T03/);
+    view.headRefName = 'feat/EP-l-S01-T01-small-fixes';
     commitsOk = false;
-    await assert.rejects(() => buildShip(P, { ...base, task: 'T02', pr: '20' }), /its commits could not be read to see whether it carries T02 too: denied/);
+    await assert.rejects(() => buildShip(P, { ...base, task: 'T02', pr: '20' }), /its commits could not all be read to see whether it carries T02 too: denied/);
     commitsOk = true;
+    // More than a page of commits: as unread as a failed read (review 1).
+    const many = commits.commits;
+    commits.commits = Array.from({ length: 100 }, () => ({ messageHeadline: 'chore: x', messageBody: '' }));
+    await assert.rejects(() => buildShip(P, { ...base, task: 'T02', pr: '20' }), /\(more than one page of them\)/);
+    commits.commits = many;
     // Each task ships from the one PR, with the same merge commit.
     await buildShip(P, { ...base, task: 'T01', pr: '20' });
     await buildShip(P, { ...base, task: 'T02', pr: '20' });

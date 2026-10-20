@@ -342,6 +342,10 @@ export async function runOpenPr(root, opts = {}) {
   // makes it a grouped PR — several small tasks of one story — which its body lists, and whose size is warned
   // about over the Product's `group_limit`.
   const baseRef = `origin/${baseBranch}`;
+  // Fetched first: a stale origin/<base> would count tasks merged since then as this PR's.
+  const fetched = run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${baseBranch}:refs/remotes/${baseRef}`], { cwd: repoRoot }).ok;
+  if (!fetched && auto) throw err('YAD-STATE-009', `could not fetch ${baseBranch} from origin, so the tasks ${branch} carries are not known`, 'check the network and your login, then run this again');
+  if (!fetched) warn(`could not fetch ${baseBranch} from origin — the tasks this PR carries are read against the last fetched ${baseRef}`);
   const haveBase = run('git', ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`], { cwd: repoRoot }).ok;
   const commitIds = haveBase ? rangeTasks(repoRoot, `${baseRef}..HEAD`) : null;
   let groupIds = null;

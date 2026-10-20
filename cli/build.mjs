@@ -604,7 +604,7 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     // The PR carries the task (`prCarries`): its branch names it, or — a grouped PR (#350) — its commits do.
     // The ship is never put on a task the PR does not carry.
     const { carries, tasks: group } = prCarries(where, pr, got, { story, task, runner });
-    if (carries === 'other') throw err(CODE, `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, 'check --task and --pr');
+    if (carries === 'other') throw err(CODE, group?.length ? `PR #${pr}'s commits carry ${group.join(', ')}, not ${story}-${task}` : `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, 'check --task and --pr');
     if (carries === 'none') warn(`PR #${pr} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${story}-${task}`);
     if (carries === 'group') info(`PR #${pr} is a grouped PR: its commits carry ${group.join(', ')}`);
     // A follow-up branch is never the task's own ship, and a follow-up should come from one. The name is the
@@ -659,9 +659,27 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
 
 // Add a follow-up's merge to the task's ship, where the ship lives (its shard, or the folded log). The same
 // PR/MR or merge commit twice is refused; the story's status is left as it is.
-// The task ids in `Task:` trailer lines of commit messages, as the spec-link gate reads them.
-const TASK_LINE_RE = /^Task:[ \t]*(EP-[a-z0-9-]+-S\d+-T\d+)[ \t]*$/gm;
-export const taskLines = (text) => [...String(text || '').matchAll(TASK_LINE_RE)].map((m) => m[1]);
+// The task a commit message carries, read as the spec-link gate reads it through git: the FIRST `Task:`
+// trailer — a `Task: <id>` line (the key in any case) in the message's LAST paragraph — and only when it is a
+// task id. Used on messages the platform returns; local commits are read by git itself (`gitTasks`).
+const TASK_ID_ONLY = /^EP-[a-z0-9-]+-S\d+-T\d+$/;
+export function trailerTask(message) {
+  const paras = String(message || '').replace(/\r\n?/g, '\n').trim().split(/\n[ \t]*\n/);
+  for (const line of (paras[paras.length - 1] || '').split('\n')) {
+    const m = line.match(/^task[ \t]*:[ \t]*(.*?)[ \t]*$/i);
+    if (m) return TASK_ID_ONLY.test(m[1]) ? m[1] : null;
+  }
+  return null;
+}
+
+// The tasks the commits of a `git log` range carry: each commit's FIRST `Task:` trailer, read by git as the
+// spec-link gate reads it. `null` when git cannot read the range.
+function gitTasks(cwd, args) {
+  const r = run('git', ['log', '--format=%(trailers:key=Task,valueonly,separator=%x1e)%x00', ...args], { cwd });
+  if (!r.ok) return null;
+  const ids = r.stdout.split('\0').map((x) => x.split('\x1e')[0].trim()).filter((v) => TASK_ID_ONLY.test(v));
+  return [...new Set(ids)].sort((x, y) => x.localeCompare(y, 'en', { numeric: true }));
+}
 
 // The tasks a PR/MR's own commits carry by their `Task:` lines (issue #350): a grouped PR carries several
 // small tasks of one story, each commit naming its own. Asked of the platform — the one source every reader
@@ -679,7 +697,7 @@ export function prTasks(platform, n, { cwd, runner = run } = {}) {
     try { messages = ((JSON.parse(r.stdout) || {}).commits || []).map((c) => `${c?.messageHeadline || ''}\n\n${c?.messageBody || ''}`); } catch { return { ok: false, reason: 'unreadable gh answer' }; }
   }
   if (!Array.isArray(messages)) return { ok: false, reason: 'unreadable answer' };
-  return { ok: true, tasks: [...new Set(messages.flatMap(taskLines))], partial: messages.length >= COMMIT_PAGE };
+  return { ok: true, tasks: [...new Set(messages.map(trailerTask).filter(Boolean))], partial: messages.length >= COMMIT_PAGE };
 }
 
 // Does PR/MR `n` (read as `got`) carry `story`-`task`? `this` — its branch names it; `group` — another task's
@@ -689,19 +707,22 @@ function prCarries(where, n, got, { story, task, runner }) {
   const byBranch = branchTask(got.branch, story, task);
   if (byBranch === 'this') return { carries: 'this', tasks: null };
   const asked = prTasks(where.platform, n, { cwd: where.checkout, runner });
-  if (!asked.ok) {
-    if (byBranch === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${story}-${task}, and its commits could not be read to see whether it carries ${task} too: ${asked.reason}`, 'log in, then run this again');
+  const id = `${story}-${task}`;
+  if (asked.ok && asked.tasks.includes(id)) return { carries: 'group', tasks: asked.tasks };
+  // A list cut short could hold the task further on: as unread as a failed read.
+  if (!asked.ok || asked.partial) {
+    if (byBranch === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}, and its commits could not all be read to see whether it carries ${task} too${asked.ok ? ' (more than one page of them)' : `: ${asked.reason}`}`, asked.ok ? 'record it by hand where its merge commit is: yad build ship … --merge-commit <sha>' : 'log in, then run this again');
     return { carries: byBranch, tasks: null };
   }
-  if (asked.tasks.includes(`${story}-${task}`)) return { carries: 'group', tasks: asked.tasks };
+  // The commits were read and carry other tasks, not this one: that is evidence, whatever the branch says.
+  if (byBranch === 'none' && asked.tasks.length) return { carries: 'other', tasks: asked.tasks };
   return { carries: byBranch, tasks: asked.tasks };
 }
 
 // The task ids the commits of `range` carry by `Task:` lines, merges left out — what the spec-link gate reads
 // on a PR. `null` when git cannot read the range.
 export function rangeTasks(cwd, range) {
-  const r = run('git', ['log', '--no-merges', '--format=%B%x00', range], { cwd });
-  return r.ok ? [...new Set(taskLines(r.stdout))].sort((x, y) => x.localeCompare(y, 'en', { numeric: true })) : null;
+  return gitTasks(cwd, ['--no-merges', range]);
 }
 
 // The size limit of a grouped PR (#350): `group_limit: { lines, files }` in the Product settings, 200 lines
@@ -762,8 +783,7 @@ export function groupWarnings(cwd, base, ids, settings) {
 // recorded by hand, where the platform cannot be read. A squash or a fast-forward has no range: none.
 function mergeRangeTasks(cwd, sha) {
   if (!run('git', ['rev-parse', '--verify', '--quiet', `${sha}^2`], { cwd }).ok) return [];
-  const r = run('git', ['log', '--format=%B%x00', `${sha}^1..${sha}^2`], { cwd });
-  return r.ok ? [...new Set(taskLines(r.stdout))] : [];
+  return gitTasks(cwd, ['--no-merges', `${sha}^1..${sha}^2`]) || [];
 }
 
 // The PRs/MRs that can be the task's OWN (issue #350): those not named as follow-ups, and — only when there
@@ -913,7 +933,7 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   if (!got.ok) throw err(CODE, `could not read PR/MR #${n} in ${repo}: ${got.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, then run this again`);
   // A number given by hand must carry this task: its branch, or (a grouped PR, #350) its commits.
   const { carries, tasks: group } = prCarries(where, n, got, { story, task, runner });
-  if (carries === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}`, 'check --task and --pr');
+  if (carries === 'other') throw err(CODE, group?.length ? `PR/MR #${n}'s commits carry ${group.join(', ')}, not ${id}` : `PR/MR #${n} is from ${got.branch}, which names another task than ${id}`, 'check --task and --pr');
   const follows = isFollowUpBranch(got.branch, story, task);
   // A follow-up-named PR — named by --pr, recorded by the dial, or found — is the task's own only by the rule
   // `build ship` applies, so `merged` is never answered for a PR the ship then refuses.
