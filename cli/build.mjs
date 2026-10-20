@@ -20,9 +20,9 @@ import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, is
 import { DEFAULT_LIFECYCLE, laneOrder, laneAuthorSteps } from './lifecycle.mjs';
 import { epicFiles, PROJECT_FILES } from './manifest.mjs';
 import { err } from './errors.mjs';
-import { readShips, readTrustRuns, writeShip, shipBlocked, writeTrustRun, updateTrustRun } from './ledger.mjs';
+import { readShips, readTrustRuns, writeShip, shipBlocked, updateShip, writeTrustRun, updateTrustRun } from './ledger.mjs';
 import { setBuildStatus, readStoryStatus } from './artifact-status.mjs';
-import { readPr, mapApprovers, detectPlatform, cliFor, platformReady } from './platform.mjs';
+import { readPr, mapApprovers, detectPlatform, cliFor, platformReady, prNumberFromUrl } from './platform.mjs';
 import { repoPathFromGitUrl } from './protection.mjs';
 import { readCommit, tasksOfCommit, prOfCommit } from './ship-drift.mjs';
 import { recordActor } from './skip.mjs';
@@ -467,6 +467,14 @@ export function branchTask(branch, story, task) {
   return tasksInBranch(branch).length ? 'other' : 'none';
 }
 
+// A follow-up branch of `story`-`task` (issue #350): the task id followed by `-followup`, as in
+// `fix/EP-pay-S01-T01-followup-null-check` — a fix to a task that has already shipped. Its commits keep the
+// task's `Task:` line; its merge is added to the task's ship (`followUps`), never a second ship.
+export function isFollowUpBranch(branch, story, task) {
+  const esc = `${story}-${task}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[/_])${esc}-followup(?=$|[-_/])`, 'i').test(branch || '');
+}
+
 // A commit in the repo's own checkout: it exists and is on the default branch (origin's, fetched first
 // unless --no-fetch; the local one when there is no origin). `strict` (a ship read with the platform's help)
 // also asks that it names the task, by the rules `yad reconcile check` reads every commit with — a `Task:`
@@ -561,13 +569,18 @@ function shipRefused(res, { story, task, repo }) {
   throw err(CODE, `${repo} shares a ship file name with ${res.repo || 'another repo'}`, 'repo names that differ only in punctuation cannot both ship this task');
 }
 
-export async function buildShip(root, { story, task, repo, pr, mergeCommit = null, approvers = [], today, fetch = true, runner = run, prReader = readPr } = {}) {
+export async function buildShip(root, { story, task, repo, pr, mergeCommit = null, approvers = [], followUp = false, today, fetch = true, runner = run, prReader = readPr } = {}) {
   if (mergeCommit && mergeCommit !== true && !/^[0-9a-f]{7,64}$/i.test(String(mergeCommit))) throw err(CODE, `--merge-commit must be a commit SHA (got '${mergeCommit}')`, 'the merge commit, 7 to 64 hex characters');
   const { ctx, where } = shipContext(root, { story, task, repo, pr, verb: 'ship' });
   let ship;
   // Read from the platform only in the repo's own checkout: from anywhere else `gh pr view <n>` reads that
   // folder's repo — the Product's own PR #n.
   const readable = where.platform && where.checkout && (runner !== run || platformReady(where.platform));
+  // A follow-up (#350) is added to the task's ship, so the ship must be there; where the platform can be
+  // read, it is read from its PR/MR, like the ship itself.
+  const original = followUp ? readShips(ctx.epicDir).find((s) => s.story === story && s.task === task && s.repo === repo) : null;
+  if (followUp && !original) throw err(CODE, `${story} / ${task} has no ship in ${repo} yet, so it has no follow-up`, `record the task's own ship first: yad build ship ${story} --task ${task} --repo ${repo} --pr <n>`);
+  if (followUp && readable && (!pr || pr === true)) throw err(CODE, 'a follow-up is read from its merged PR/MR: --pr <n> is required', `yad build ship ${story} --task ${task} --repo ${repo} --pr <n> --follow-up`);
   const byHand = (mergeCommit && mergeCommit !== true) || approvers.length;
   // A task merged with no PR/MR (the user's decision, 2026-10-20): the commit is the evidence, so it must be
   // on the default branch and name the task. Nobody approved a PR, so there are no approvers.
@@ -588,6 +601,10 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     const carries = branchTask(got.branch, story, task);
     if (carries === 'other') throw err(CODE, `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, 'check --task and --pr');
     if (carries === 'none') warn(`PR #${pr} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${story}-${task}`);
+    // A follow-up branch is never the task's own ship, and a follow-up should come from one.
+    const follows = isFollowUpBranch(got.branch, story, task);
+    if (follows && !followUp) throw err(CODE, `PR #${pr} is from ${got.branch}, a follow-up branch of ${story}-${task}`, `add it to the task's ship: yad build ship ${story} --task ${task} --repo ${repo} --pr ${pr} --follow-up`);
+    if (followUp && !follows) warn(`PR #${pr} is from ${got.branch || '(no branch)'}, not a follow-up branch (fix/${story}-${task}-followup-<words>) — check it is a follow-up of ${story}-${task}`);
     const pull = prReader(where.platform, pr, { cwd: where.checkout, runner });
     const seen = new Set();
     const engineerReview = [];
@@ -622,6 +639,7 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
       companion: { trailer: false, cards: false, chat: false }, risk: null, shippedAt: (c && c.date) || today,
     };
   }
+  if (followUp) return addFollowUp(root, ctx, original, ship, { story, task, repo });
   const res = writeShip(ctx.epicDir, ship);
   if (!res.written) shipRefused(res, { story, task, repo });
   // The story is in Build now (the skill's rule); `build done` sets it shipped once every task is.
@@ -630,6 +648,23 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
   if (moved.changed) info(`${story} is now in-build`);
   hand(`when every task has shipped: yad build done ${story}; commit with \`yad checkpoint --push\``);
   return { story, task, repo, changed: true, ship, file: rel(root, res.file) };
+}
+
+// Add a follow-up's merge to the task's ship, where the ship lives (its shard, or the folded log). The same
+// PR/MR or merge commit twice is refused; the story's status is left as it is.
+function addFollowUp(root, ctx, original, ship, { story, task, repo }) {
+  const prNo = (v) => (v == null ? null : prNumberFromUrl(String(v)) || String(v).replace(/^#/, ''));
+  const entry = { pr: ship.pr, branch: ship.branch, mergeCommit: ship.mergeCommit, date: ship.shippedAt };
+  const known = [original, ...(Array.isArray(original.followUps) ? original.followUps : [])];
+  const dup = known.find((x) => (ship.mergeCommit && x?.mergeCommit === ship.mergeCommit) || (!['local', 'none'].includes(entry.pr) && prNo(x?.pr) === prNo(entry.pr)));
+  if (dup) throw err(CODE, `${dup === original ? `${story} / ${task}'s own ship` : `a follow-up of ${story} / ${task}`} already records ${dup.mergeCommit === ship.mergeCommit ? `merge ${String(ship.mergeCommit).slice(0, 12)}` : `PR/MR ${entry.pr}`}`, 'each follow-up is recorded once');
+  const res = updateShip(ctx.epicDir, (s) => s.story === story && s.task === task && s.repo === repo, (s) => {
+    s.followUps = [...(Array.isArray(s.followUps) ? s.followUps : []), entry];
+  });
+  if (!res.found) throw err(CODE, `${story} / ${task}'s ship in ${repo} could not be found to add the follow-up to`, 'run it again; if it repeats, check the build-log files');
+  ok(`follow-up recorded on ${story} / ${task} in ${repo}${entry.mergeCommit ? ` (${String(entry.mergeCommit).slice(0, 12)})` : ''}`);
+  hand('commit with `yad checkpoint --push`');
+  return { story, task, repo, changed: true, followUp: entry, file: rel(root, res.file) };
 }
 
 // The PRs/MRs whose source branch carries `story`-`task`, newest first, from one page of the repo's PRs/MRs
@@ -649,7 +684,10 @@ export function findTaskPrs(platform, { story, task }, { cwd, runner = run } = {
     try { rows = (JSON.parse(r.stdout) || []).map((p) => ({ number: Number(p?.number), state: ghState(p?.state), branch: p?.headRefName || null, url: p?.url || null })); } catch { return { ok: false, reason: 'unreadable gh answer' }; }
   }
   if (!Array.isArray(rows)) return { ok: false, reason: 'unreadable answer' };
-  return { ok: true, prs: rows.filter((x) => x.number > 0 && x.state && branchTask(x.branch, story, task) === 'this'), partial: rows.length >= PR_PAGE };
+  return {
+    ok: true, partial: rows.length >= PR_PAGE,
+    prs: rows.filter((x) => x.number > 0 && x.state && branchTask(x.branch, story, task) === 'this').map((x) => ({ ...x, followUp: isFollowUpBranch(x.branch, story, task) })),
+  };
 }
 
 // `yad build merged <story> --task <T> --repo <r> [--pr <n>] [--ship]` (issue #355) — asks the platform
@@ -658,14 +696,26 @@ export function findTaskPrs(platform, { story, task }, { cwd, runner = run } = {
 // by the task's branch unless --pr names it; --ship records the ship through `build ship` once merged.
 // Every answer is a `state`: shipped (a ship is already recorded), merged, open, closed (closed without a
 // merge) or none (no PR/MR carries the task yet). A refusal is only for what the agent must fix.
-export async function buildMerged(root, { story, task, repo, pr = null, ship = false, today, fetch = true, runner = run, prReader = readPr } = {}) {
+//
+// `--follow-up` (issue #350) asks the same of the task's FOLLOW-UP PRs/MRs instead — branches named
+// `fix/<story>-<task>-followup-<words>` — after the task has shipped; `--ship` adds the merge to the ship's
+// `followUps`. Without it, follow-up branches are left out, so they never compete with the task's own PR.
+export async function buildMerged(root, { story, task, repo, pr = null, ship = false, followUp = false, today, fetch = true, runner = run, prReader = readPr } = {}) {
   const { ctx, where } = shipContext(root, { story, task, repo, pr, verb: 'merged' });
   const id = `${story}-${task}`;
-  const shipCmd = (n) => `yad build ship ${story} --task ${task} --repo ${repo} --pr ${n}`;
-  const out = (state, extra = {}) => ({ story, task, repo, state, pr: null, url: null, mergeCommit: null, changed: false, ...extra });
-  // Already recorded: the same answer every time it is asked, with or without --ship.
+  const shipCmd = (n) => `yad build ship ${story} --task ${task} --repo ${repo} --pr ${n}${followUp ? ' --follow-up' : ''}`;
+  const out = (state, extra = {}) => ({ story, task, repo, state, pr: null, url: null, mergeCommit: null, changed: false, ...(followUp ? { followUp: true } : {}), ...extra });
   const had = readShips(ctx.epicDir).find((s) => s.story === story && s.task === task && s.repo === repo);
-  if (had) {
+  // A follow-up needs the task's ship; the PRs/MRs it already records are answered `shipped`.
+  if (followUp && !had) throw err(CODE, `${story} / ${task} has no ship in ${repo} yet, so it has no follow-up`, `ask about the task's own PR first: yad build merged ${story} --task ${task} --repo ${repo}`);
+  const prNo = (v) => (v == null ? null : prNumberFromUrl(String(v)) || String(v).replace(/^#/, ''));
+  const recorded = new Set(followUp ? [had.pr, ...(Array.isArray(had.followUps) ? had.followUps.map((x) => x?.pr) : [])].map(prNo).filter(Boolean) : []);
+  if (followUp && pr && pr !== true && recorded.has(String(Number(pr)))) {
+    ok(`PR/MR #${Number(pr)} is already recorded on ${id}'s ship in ${repo}`);
+    return out('shipped', { pr: Number(pr) });
+  }
+  // Already recorded: the same answer every time it is asked, with or without --ship.
+  if (had && !followUp) {
     ok(`${id} already has a ship in ${repo}${had.mergeCommit ? ` (${String(had.mergeCommit).slice(0, 12)})` : ''}`);
     return out('shipped', { mergeCommit: had.mergeCommit || null });
   }
@@ -677,7 +727,7 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   let n = pr && pr !== true ? Number(pr) : null;
   // A PR/MR the dial opened (#356) is recorded on the lane: that number, before any search.
   const lane = lanes(ctx.buildState, story).repos[repo];
-  const opened = !n && isPlainObject(lane) && Array.isArray(lane.opened) ? lane.opened.filter((o) => o?.task === task && Number(o.pr) > 0).pop() : null;
+  const opened = !n && !followUp && isPlainObject(lane) && Array.isArray(lane.opened) ? lane.opened.filter((o) => o?.task === task && Number(o.pr) > 0).pop() : null;
   if (opened) {
     n = Number(opened.pr);
     info(`PR/MR #${n} was opened by the dial on ${opened.date || 'an earlier day'}`);
@@ -695,18 +745,21 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   if (!n) {
     const found = findTaskPrs(where.platform, { story, task }, { cwd: where.checkout, runner });
     if (!found.ok) throw err(CODE, `could not list the PRs/MRs of ${repo}: ${found.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, or pass --pr <n>`);
-    // A PR closed without a merge never competes with a later one for the same task.
-    const live = found.prs.filter((x) => x.state !== 'closed');
-    if (live.length > 1) throw err(CODE, `more than one PR/MR carries ${id}: ${live.map((x) => `#${x.number} (${x.state})`).join(', ')}`, `name the one that ships it: yad build merged ${story} --task ${task} --repo ${repo} --pr <n>`);
-    if (!live.length && found.prs.length) {
-      const last = found.prs[0];
+    // The task's own PRs, or (--follow-up) its follow-up PRs not yet recorded. A PR closed without a merge
+    // never competes with a later one for the same task.
+    const mine = found.prs.filter((x) => (followUp ? x.followUp && !recorded.has(String(x.number)) : !x.followUp));
+    const live = mine.filter((x) => x.state !== 'closed');
+    if (live.length > 1) throw err(CODE, `more than one ${followUp ? 'follow-up ' : ''}PR/MR carries ${id}: ${live.map((x) => `#${x.number} (${x.state})`).join(', ')}`, `name the one to ask about: yad build merged ${story} --task ${task} --repo ${repo}${followUp ? ' --follow-up' : ''} --pr <n>`);
+    if (!live.length && mine.length) {
+      const last = mine[0];
       warn(`PR/MR #${last.number} for ${id} was closed without a merge`);
       hand('open a new PR/MR for the task, or ask the person who closed it');
       return out('closed', { pr: last.number, url: last.url });
     }
     if (!live.length) {
-      info(`no PR/MR carries ${id} in ${repo} yet${found.partial ? ` among its newest ${PR_PAGE}` : ''}`);
-      hand(found.partial ? `if it is older, name it: yad build merged ${story} --task ${task} --repo ${repo} --pr <n>` : 'open it with `yad open-pr`, then run this again');
+      info(`no ${followUp ? 'follow-up ' : ''}PR/MR carries ${id} in ${repo} yet${followUp && recorded.size > 1 ? ' that is not already recorded' : ''}${found.partial ? ` among its newest ${PR_PAGE}` : ''}`);
+      hand(found.partial ? `if it is older, name it: yad build merged ${story} --task ${task} --repo ${repo}${followUp ? ' --follow-up' : ''} --pr <n>`
+        : followUp ? `a follow-up is opened from fix/${id}-followup-<words>` : 'open it with `yad open-pr`, then run this again');
       return out('none', { partial: found.partial });
     }
     n = live[0].number;
@@ -716,7 +769,10 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   // A number given by hand must be this task's PR: its branch may not name another task.
   const carries = branchTask(got.branch, story, task);
   if (carries === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}`, 'check --task and --pr');
+  const follows = isFollowUpBranch(got.branch, story, task);
+  if (follows && !followUp) throw err(CODE, `PR/MR #${n} is from ${got.branch}, a follow-up branch of ${id}`, `ask about it as a follow-up: yad build merged ${story} --task ${task} --repo ${repo} --follow-up --pr ${n}`);
   const state = got.state || (got.merged ? 'merged' : null);
+  if (followUp && !follows && carries !== 'none' && !(ship && state === 'merged')) warn(`PR/MR #${n} is from ${got.branch}, not a follow-up branch (fix/${id}-followup-<words>) — check it is a follow-up of ${id}`);
   // Once, here — unless --ship hands a merged PR to `build ship`, which gives this warning itself.
   if (carries === 'none' && !(ship && state === 'merged')) warn(`PR/MR #${n} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${id}`);
   if (!state) throw err(CODE, `${where.platform} gave PR/MR #${n} a state yad does not know`, 'check it on the platform');
@@ -738,16 +794,22 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   // The warning for a commit naming no task is `build ship`'s to give, once, when it records; a read only asks.
   const c = checkCommit(where, { story, task, repo, mergeCommit: got.mergeCommit, strict: false, fetch, noTask: ship ? null : 'check it ships' });
   // A ship file `build ship` would not write (another repo's of the same file name, or one it cannot read).
-  const blocked = shipBlocked(ctx.epicDir, { story, task, repo });
+  const blocked = followUp ? null : shipBlocked(ctx.epicDir, { story, task, repo });
   if (blocked) shipRefused(blocked, { story, task, repo });
+  // A follow-up whose merge the ship already records is `shipped`, as `build ship --follow-up` would refuse it.
+  if (followUp && [had, ...(Array.isArray(had.followUps) ? had.followUps : [])].some((x) => x?.mergeCommit === c.sha)) {
+    ok(`merge ${c.sha.slice(0, 12)} is already recorded on ${id}'s ship in ${repo}`);
+    return out('shipped', { ...facts, mergeCommit: c.sha });
+  }
   ok(`PR/MR #${n} for ${id} merged (${c.sha.slice(0, 12)})`);
   if (!ship) {
     hand(`record the ship: ${shipCmd(n)} (or run this again with --ship)`);
     return out('merged', { ...facts, mergeCommit: c.sha });
   }
   // The ship is written by `build ship` itself, never by a second path.
-  const res = await buildShip(root, { story, task, repo, pr: String(n), today, fetch, runner, prReader });
-  return out('merged', { ...facts, mergeCommit: res.ship.mergeCommit, changed: true, ship: res.ship, file: res.file });
+  const res = await buildShip(root, { story, task, repo, pr: String(n), followUp, today, fetch, runner, prReader });
+  const rec = res.ship || res.followUp;
+  return out('merged', { ...facts, mergeCommit: rec.mergeCommit, changed: true, ...(res.ship ? { ship: res.ship } : { entry: res.followUp }), file: res.file });
 }
 
 // `yad open-pr --via auto` (issue #356): the standing approval to open a task's PR/MR once its checks pass,

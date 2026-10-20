@@ -1006,3 +1006,70 @@ test('yad open-pr --via auto: opened on the standing approval only after this ta
     void sha;
   } finally { process.exitCode = prev; fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('follow-ups: a fix/<story>-<task>-followup branch never competes with the task\'s PR, and its merge is added to the ship (#350)', async () => {
+  const { buildShip, buildMerged, isFollowUpBranch } = await import('./build.mjs');
+  const { W, P, dir, api, sha } = workspace();
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
+    assert.equal(isFollowUpBranch('fix/EP-l-S01-T01-followup-null-check', 'EP-l-S01', 'T01'), true);
+    assert.equal(isFollowUpBranch('amn/fix/ep-l-s01-t01-followup', 'EP-l-S01', 'T01'), true);
+    assert.equal(isFollowUpBranch('feat/EP-l-S01-T01-orders', 'EP-l-S01', 'T01'), false);
+    assert.equal(isFollowUpBranch('fix/EP-l-S01-T012-followup', 'EP-l-S01', 'T01'), false);
+    // A follow-up commit on main, naming the task.
+    write(api, { 'src/T01-fix.js': 'fix\n' });
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', 'fix: null check\n\nTask: EP-l-S01-T01');
+    const fu = git(api, 'rev-parse', 'HEAD');
+    git(api, 'push', '-q', 'origin', 'main');
+    const views = {
+      7: { state: 'MERGED', mergedAt: '2026-10-18T10:00:00Z', mergeCommit: { oid: sha.T01 }, headRefName: 'feat/EP-l-S01-T01-orders', url: 'https://github.com/o/api/pull/7', body: '', statusCheckRollup: [] },
+      9: { state: 'OPEN', mergedAt: null, mergeCommit: null, headRefName: 'fix/EP-l-S01-T01-followup-null', url: 'https://github.com/o/api/pull/9', body: '', statusCheckRollup: [] },
+    };
+    const runner = (cmd, args) => {
+      if (cmd === 'gh' && args[1] === 'list') return { ok: true, stdout: JSON.stringify(Object.entries(views).map(([n, v]) => ({ number: Number(n), state: v.state, headRefName: v.headRefName, url: v.url })).reverse()), stderr: '' };
+      if (cmd === 'gh' && args[1] === 'view' && views[args[2]]) return { ok: true, stdout: JSON.stringify(views[args[2]]), stderr: '' };
+      return { ok: false, stdout: '', stderr: 'x' };
+    };
+    const prReader = () => ({ ok: true, reviews: [] });
+    const base = { story: 'EP-l-S01', task: 'T01', repo: 'api', today: '2026-10-20', runner, prReader };
+    // Before the ship: the open follow-up does not make two PRs carry the task; the task's own PR is found.
+    let r = await buildMerged(P, base);
+    assert.deepEqual([r.state, r.pr], ['merged', 7]);
+    await assert.rejects(() => buildMerged(P, { ...base, pr: '9' }), /a follow-up branch of EP-l-S01-T01/);
+    await assert.rejects(() => buildMerged(P, { ...base, followUp: true }), /has no ship in api yet, so it has no follow-up/);
+    await assert.rejects(() => buildShip(P, { ...base, pr: '9', followUp: true }), /has no ship in api yet/);
+    r = await buildMerged(P, { ...base, ship: true });
+    assert.equal(r.changed, true);
+    // A follow-up PR is never the task's own ship, nor asked about as one.
+    views[9] = { ...views[9], state: 'MERGED', mergedAt: '2026-10-20T09:00:00Z', mergeCommit: { oid: fu } };
+    await assert.rejects(() => buildShip(P, { ...base, pr: '9' }), /PR #9 is from fix\/EP-l-S01-T01-followup-null, a follow-up branch of EP-l-S01-T01/);
+    // As a follow-up: found by its branch, merged, and added to the ship with --ship.
+    views[9] = { ...views[9], state: 'OPEN', mergeCommit: null };
+    assert.deepEqual([(await buildMerged(P, { ...base, followUp: true })).state, (await buildMerged(P, { ...base, followUp: true })).pr], ['open', 9]);
+    views[9] = { ...views[9], state: 'MERGED', mergeCommit: { oid: fu } };
+    r = await buildMerged(P, { ...base, followUp: true });
+    assert.deepEqual([r.state, r.pr, r.mergeCommit, r.changed], ['merged', 9, fu, false]);
+    r = await buildMerged(P, { ...base, followUp: true, ship: true });
+    assert.deepEqual([r.state, r.changed, r.entry], ['merged', true, { pr: 'https://github.com/o/api/pull/9', branch: 'fix/EP-l-S01-T01-followup-null', mergeCommit: fu, date: '2026-10-20' }]);
+    const shipFile = path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json');
+    assert.deepEqual([read(shipFile).mergeCommit, read(shipFile).followUps.length], [sha.T01, 1]);
+    assert.equal(status(dir), 'in-build', 'the status is left as it is');
+    // Asked again: recorded, so no follow-up is left to find; by number it is `shipped`; a second record is refused.
+    assert.equal((await buildMerged(P, { ...base, followUp: true })).state, 'none');
+    assert.equal((await buildMerged(P, { ...base, followUp: true, pr: '9' })).state, 'shipped');
+    await assert.rejects(() => buildShip(P, { ...base, pr: '9', followUp: true }), /a follow-up of EP-l-S01 \/ T01 already records/);
+    await assert.rejects(() => buildShip(P, { ...base, pr: '7', followUp: true }), /T01's own ship already records/);
+    // Where the platform can be read, a follow-up comes from its PR; where it cannot, by hand.
+    await assert.rejects(() => buildShip(P, { ...base, mergeCommit: fu, followUp: true }), /a follow-up is read from its merged PR\/MR/);
+    write(api, { 'src/T01-fix2.js': 'fix2\n' });
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', 'fix: second\n\nTask: EP-l-S01-T01');
+    const fu2 = git(api, 'rev-parse', 'HEAD');
+    git(api, 'push', '-q', 'origin', 'main');
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api' }, { name: 'web', path: '../web' }] }) });
+    r = await buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', mergeCommit: fu2, followUp: true, today: '2026-10-20' });
+    assert.equal(r.followUp.pr, 'local');
+    assert.deepEqual(read(shipFile).followUps.map((x) => x.mergeCommit), [fu, fu2]);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});

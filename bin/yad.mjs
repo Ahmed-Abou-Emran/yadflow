@@ -256,16 +256,19 @@ ${c.bold('Build helpers')}
   yad build trust <story> --repo <r> <step> --verdict <v> [--signal k=v] [--ran-by machine|human] [--note] [--task <T>]
                                        Record a step run's trust entry (prints its uid); --uid <uid>
                                        --verdict <v> finalizes one already recorded
-  yad build ship <story> --task <T> --repo <r> --pr <n>
+  yad build ship <story> --task <T> --repo <r> --pr <n> [--follow-up]
                                        Record a ship from the MERGED PR/MR (merge commit, checks,
                                        approvers); not \`yad ship\`, which commits and opens the PR.
                                        Merged with no PR/MR: --merge-commit <sha> (no --pr) — the
                                        platform is asked which PR merged it. [--no-fetch]
                                        No platform to read: --merge-commit <sha> [--approver <login>]…
-  yad build merged <story> --task <T> --repo <r> [--pr <n>] [--ship] [--no-fetch]
+                                       --follow-up: a merged fix/<story>-<task>-followup-<words> PR,
+                                       added to the task's ship (its followUps)
+  yad build merged <story> --task <T> --repo <r> [--pr <n>] [--ship] [--follow-up] [--no-fetch]
                                        Ask the platform whether the task's PR/MR merged (found by
                                        its branch): shipped | merged | open | closed | none. One
-                                       check, nothing waits; --ship records the ship once merged
+                                       check, nothing waits; --ship records the ship once merged.
+                                       --follow-up asks about the task's follow-up PRs instead
   yad build done <story> [--no-fetch]  Every task shipped: status shipped, review step closed
   yad run checks [--title <text>] [--body <file>] [--base <ref>] [--no-build] [--no-fetch]
                                        Run every PR/MR gate here before you push, as CI would: this
@@ -431,6 +434,7 @@ function parseArgs(argv) {
     else if (a === '--overwrite-local') o.overwriteLocal = true;
     else if (a === '--merged') o.merged = true;
     else if (a === '--ship') o.ship = true;
+    else if (a === '--follow-up') o.followUp = true;
     else if (a === '--overview') o.overview = true;
     // `--check` is a bare boolean for `docs sync --check`, but takes a value for
     // `next <epic> --check <step>`. Only the `next` command consumes the following token as a value —
@@ -949,8 +953,8 @@ async function main() {
       if (action === 'start') result = await commands.buildStart(o.dir, { story, repo: o.repo, today });
       else if (action === 'step') result = await commands.buildStep(o.dir, { story, repo: o.repo, step: a3, to: a4, reason: o.reason, via: o.via || 'human', run: o.run || null, task: o.task || null, today });
       else if (action === 'trust') result = await commands.buildTrust(o.dir, { story, repo: o.repo, step: a3, verdict: o.verdict, signals, ranBy: o['ran-by'] || 'human', note: o.note || null, uid: o.uid || null, task: o.task || null, today });
-      else if (action === 'ship') result = await commands.buildShip(o.dir, { story, task: o.task, repo: o.repo, pr: o.pr, mergeCommit: o['merge-commit'] || null, approvers: o.approver || [], today, fetch: !o.noFetch });
-      else if (action === 'merged') result = await commands.buildMerged(o.dir, { story, task: o.task, repo: o.repo, pr: o.pr || null, ship: !!o.ship, today, fetch: !o.noFetch });
+      else if (action === 'ship') result = await commands.buildShip(o.dir, { story, task: o.task, repo: o.repo, pr: o.pr, mergeCommit: o['merge-commit'] || null, approvers: o.approver || [], followUp: !!o.followUp, today, fetch: !o.noFetch });
+      else if (action === 'merged') result = await commands.buildMerged(o.dir, { story, task: o.task, repo: o.repo, pr: o.pr || null, ship: !!o.ship, followUp: !!o.followUp, today, fetch: !o.noFetch });
       else result = await commands.buildDone(o.dir, { story, today, fetch: !o.noFetch });
       break;
     }
