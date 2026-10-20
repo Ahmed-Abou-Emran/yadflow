@@ -699,9 +699,9 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   // A number given by hand must be this task's PR: its branch may not name another task.
   const carries = branchTask(got.branch, story, task);
   if (carries === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}`, 'check --task and --pr');
-  // `build ship` gives this warning itself when --ship runs it.
-  if (carries === 'none' && !ship) warn(`PR/MR #${n} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${id}`);
   const state = got.state || (got.merged ? 'merged' : null);
+  // Once, here — unless --ship hands a merged PR to `build ship`, which gives this warning itself.
+  if (carries === 'none' && !(ship && state === 'merged')) warn(`PR/MR #${n} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${id}`);
   if (!state) throw err(CODE, `${where.platform} gave PR/MR #${n} a state yad does not know`, 'check it on the platform');
   const facts = { pr: n, url: got.url };
   if (state === 'open') {

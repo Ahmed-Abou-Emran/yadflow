@@ -140,7 +140,7 @@ engineer-review rule is satisfied (Step 2). Then:
   `yad open-pr`. It asks once and returns; it never waits. It refuses where the platform cannot be read
   (no platform, the repo not cloned here, `gh`/`glab` not logged in), when two PRs/MRs that are not
   closed carry the task, or when a merged PR's merge commit is not on the default branch or names
-  another task — stop and report what it says.
+  another task, or its ship file cannot be written — stop and report what it says.
 - **Record the ship** — `yad build ship <story> --task <task> --repo <repo> --pr <n>` (what `--ship` runs),
   once the PR/MR has merged. It reads the merge commit, the branch, the checks that passed, the approvers (with the
   engagement signal), the body's `Risk level:` and the merge date from the platform, refuses a PR that is

@@ -241,10 +241,6 @@ export function writeRetroShip(epicDir, { story, repo, task = 'retro', mergeComm
   }, lockOpts);
 }
 
-// Record a ship (`yad build ship`, #346): one shard per (story, task, repo), refused when that ship is
-// already recorded, or when another repo's ship shares its file name (`safe()` folds `api.v2` and `api_v2`
-// into one name, and writing the second would overwrite the first). The guard, the collision check and the
-// write are one critical section, as in `writeRetroShip`. Returns { written, reason?, file?, ship? }.
 // Why a ship of (story, task, repo) cannot be written now — `{ reason: 'exists' | 'collision', repo?, file? }` —
 // or null. `yad build merged` asks it too, so it never answers "merged" for a ship this would refuse.
 export function shipBlocked(epicDir, { story, task, repo }) {
@@ -257,6 +253,10 @@ export function shipBlocked(epicDir, { story, task, repo }) {
   return null;
 }
 
+// Record a ship (`yad build ship`, #346): one shard per (story, task, repo), refused when that ship is
+// already recorded, or when another repo's ship shares its file name (`safe()` folds `api.v2` and `api_v2`
+// into one name, and writing the second would overwrite the first). The guard, the collision check and the
+// write are one critical section, as in `writeRetroShip`. Returns { written, reason?, file?, ship? }.
 export function writeShip(epicDir, ship, lockOpts = {}) {
   const { story, task, repo } = ship;
   if (!story || !task || !repo) throw new Error('writeShip: story, task and repo are required');
