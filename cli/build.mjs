@@ -20,7 +20,7 @@ import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, is
 import { DEFAULT_LIFECYCLE, laneOrder, laneAuthorSteps } from './lifecycle.mjs';
 import { epicFiles, PROJECT_FILES } from './manifest.mjs';
 import { err } from './errors.mjs';
-import { readShips, readTrustRuns, writeShip, writeTrustRun, updateTrustRun } from './ledger.mjs';
+import { readShips, readTrustRuns, writeShip, shipBlocked, writeTrustRun, updateTrustRun } from './ledger.mjs';
 import { setBuildStatus, readStoryStatus } from './artifact-status.mjs';
 import { readPr, mapApprovers, detectPlatform, cliFor, platformReady } from './platform.mjs';
 import { repoPathFromGitUrl } from './protection.mjs';
@@ -555,6 +555,12 @@ function shipContext(root, { story, task, repo, pr, verb }) {
   return { ctx, where: registeredRepo(root, repo) };
 }
 
+// The refusal for a ship `writeShip` (or `shipBlocked`) will not write.
+function shipRefused(res, { story, task, repo }) {
+  if (res.reason === 'exists') throw err(CODE, `${story} / ${task} already has a ship in ${repo}`, 'one ship per task and repo');
+  throw err(CODE, `${repo} shares a ship file name with ${res.repo || 'another repo'}`, 'repo names that differ only in punctuation cannot both ship this task');
+}
+
 export async function buildShip(root, { story, task, repo, pr, mergeCommit = null, approvers = [], today, fetch = true, runner = run, prReader = readPr } = {}) {
   if (mergeCommit && mergeCommit !== true && !/^[0-9a-f]{7,64}$/i.test(String(mergeCommit))) throw err(CODE, `--merge-commit must be a commit SHA (got '${mergeCommit}')`, 'the merge commit, 7 to 64 hex characters');
   const { ctx, where } = shipContext(root, { story, task, repo, pr, verb: 'ship' });
@@ -617,10 +623,7 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     };
   }
   const res = writeShip(ctx.epicDir, ship);
-  if (!res.written) {
-    if (res.reason === 'exists') throw err(CODE, `${story} / ${task} already has a ship in ${repo}`, 'one ship per task and repo');
-    throw err(CODE, `${repo} shares a ship file name with ${res.repo || 'another repo'}`, 'repo names that differ only in punctuation cannot both ship this task');
-  }
+  if (!res.written) shipRefused(res, { story, task, repo });
   // The story is in Build now (the skill's rule); `build done` sets it shipped once every task is.
   const moved = setBuildStatus(ctx.storyFile, 'in-build');
   ok(`ship recorded: ${story} / ${task} in ${repo}${ship.mergeCommit ? ` (${String(ship.mergeCommit).slice(0, 12)})` : ''}`);
@@ -696,7 +699,8 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   // A number given by hand must be this task's PR: its branch may not name another task.
   const carries = branchTask(got.branch, story, task);
   if (carries === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}`, 'check --task and --pr');
-  if (carries === 'none') warn(`PR/MR #${n} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${id}`);
+  // `build ship` gives this warning itself when --ship runs it.
+  if (carries === 'none' && !ship) warn(`PR/MR #${n} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${id}`);
   const state = got.state || (got.merged ? 'merged' : null);
   if (!state) throw err(CODE, `${where.platform} gave PR/MR #${n} a state yad does not know`, 'check it on the platform');
   const facts = { pr: n, url: got.url };
@@ -716,6 +720,9 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   if (!got.mergeCommit) throw err(CODE, `PR/MR #${n} in ${repo} is merged, but the platform names no merge commit`, 'record it from the commit instead: yad build ship … --merge-commit <sha> with no --pr');
   // The warning for a commit naming no task is `build ship`'s to give, once, when it records; a read only asks.
   const c = checkCommit(where, { story, task, repo, mergeCommit: got.mergeCommit, strict: false, fetch, noTask: ship ? null : 'check it ships' });
+  // A ship file `build ship` would not write (another repo's of the same file name, or one it cannot read).
+  const blocked = shipBlocked(ctx.epicDir, { story, task, repo });
+  if (blocked) shipRefused(blocked, { story, task, repo });
   ok(`PR/MR #${n} for ${id} merged (${c.sha.slice(0, 12)})`);
   if (!ship) {
     hand(`record the ship: ${shipCmd(n)} (or run this again with --ship)`);

@@ -821,3 +821,20 @@ test('yad build merged: a PR merged off the default branch, or naming another ta
     assert.deepEqual([(await ask()).state, (await ask()).mergeCommit], ['merged', sha.T01]);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('yad build merged: a ship build ship would not write (a file another repo\'s name shares) is refused, not "merged" (#355 review 3)', async () => {
+  const { buildMerged } = await import('./build.mjs');
+  const { W, P, dir, sha } = workspace();
+  try {
+    write(P, {
+      '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }),
+      // A shard under api's file name that the ledger cannot read: build ship would refuse to write over it.
+      'epics/EP-l/.sdlc/build-log/EP-l-S01-T01-api.json': '{ not json',
+    });
+    const runner = (cmd, args) => (cmd === 'gh' && args[1] === 'view'
+      ? { ok: true, stdout: JSON.stringify({ state: 'MERGED', mergedAt: '2026-10-19T10:00:00Z', mergeCommit: { oid: sha.T01 }, headRefName: 'feat/EP-l-S01-T01-x', url: 'u', body: '', statusCheckRollup: [] }), stderr: '' }
+      : { ok: false, stdout: '', stderr: 'x' });
+    await assert.rejects(() => buildMerged(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', pr: '7', today: '2026-10-20', runner }), /api shares a ship file name/);
+    assert.equal(fs.readFileSync(path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json'), 'utf8'), '{ not json');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
