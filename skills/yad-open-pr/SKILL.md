@@ -87,8 +87,10 @@ came from.
 `yad dial open-pr --to auto`, the `yad-run` skill opens a task's PR/MR without asking, with
 `yad open-pr --via auto`. Before it pushes anything it refuses unless: this is a task branch in a code repo
 the Product registers (the branch, or `--task`, names `EP-<slug>-S<n>-T<n>`); the dial is auto and the
-kill switch is off; and the lane's `checks` close for that task names a trust run that passed
-(`checks=pass`) and was not rejected. A task already opened this way is refused. Once open, the PR/MR is
+kill switch is off; and the lane's `checks` step is closed now for that task (the close, or its run, names
+it — close it with `--task`), naming a trust run that passed (`checks=pass`) and was not rejected. An older
+close does not count: once `checks` is reopened, a person opens the PR/MR. A `--task` other than the branch's
+task is refused, and so is a Product branch. A task already opened this way is refused. Once open, the PR/MR is
 recorded on the lane (`opened`: task, number, url, the run, who, when) — commit it from the Product with
 `yad checkpoint --push`. Without `--via` (or `--via human`) it opens as before and records nothing. The
 merge is always a person's.

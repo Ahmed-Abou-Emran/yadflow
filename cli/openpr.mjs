@@ -254,6 +254,8 @@ export async function runOpenPr(root, opts = {}) {
 
   const branch = run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }).stdout;
   const stage = detectStage(root, repoRoot, branch, meta);
+  // Before the Product review hand-off below, which pushes: --via auto never pushes what it refuses.
+  if (via === 'auto' && stage !== 'code-repo') throw err('YAD-STATE-009', 'only a task PR/MR in a code repo is opened with --via auto', 'a Product review or tooling PR is opened by a person');
 
   // product-shape: this is a Shape artifact-review PR (review/EP-*/<artifact> head on the Product). The
   // artifact-review title, body, and ledger bookkeeping all live in `yad gate open` — delegate to it
@@ -286,12 +288,14 @@ export async function runOpenPr(root, opts = {}) {
   let auto = null;
   if (via === 'auto') {
     const productRoot = opts.product || (exists(productConfigPath(root)) ? root : null);
-    if (stage !== 'code-repo') throw err('YAD-STATE-009', 'only a task PR/MR in a code repo is opened with --via auto', 'a Product review or tooling PR is opened by a person');
     if (!productRoot) throw err('YAD-STATE-009', 'no Product found, so the open-pr dial and the lane cannot be read', 'run it from a repo inside the workspace, or pass --product <folder>');
     if (!meta?.name) throw err('YAD-STATE-009', `${repoRoot} is not a repo the Product registers, so it has no lane`, 'register it with `yad repo add`, or ask a person to open the PR/MR');
     const drift = productDriftError(productRoot);
     if (drift) throw drift;
-    const id = opts.task || taskFromBranch(branch);
+    // The branch is what is pushed, so a --task naming another task is refused, never believed.
+    const fromBranch = taskFromBranch(branch);
+    if (opts.task && fromBranch && opts.task !== fromBranch) throw err('YAD-STATE-009', `--task ${opts.task} is not the task ${branch} carries (${fromBranch})`, 'drop --task, or switch to that task\'s branch');
+    const id = opts.task || fromBranch;
     const m = String(id || '').match(/^(EP-[a-z0-9-]+-S\d+)-(T\d+)$/);
     if (!m) throw err('YAD-STATE-009', `${branch} names no task (expected …EP-<slug>-S<n>-T<n>…)`, 'open it from the task branch, or pass --task EP-<slug>-S<n>-T<n>');
     auto = { productRoot, story: m[1], task: m[2], repo: meta.name, ...autoOpenCheck(productRoot, { story: m[1], task: m[2], repo: meta.name }) };

@@ -4136,6 +4136,9 @@ export const serializeAutomation = (a) => ({
   ...(a.actions && Object.keys(a.actions).length ? { actions: Object.fromEntries(Object.entries(a.actions).sort(([x], [y]) => cmp(x, y))) } : {}),
 });
 
+// The `actions` a writer carries over: only when there are some, so a file that never had any keeps its shape.
+const keepActions = (a) => (a?.actions && Object.keys(a.actions).length ? { actions: { ...a.actions } } : {});
+
 // The actions a project may allow without asking (#356), each set with `yad dial <action> --to auto|human`.
 export const ACTION_DIALS = ['open-pr'];
 
@@ -4210,7 +4213,7 @@ export function planShapeDial(automation, { step, to }) {
   // turned on.
   if (to === 'auto') steps[step] = 'auto';
   else delete steps[step];
-  return { ok: true, before, changed: before !== to || (to === 'human' && Object.hasOwn(automation?.steps || {}, step)), automation: { kill: automation?.kill || null, steps, actions: { ...(automation?.actions || {}) } } };
+  return { ok: true, before, changed: before !== to || (to === 'human' && Object.hasOwn(automation?.steps || {}, step)), automation: { kill: automation?.kill || null, steps, ...keepActions(automation) } };
 }
 
 // Set one Build step's dial on one lane. PURE: takes the parsed build-state, returns a new one.
@@ -4256,7 +4259,7 @@ export function planKill(automation, { on, reason = null, by = null, date = null
   // The record being replaced is kept as `previous`, without its own `previous` — one level is the audit
   // trail a person reads; the rest is git history.
   const replaced = automation?.kill ? (({ previous: _previous, ...rest }) => rest)(automation.kill) : null;
-  return { ok: true, already: false, automation: { steps: { ...(automation?.steps || {}) }, actions: { ...(automation?.actions || {}) }, kill: {
+  return { ok: true, already: false, automation: { steps: { ...(automation?.steps || {}) }, ...keepActions(automation), kill: {
     on, reason: why, by: by || null, date: date || null, ...(replaced ? { previous: replaced } : {}),
   } } };
 }

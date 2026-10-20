@@ -839,30 +839,30 @@ test('yad build merged: a ship build ship would not write (a file another repo\'
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 
-test('planAutoOpen: only this task\'s checks close, with a run that passed and was not rejected, opens a PR without asking (#356)', async () => {
+test('planAutoOpen: only the checks step\'s current close, naming this task, with a run that passed and was not rejected, opens a PR without asking (#356)', async () => {
   const { planAutoOpen } = await import('./build.mjs');
   const at = { story: 'EP-l-S01', repo: 'api' };
   const run = (uid, over = {}) => ({ uid, story: 'EP-l-S01', repo: 'api', step: 'checks', verdict: 'approved-unchanged', signals: { checks: 'pass' }, ...over });
   const lane = (checks, extra = {}) => ({ currentStep: 'engineer-review', steps: [{ id: 'implement', status: 'done' }, { id: 'checks', status: 'done', ...checks }], ...extra });
   const ask = (l, runs, task = 'T01') => planAutoOpen(l, runs, { ...at, task });
-  // No close for the task, or a close for another task.
-  assert.match(ask(lane({}), []).message, /checks has not closed for T01/);
-  assert.match(ask(lane({ closed: { run: 'a', task: 'T02', date: '2026-10-20' } }), [run('a', { task: 'T02' })]).message, /has not closed for T01/);
+  // Not closed, or closed for another task.
+  assert.match(ask(lane({}), []).message, /checks is not closed/);
+  assert.match(ask(lane({ closed: { run: 'a', task: 'T02' } }), [run('a', { task: 'T02' })]).message, /the checks close is for T02, not T01/);
+  // A close and a run naming no task count for no task: the next task's branch cannot ride on it (review 1).
+  assert.match(ask(lane({ closed: { run: 'a' } }), [run('a')]).message, /the checks close is for no task, not T01/);
+  assert.match(ask(lane({ closed: { run: 'a' } }), [run('a')], 'T02').message, /for no task, not T02/);
+  assert.equal(ask(lane({ closed: { run: 'a' } }), [run('a', { task: 'T01' })]).ok, true, 'the run names it');
+  assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a', { task: 'T02' })]).message, /run a, which is for T02/);
   // A close naming a run that is not recorded, a rejected run, a run without checks=pass.
   assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), []).message, /trust run a, which is not recorded/);
   assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a', { verdict: 'rejected' })]).message, /is rejected/);
   assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a', { signals: { checks: 'fail' } })]).message, /did not record checks=pass/);
   assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a', { signals: {} })]).message, /did not record checks=pass/);
-  // A pass: the close in `closed`, or an earlier one kept in `runs` after the next task reopened the step.
   assert.equal(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a')]).ok, true);
-  assert.equal(ask(lane({ status: 'todo', task: 'T02', runs: [{ run: 'a', task: 'T01', date: '2026-10-19' }] }), [run('a')]).ok, true);
-  // A close naming no task counts when its run names none, or this one — never another.
-  assert.equal(ask(lane({ closed: { run: 'a' } }), [run('a')]).ok, true);
-  assert.equal(ask(lane({ closed: { run: 'a' } }), [run('a', { task: 'T01' })]).ok, true);
-  assert.equal(ask(lane({ closed: { run: 'a' } }), [run('a', { task: 'T02' })]).ok, false);
-  // The newest close wins: a later rejected re-run is not hidden by an earlier pass.
-  const twice = lane({ closed: { run: 'b', task: 'T01', date: '2026-10-20' }, runs: [{ run: 'a', task: 'T01', date: '2026-10-19' }] });
-  assert.match(ask(twice, [run('a'), run('b', { verdict: 'rejected' })]).message, /\(b\) is rejected/);
+  // A close kept in `runs` never counts: the step was reopened — for the next task, or for this one again
+  // with new work its old run never checked (review 1).
+  assert.match(ask(lane({ status: 'todo', task: 'T02', runs: [{ run: 'a', task: 'T01' }] }), [run('a')]).message, /checks is not closed \(it is open for T02\)/);
+  assert.match(ask(lane({ status: 'blocked', task: 'T01', runs: [{ run: 'a', task: 'T01' }] }), [run('a')]).message, /it is open for T01/);
   // Already opened by the dial: not a second time.
   assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }, { opened: [{ task: 'T01', pr: 12 }] }), [run('a')]).message, /already opened by the dial: #12/);
   assert.match(ask(null, []).message, /has no lane/);
@@ -932,7 +932,7 @@ test('yad open-pr --via auto: opened on the standing approval only after this ta
     for (const step of ['spec', 'tasks']) yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', step, 'done');
     const impl = json(yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', 'implement', '--verdict', 'approved-unchanged', '--task', 'T01', '--json')).uid;
     yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'done', '--run', impl, '--task', 'T01');
-    await assert.rejects(open, /checks has not closed for T01/);
+    await assert.rejects(open, /checks is not closed/);
     const checks = json(yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', 'checks', '--verdict', 'approved-unchanged', '--signal', 'checks=pass', '--task', 'T01', '--json')).uid;
     yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'checks', 'done', '--run', checks, '--task', 'T01');
     // The kill switch holds it.
@@ -941,7 +941,15 @@ test('yad open-pr --via auto: opened on the standing approval only after this ta
     yad(P, 'unkill');
     // A bad --via; a branch naming no task.
     await assert.rejects(() => open({ via: 'yes' }), /--via must be auto or human/);
-    await assert.rejects(() => open({ task: 'nope' }), /names no task/);
+    git(api, 'checkout', '-q', '-b', 'misc');
+    await assert.rejects(open, /misc names no task/);
+    git(api, 'checkout', '-q', branch);
+    // A --task naming another task than the branch carries: refused, never believed (review 1).
+    await assert.rejects(() => open({ task: 'EP-l-S01-T02' }), /--task EP-l-S01-T02 is not the task feat\/EP-l-S01-T01-orders carries/);
+    // On the Product, a review branch is never opened with --via auto, and nothing is pushed (review 1).
+    git(P, 'checkout', '-q', '-b', 'review/EP-l/epic');
+    await assert.rejects(() => runOpenPr(P, { via: 'auto', platform: 'github', creator, runner }), /only a task PR\/MR in a code repo/);
+    git(P, 'checkout', '-q', 'main');
     assert.equal(pushed(), false, 'no refusal pushed the branch');
     assert.equal(created, 0);
     // Opened: pushed, created once, and recorded on the lane with the run that earned it.
@@ -957,6 +965,15 @@ test('yad open-pr --via auto: opened on the standing approval only after this ta
       : { ok: false, stdout: '', stderr: 'x' });
     const m = await buildMerged(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', today: '2026-10-20', runner: view });
     assert.deepEqual([m.state, m.pr], ['open', 12]);
+    // The recorded PR closed without a merge, and a person opened #15: the search finds it (review 1).
+    const after = (cmd, args) => {
+      if (cmd === 'gh' && args[1] === 'view' && args[2] === '12') return { ok: true, stdout: JSON.stringify({ state: 'CLOSED', headRefName: branch, url: 'u12', body: '', statusCheckRollup: [] }), stderr: '' };
+      if (cmd === 'gh' && args[1] === 'view' && args[2] === '15') return { ok: true, stdout: JSON.stringify({ state: 'OPEN', headRefName: `${branch}-2`, url: 'u15', body: '', statusCheckRollup: [] }), stderr: '' };
+      if (cmd === 'gh' && args[1] === 'list') return { ok: true, stdout: JSON.stringify([{ number: 15, state: 'OPEN', headRefName: `${branch}-2`, url: 'u15' }, { number: 12, state: 'CLOSED', headRefName: branch, url: 'u12' }]), stderr: '' };
+      return { ok: false, stdout: '', stderr: 'x' };
+    };
+    const m2 = await buildMerged(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', today: '2026-10-20', runner: after });
+    assert.deepEqual([m2.state, m2.pr], ['open', 15]);
     // A human open is today's open: no dial asked, nothing recorded.
     git(api, 'checkout', '-q', '-b', 'feat/EP-l-S01-T02-list');
     const h = await runOpenPr(api, { product: P, creator, runner });

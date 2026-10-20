@@ -682,6 +682,14 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
     n = Number(opened.pr);
     info(`PR/MR #${n} was opened by the dial on ${opened.date || 'an earlier day'}`);
   }
+  // The recorded PR closed without a merge: a person may have opened another, so search as usual.
+  if (opened) {
+    const first = readMergedPr(where.platform, n, { cwd: where.checkout, runner });
+    if (first.ok && first.state === 'closed') {
+      info(`PR/MR #${n}, opened by the dial, was closed without a merge — looking for another`);
+      n = null;
+    }
+  }
   if (!n) {
     const found = findTaskPrs(where.platform, { story, task }, { cwd: where.checkout, runner });
     if (!found.ok) throw err(CODE, `could not list the PRs/MRs of ${repo}: ${found.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, or pass --pr <n>`);
@@ -746,24 +754,25 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
 // task's `checks` close names a run that passed and was not rejected; the opened PR is recorded on the lane
 // (`opened`), so `yad build merged` and people can see the dial opened it. The merge stays a person's.
 //
-// PURE: the close of `checks` for `task` on `lane`, and the trust run it names — `{ ok, close, run }` or
-// `{ ok: false, message, hint }`. A close is this task's when it names it (`closed`, or an earlier one kept
-// in `runs`); a close naming no task counts only when its run names none either, or this one.
+// PURE: may `task`'s PR/MR be opened without asking — `{ ok, close, run }` or `{ ok: false, message, hint }`.
+// One mechanical rule: only the `checks` step's CURRENT close counts. It must be done, and name this task —
+// on the close (`--task`), or on the run it names. An older close kept in `runs` never counts: once the step
+// is reopened, for this task or the next, the work it checked has moved on, so a person opens that PR.
 export function planAutoOpen(lane, trustRuns, { story, repo, task }) {
   const no = (message, hint) => ({ ok: false, message, hint });
   const at = `${story} / ${repo}`;
   if (!isPlainObject(lane) || !Array.isArray(lane.steps)) return no(`${at} has no lane`, 'the yad-run skill walks the lane before a PR is opened');
   const prior = (Array.isArray(lane.opened) ? lane.opened : []).find((o) => o?.task === task);
-  if (prior) return no(`${story}-${task}'s PR/MR was already opened by the dial: #${prior.pr}`, 'ask the platform whether it merged: yad build merged … --ship');
+  if (prior) return no(`${story}-${task}'s PR/MR was already opened by the dial: #${prior.pr}`, 'ask the platform whether it merged: yad build merged … --ship; a new PR/MR for the task is opened by a person');
   const row = lane.steps.find((s) => s?.id === 'checks');
-  const byUid = new Map((trustRuns || []).filter((r) => r?.story === story && r.repo === repo && r.step === 'checks').map((r) => [r.uid, r]));
-  const closes = [row?.closed, ...(Array.isArray(row?.runs) ? row.runs : [])].filter((c) => isPlainObject(c) && c.run);
-  const mine = closes.filter((c) => c.task === task || (!c.task && [null, undefined, task].includes(byUid.get(c.run)?.task)));
-  // The newest close for the task: a later re-run of checks for it outranks an earlier one.
-  const close = mine.sort((x, y) => String(y.date || '').localeCompare(String(x.date || '')))[0];
-  if (!close) return no(`${at}: checks has not closed for ${task}`, `run the checks for ${task}, then close the step with its run: yad build step ${story} --repo ${repo} checks done --run <uid> --task ${task}`);
-  const run = byUid.get(close.run);
+  const close = isPassed(row) && isPlainObject(row.closed) && row.closed.run ? row.closed : null;
+  const run = close ? (trustRuns || []).find((r) => r?.uid === close.run && r.story === story && r.repo === repo && r.step === 'checks') : null;
+  const closeFor = close?.task || run?.task || null;
+  const closeHint = `run the checks for ${task}, then close the step with its run and the task: yad build step ${story} --repo ${repo} checks done --run <uid> --task ${task}`;
+  if (!close) return no(`${at}: checks is not closed${row?.task ? ` (it is open for ${row.task})` : ''}`, closeHint);
+  if (closeFor !== task) return no(`${at}: the checks close is ${closeFor ? `for ${closeFor}` : 'for no task'}, not ${task}`, closeHint);
   if (!run) return no(`${at}: the checks close for ${task} names trust run ${close.run}, which is not recorded`, 'record the run with `yad build trust`, then close the step with it');
+  if (run.task && run.task !== task) return no(`${at}: the checks close names run ${run.uid}, which is for ${run.task}`, closeHint);
   if (run.verdict === 'rejected') return no(`${at}: the checks run for ${task} (${run.uid}) is rejected`, 'fix what failed, run the checks again, and ask a person to open the PR/MR');
   if (run.signals?.checks !== 'pass') return no(`${at}: the checks run for ${task} (${run.uid}) did not record checks=pass`, 'a PR/MR is opened without asking only after the checks passed: yad build trust … checks --signal checks=pass');
   return { ok: true, close, run };
