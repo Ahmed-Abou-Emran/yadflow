@@ -942,7 +942,9 @@ test('yad open-pr --via auto: opened on the standing approval only after this ta
     // A bad --via; a branch naming no task.
     await assert.rejects(() => open({ via: 'yes' }), /--via must be auto or human/);
     git(api, 'checkout', '-q', '-b', 'misc');
-    await assert.rejects(open, /misc names no task/);
+    await assert.rejects(open, /misc carries no task of this Product/);
+    // A --task never names a task the branch does not carry (review 5).
+    await assert.rejects(() => open({ task: 'EP-l-S01-T01' }), /misc carries no task of this Product/);
     git(api, 'checkout', '-q', branch);
     // A --task naming another task than the branch carries: refused, never believed (review 1).
     await assert.rejects(() => open({ task: 'EP-l-S01-T02' }), /--task EP-l-S01-T02 is not the task feat\/EP-l-S01-T01-orders carries/);

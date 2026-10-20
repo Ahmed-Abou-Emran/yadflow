@@ -87,7 +87,7 @@ came from.
 `yad dial open-pr --to auto`, the `yad-run` skill opens a task's PR/MR without asking, with
 `yad open-pr --via auto`. Before it pushes anything it refuses unless: this is a task branch in a code repo
 the Product registers, carrying exactly one task of this Product (`EP-<slug>-S<n>-T<n>`, in any case and under
-any folders; `--task` may name it); the dial is auto and the
+any folders; `--task` only confirms it — a branch carrying none is refused); the dial is auto and the
 kill switch is off; and the lane's `checks` step is closed now for that task (the close, or its run, names
 it — close it with `--task`), naming a trust run that passed (`checks=pass`) and was not rejected. An older
 close does not count: once `checks` is reopened, a person opens the PR/MR. A `--task` other than the branch's
