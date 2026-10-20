@@ -145,7 +145,9 @@ Build by hand"** below.
     touches in the last 30 days, and what CODEOWNERS on the base branch lists. It is a hint, never a
     request, and it never calls anyone an owner.
 10. `yad-engineer-review` → `ai-review` (advisory) → `approve` (the human engineer gate) → `ship` (merge,
-    then `yad build ship <story> --task <T> --repo <r> --pr <n>` records it from the merged PR and puts the
+    then `yad build merged <story> --task <T> --repo <r> --ship` asks the platform whether it merged — the
+    agent runs it again later while the PR is open — and once it has, records it like
+    `yad build ship <story> --task <T> --repo <r> --pr <n>`: from the merged PR, putting the
     story `in-build`; once every task has shipped, `yad build done <story>` sets it `shipped`). The machine-written
     ledgers (`build-log.json`, `trust-log.json`, `build-state/`) are committed by **`yad checkpoint --push`**
     — a `chore(product)` audit-trail commit Build runs for you, so no one hand-commits this state.
@@ -386,7 +388,8 @@ the product repo. Code repos are **separate git repos** under `demo-repos/<repo>
    committed there in the last 30 days, and the same scripts name who that is.
 5. **AI review → engineer review → merge** — `yad-engineer-review`: CodeRabbit is an advisory first pass
    (never the authority); a human engineer approves (one approver holds the merge; risk raises the reported count); on
-   merge `yad build ship` records the ship in the build ledger from the merged PR — as a shard under
+   merge (`yad build merged … --ship` asks the platform, so nobody has to say it merged) `yad build ship`
+   records the ship in the build ledger from the merged PR — as a shard under
    `.sdlc/build-log/`, which readers union with the folded `.sdlc/build-log.json` and `yad tidy up` later
    folds in — and the story state becomes `in-build`; `yad build done` makes it `shipped` once every task is. The epic → story → task → PR → mergeCommit chain is traceable both ways.
 

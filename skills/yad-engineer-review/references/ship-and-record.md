@@ -31,7 +31,11 @@ not included), `engineer_review` (approvers bound to the merged head, with the e
 (the body's `Risk level:`, or `null`), `companion.trailer` (the body's `<!-- yad:trailer -->` marker; `cards`
 and `chat` are `false`), `ai_review` (`null`: the platform does not say) and `shippedAt` (the merge date).
 With no platform to read, `--merge-commit <sha>` and `--approver <login>` record the commit and the
-approvers, and the rest is empty. **Storage mirrors the trust log's "loose objects + `git gc`"
+approvers, and the rest is empty. **`yad build merged <story> --task <T> --repo <r> [--pr <n>] --ship`**
+(#355) asks the platform whether the task's PR/MR has merged — found by the task id in its source branch,
+among the repo's newest 100 — and, once it has, records the ship by running `yad build ship` for it; its
+`state` is `shipped`, `merged`, `open`, `closed` or `none`, so the agent checks by itself instead of waiting
+to be told the PR merged. **Storage mirrors the trust log's "loose objects + `git gc`"
 model** so two people shipping different tasks of the same epic never collide on one file:
 - **Per-ship shard:** each ship is its own file `epics/<epic>/.sdlc/build-log/<story>-<task>-<repo>.json`
   = ONE ship object (the record below). `(story, task, repo)` is already unique, so no `uid` is needed;

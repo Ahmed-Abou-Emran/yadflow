@@ -152,6 +152,8 @@ Reverting (`--to human`) and the kill switch are always one move.
 ## What stays human, always
 
 - `engineer-review` — the merge gate. `yad-run` always stops here and hands to `yad-engineer-review`.
+  The merge stays a person's; whether it happened is asked of the platform with
+  `yad build merged <story> --task <T> --repo <r> --ship` (#355) — never waited for in chat.
 - The Shape steps — this loop never drives them. A Shape author step's dial may be set to auto for the
   project (`yad dial <step> --to auto`), and is only recorded until the engine runs agents (E26); every
   Shape review gate is a person.
