@@ -472,7 +472,7 @@ export function branchTask(branch, story, task) {
 // also asks that it names the task, by the rules `yad reconcile check` reads every commit with — a `Task:`
 // trailer, a task branch a merge brought in, or the full id in the subject. By hand, where the platform
 // cannot be read, the person vouches for it: it may not name a DIFFERENT task, and naming none is a warning.
-function checkCommit(where, { story, task, repo, mergeCommit, strict = true, fetch = true }) {
+function checkCommit(where, { story, task, repo, mergeCommit, strict = true, fetch = true, noTask = 'recorded as you say it ships' }) {
   const cwd = where.checkout;
   const hasOrigin = run('git', ['remote', 'get-url', 'origin'], { cwd }).ok;
   const head = run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { cwd }).stdout;
@@ -501,7 +501,7 @@ function checkCommit(where, { story, task, repo, mergeCommit, strict = true, fet
       throw err(CODE, named.length ? `${mergeCommit} names ${named.join(', ')}, not ${want}` : `${mergeCommit} does not name ${want}`,
         'the commit must name the task it ships: its Task: trailer, the task branch a merge commit brought in, or the full id in its subject');
     }
-    warn(`${mergeCommit} names no task — recorded as you say it ships ${want}`);
+    if (noTask) warn(`${mergeCommit} names no task — ${noTask} ${want}`);
   }
   const body = run('git', ['log', '-1', '--format=%b', sha], { cwd }).stdout;
   return { sha, rec, body, date: run('git', ['log', '-1', '--format=%cs', sha], { cwd }).stdout };
@@ -714,7 +714,8 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   // first (on the default branch, not naming another task), so a PR merged into a release branch or a
   // stacked parent is a refusal now, not a `merged` the ship then refuses.
   if (!got.mergeCommit) throw err(CODE, `PR/MR #${n} in ${repo} is merged, but the platform names no merge commit`, 'record it from the commit instead: yad build ship … --merge-commit <sha> with no --pr');
-  const c = checkCommit(where, { story, task, repo, mergeCommit: got.mergeCommit, strict: false, fetch });
+  // The warning for a commit naming no task is `build ship`'s to give, once, when it records; a read only asks.
+  const c = checkCommit(where, { story, task, repo, mergeCommit: got.mergeCommit, strict: false, fetch, noTask: ship ? null : 'check it ships' });
   ok(`PR/MR #${n} for ${id} merged (${c.sha.slice(0, 12)})`);
   if (!ship) {
     hand(`record the ship: ${shipCmd(n)} (or run this again with --ship)`);
