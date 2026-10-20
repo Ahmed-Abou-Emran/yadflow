@@ -18,7 +18,7 @@ import { personLabel } from './riskmap.mjs';
 import { gateOpen } from './gate.mjs';
 import { unfoldedPaths, authorStepOf } from './fold.mjs';
 import { registryEntryFor } from './find-product.mjs';
-import { autoOpenCheck, recordAutoOpen, branchTasks } from './build.mjs';
+import { autoOpenCheck, recordAutoOpen, branchTasks, rangeTasks, groupWarnings } from './build.mjs';
 import { productDriftError } from './epic-state.mjs';
 import { err } from './errors.mjs';
 import { recordActor } from './skip.mjs';
@@ -95,7 +95,8 @@ export function templateBody(repoRoot, platform, { task, summary, risk, contract
   }
   // The Spec line's placeholder is the STORY dir `specs/EP-<slug>-S0N/` (no `-T0N`), so the task
   // regex below never touches it — derive the story from the task (task minus its `-T0N` suffix).
-  const story = task ? task.replace(/-T\d+$/i, '') : null;
+  // A grouped PR's `task` lists its tasks (one story): the story is the first one's.
+  const story = task ? task.split('`')[0].replace(/-T\d+$/i, '') : null;
   // Fill the obvious fields; leave the rest of the committed template intact for the author.
   // Function replacers (not string replacements) so a `$` in interpolated free text — a commit-derived
   // summary or a repo name — is inserted verbatim, never read as a `$1`/`$&` replacement token.
@@ -305,8 +306,8 @@ export async function runOpenPr(root, opts = {}) {
       throw err('YAD-STATE-009', `--task ${opts.task} is not the task ${branch} carries (${pick.story}-${pick.task})`, 'drop --task, or switch to that task\'s branch');
     }
     const { story, task: taskId } = pick;
-    auto = { productRoot, story, task: taskId, repo: meta.name, ...autoOpenCheck(productRoot, { story, task: taskId, repo: meta.name }) };
-    info(`opened on the standing approval: ${story}-${taskId}'s checks passed (run ${auto.run}), and the open-pr dial is auto`);
+    // Checked once the base is known, still before the push: a grouped PR's tasks are read from its commits.
+    auto = { productRoot, story, task: taskId, repo: meta.name };
   }
 
   // The Product's default_branch, which only applies when the PR targets the Product ITSELF
@@ -337,14 +338,41 @@ export async function runOpenPr(root, opts = {}) {
     }
   }
 
+  // The tasks this PR carries (#350): the `Task:` lines of its commits, as spec-link reads them. More than one
+  // makes it a grouped PR — several small tasks of one story — which its body lists, and whose size is warned
+  // about over the Product's `group_limit`.
+  const baseRef = `origin/${baseBranch}`;
+  const haveBase = run('git', ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`], { cwd: repoRoot }).ok;
+  const commitIds = haveBase ? rangeTasks(repoRoot, `${baseRef}..HEAD`) : null;
+  let groupIds = null;
+  if (auto) {
+    // Every task the PR carries must be the branch's story, and each one's checks must have passed.
+    if (!commitIds) throw err('YAD-STATE-009', `could not read the commits of ${branch} against ${baseRef}, so the tasks it carries are not known`, `fetch it (git fetch origin ${baseBranch}), then run this again`);
+    const own = `${auto.story}-${auto.task}`;
+    const ids = [...new Set([own, ...commitIds])];
+    const strangers = ids.filter((t) => t.replace(/-T\d+$/, '') !== auto.story);
+    if (strangers.length) throw err('YAD-STATE-009', `${branch} carries tasks of another story: ${strangers.join(', ')}`, 'a grouped PR/MR holds small tasks of ONE story; a person opens this one');
+    const tasks = ids.map((t) => t.slice(auto.story.length + 1));
+    Object.assign(auto, { tasks, ...autoOpenCheck(auto.productRoot, { story: auto.story, tasks, repo: auto.repo }) });
+    if (ids.length > 1) groupIds = ids;
+    info(`opened on the standing approval: the checks of ${ids.join(', ')} passed, and the open-pr dial is auto`);
+  } else if (commitIds && commitIds.length > 1) groupIds = commitIds;
+  if (groupIds) {
+    info(`a grouped PR/MR: ${groupIds.join(', ')}`);
+    const settings = readJSON(productConfigPath(opts.product || root), {}) || {};
+    for (const line of groupWarnings(repoRoot, baseRef, groupIds, settings)) warn(line);
+  }
+
   // Push the branch (sets upstream) using the user's own auth. Abort on failure — creating a PR for a
   // branch that is not on the remote just fails with a more confusing error.
   info(`pushing ${branch} …`);
   const push = run('git', ['push', '-u', 'origin', branch], { cwd: repoRoot });
   if (!push.ok) { fail(`git push failed — ${push.stderr.split('\n')[0] || 'unknown'}`); process.exitCode = 1; return; }
 
-  // Under --via auto, the task it was checked for, written the canonical way.
+  // Under --via auto, the task it was checked for, written the canonical way; a grouped PR's body lists
+  // every task it carries.
   const task = auto ? `${auto.story}-${auto.task}` : opts.task || taskFromBranch(branch);
+  const bodyTask = groupIds ? groupIds.join('`, `') : task;
   const subject = run('git', ['log', '-1', '--format=%s'], { cwd: repoRoot }).stdout;
   const title = opts.title || subject || `task ${task || branch}`;
   // Summary = commit subject (Conventional-Commits "type:" prefix stripped) + body paragraphs,
@@ -358,7 +386,7 @@ export async function runOpenPr(root, opts = {}) {
     .trim();
   const summary = [subjectText, bodyText].filter(Boolean).join('\n\n') || undefined;
   const body = templateBody(repoRoot, platform, {
-    task, summary, risk: opts.risk || 'low', contract: !!opts.contractChange, domains: meta?.name, stage,
+    task: bodyTask, summary, risk: opts.risk || 'low', contract: !!opts.contractChange, domains: meta?.name, stage,
   });
 
   // Assignee = the committer: `@me` on GitHub (buildPrArgs sends it when no assignee is named, and `gh`
@@ -376,7 +404,7 @@ export async function runOpenPr(root, opts = {}) {
   if (auto) {
     // The PR is open whatever happens next: a record that cannot be written is said, never a failure.
     try {
-      recordAutoOpen(auto.file, { story: auto.story, repo: auto.repo, task: auto.task, pr: Number(prNumberFromUrl(r.url)) || null, url: r.url, run: auto.run, by: recordActor(auto.productRoot), date: opts.today || new Date().toISOString().slice(0, 10) });
+      recordAutoOpen(auto.file, { story: auto.story, repo: auto.repo, tasks: auto.tasks, runs: auto.runs, pr: Number(prNumberFromUrl(r.url)) || null, url: r.url, run: auto.run, by: recordActor(auto.productRoot), date: opts.today || new Date().toISOString().slice(0, 10) });
       hand('recorded on the lane; commit it from the Product with `yad checkpoint --push`');
     } catch (e) {
       warn(`the PR/MR is open, but it could not be recorded on the lane: ${e.message}`);
@@ -410,5 +438,5 @@ export async function runOpenPr(root, opts = {}) {
   if (stage === 'code-repo') for (const [say, line] of suggestReviewers(repoRoot, baseBranch, platform, { remote }).lines) say(line);
   // The --json answer (E1). The count and the reviewer suggestion are said in prose, and a warning among
   // them reaches `warnings`; nothing here is a request — no reviewer is ever asked for (E62).
-  return { url: r.url, platform, stage, base: baseBranch, baseSource, branch, title, task: task || null, via };
+  return { url: r.url, platform, stage, base: baseBranch, baseSource, branch, title, task: task || null, tasks: groupIds || null, via };
 }
