@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { ok, info, hand, warn, run, readJSON, readJSONStrict, writeJSON, isPlainObject, exists } from './lib.mjs';
 import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, nextAction, loadAutomation, effectiveAdvance, effectiveAction } from './epic-state.mjs';
 import { DEFAULT_LIFECYCLE, laneOrder, laneAuthorSteps } from './lifecycle.mjs';
@@ -604,7 +605,7 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     // The PR carries the task (`prCarries`): its branch names it, or — a grouped PR (#350) — its commits do.
     // The ship is never put on a task the PR does not carry.
     const { carries, tasks: group } = prCarries(where, pr, got, { story, task, runner });
-    if (carries === 'other') throw err(CODE, group?.length ? `PR #${pr}'s commits carry ${group.join(', ')}, not ${story}-${task}` : `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, 'check --task and --pr');
+    if (carries === 'other') throw err(CODE, group?.length ? `PR #${pr}'s commits carry ${group.join(', ')}, not ${story}-${task}` : `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, group?.length ? `check --task and --pr; a PR/MR carries a task by a commit's Task: trailer (what spec-link reads), not by a mention in a subject` : 'check --task and --pr');
     if (carries === 'none') warn(`PR #${pr} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${story}-${task}`);
     if (carries === 'group') info(`PR #${pr} is a grouped PR: its commits carry ${group.join(', ')}`);
     // A follow-up branch is never the task's own ship, and a follow-up should come from one. The name is the
@@ -659,15 +660,17 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
 
 // Add a follow-up's merge to the task's ship, where the ship lives (its shard, or the folded log). The same
 // PR/MR or merge commit twice is refused; the story's status is left as it is.
-// The task a commit message carries, read as the spec-link gate reads it through git: the FIRST `Task:`
-// trailer — a `Task: <id>` line (the key in any case) in the message's LAST paragraph — and only when it is a
+// The task a commit message carries, read as the spec-link gate reads it: git's own trailer parser
+// (`git interpret-trailers --parse --no-divider`, the rules `%(trailers)` applies to a commit — the trailer
+// block, the key in any case, folded values), then the FIRST non-empty `Task:` value, and only when it is a
 // task id. Used on messages the platform returns; local commits are read by git itself (`gitTasks`).
 const TASK_ID_ONLY = /^EP-[a-z0-9-]+-S\d+-T\d+$/;
 export function trailerTask(message) {
-  const paras = String(message || '').replace(/\r\n?/g, '\n').trim().split(/\n[ \t]*\n/);
-  for (const line of (paras[paras.length - 1] || '').split('\n')) {
+  const r = spawnSync('git', ['interpret-trailers', '--parse', '--no-divider'], { input: String(message || ''), encoding: 'utf8' });
+  if (r.status !== 0) return null;
+  for (const line of String(r.stdout).split('\n')) {
     const m = line.match(/^task[ \t]*:[ \t]*(.*?)[ \t]*$/i);
-    if (m) return TASK_ID_ONLY.test(m[1]) ? m[1] : null;
+    if (m && m[1]) return TASK_ID_ONLY.test(m[1]) ? m[1] : null;
   }
   return null;
 }
@@ -711,7 +714,7 @@ function prCarries(where, n, got, { story, task, runner }) {
   if (asked.ok && asked.tasks.includes(id)) return { carries: 'group', tasks: asked.tasks };
   // A list cut short could hold the task further on: as unread as a failed read.
   if (!asked.ok || asked.partial) {
-    if (byBranch === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}, and its commits could not all be read to see whether it carries ${task} too${asked.ok ? ' (more than one page of them)' : `: ${asked.reason}`}`, asked.ok ? 'record it by hand where its merge commit is: yad build ship … --merge-commit <sha>' : 'log in, then run this again');
+    if (byBranch === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}, and its commits could not all be read to see whether it carries ${task} too${asked.ok ? ' (more than one page of them)' : `: ${asked.reason}`}`, asked.ok ? `a grouped PR/MR of ${COMMIT_PAGE} commits or more is not read; a group is for small tasks — give ${task} its own PR/MR` : 'log in, then run this again');
     return { carries: byBranch, tasks: null };
   }
   // The commits were read and carry other tasks, not this one: that is evidence, whatever the branch says.

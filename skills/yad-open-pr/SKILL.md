@@ -97,7 +97,8 @@ kill switch is off; and the lane's `checks` step is passed **now**, and each tas
 close names it (the close, or its run — close it with `--task`) with a trust run that passed (`checks=pass`)
 and was not rejected. A step reopened and not closed again holds every task. A grouped PR (#350) — its
 commits carry several small tasks of the branch's story — is opened only when every task passes, and is
-recorded once per task. A `--task` other than the branch's
+recorded once per task. The base is fetched first, so tasks merged since the last fetch are not counted; a
+failed fetch refuses `--via auto`. A `--task` other than the branch's
 task is refused, and so is a Product branch. A task already opened this way, or one that has already shipped (a follow-up is opened by a person), is refused. Once open, the PR/MR is
 recorded on the lane (`opened`: task, number, url, the run, who, when) — commit it from the Product with
 `yad checkpoint --push`. Without `--via` (or `--via human`) it opens as before and records nothing. The

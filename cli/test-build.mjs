@@ -1161,6 +1161,12 @@ test('a grouped PR: several small tasks of one story in one PR, each shipped fro
     assert.equal(trailerTask('fix: x\r\n\r\ntask:  EP-l-S01-T02 \r\n'), 'EP-l-S01-T02');
     assert.equal(trailerTask('fix: x\n\nTask: EP-l-S01-T07\nmore words\n\nTask: EP-l-S01-T04'), 'EP-l-S01-T04', 'a Task: line in a middle paragraph is not a trailer');
     assert.equal(trailerTask('fix: x\n\nTask: not-an-id'), null);
+    // git's own trailer rules (review 2): prose before it, the title alone, a folded value, an empty first one.
+    assert.equal(trailerTask('fix: a\n\nSome prose here.\nTask: EP-l-S01-T01'), null);
+    assert.equal(trailerTask('Task: EP-l-S01-T01'), null);
+    assert.equal(trailerTask('fix: a\n\nTask: EP-l-S01-T01\n---\nfoo'), null);
+    assert.equal(trailerTask('fix: a\n\nTask:\n  EP-l-S01-T01'), 'EP-l-S01-T01');
+    assert.equal(trailerTask('fix: a\n\nTask:\nTask: EP-l-S01-T02'), 'EP-l-S01-T02');
     const view = { state: 'MERGED', mergedAt: '2026-10-20T10:00:00Z', mergeCommit: { oid: m }, headRefName: 'feat/EP-l-S01-T01-small-fixes', url: 'https://github.com/o/api/pull/20', body: '', statusCheckRollup: [] };
     const commits = { commits: [{ messageHeadline: 'fix: small T01', messageBody: 'Task: EP-l-S01-T01' }, { messageHeadline: 'fix: small T02', messageBody: 'Task: EP-l-S01-T02' }] };
     let commitsOk = true;
