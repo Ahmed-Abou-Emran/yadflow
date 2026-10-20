@@ -24,7 +24,7 @@ import { readShips, readTrustRuns, writeShip, writeTrustRun, updateTrustRun } fr
 import { setBuildStatus, readStoryStatus } from './artifact-status.mjs';
 import { readPr, mapApprovers, detectPlatform, cliFor, platformReady } from './platform.mjs';
 import { repoPathFromGitUrl } from './protection.mjs';
-import { readCommit, tasksOfCommit, prOfSubject } from './ship-drift.mjs';
+import { readCommit, tasksOfCommit, prOfCommit } from './ship-drift.mjs';
 import { recordActor } from './skip.mjs';
 import { sealedEpic } from './thread.mjs';
 
@@ -116,8 +116,8 @@ export function planStep(buildState, { story, repo, step, to, reason = null, by 
   const active = activeStep(lane);
   if (isPassed(target)) {
     // `done --task T02` on a step T01 closed is not "already done": T02 has not been through it.
-    if (to === 'done' && task && target.closed?.task && target.closed.task !== task) {
-      throw err(CODE, `${step} was closed for ${target.closed.task}, not ${task}`, `reopen it for ${task} first: yad build step ${story} --repo ${repo} implement in_progress --task ${task}`);
+    if (to === 'done' && task && target.closed?.task !== task) {
+      throw err(CODE, `${step} was closed ${target.closed?.task ? `for ${target.closed.task}` : 'for no task'}, not ${task}`, `reopen it for ${task} first: yad build step ${story} --repo ${repo} implement in_progress --task ${task}`);
     }
     if (to === 'done') return { buildState: bs, already: true };
     // The next task reopens the per-task steps — once the lane has walked them all for the task before
@@ -316,10 +316,16 @@ export async function buildStep(root, { story, repo, step, to, reason, via = 'hu
   repoArg(repo, `yad build step ${story || '<story>'} --repo <name> <step> ${STEP_MOVES.join('|')}`);
   if (!step || !to) throw err(CODE, 'a step and the state to move it to are required', `yad build step ${story} --repo ${repo} <step> ${STEP_MOVES.join('|')}`);
   const ctx = storyContext(root, story);
-  // A run named must be a run of this step in this lane: the closing record points at the evidence.
+  // A run named must be a run of this step in this lane, for the task the close is for, and not one an
+  // earlier close already names: the closing record points at the evidence.
   if (runUid && runUid !== true) {
+    const lane = lanes(ctx.buildState, story).repos[repo];
+    const st = Array.isArray(lane?.steps) ? lane.steps.find((x) => x?.id === step) : null;
+    const forTask = (task && task !== true ? task : null) || st?.task || null;
+    const used = [st?.closed?.run, ...(Array.isArray(st?.runs) ? st.runs.map((x) => x?.run) : [])].filter(Boolean);
+    if (used.includes(runUid)) throw err(CODE, `trust run ${runUid} already closed ${step} in ${story} / ${repo}`, 'each close names its own run: record this one with `yad build trust`');
     const known = readTrustRuns(ctx.epicDir).some((r) => r.uid === runUid && r.story === story && r.repo === repo && r.step === step
-      && !(r.task && task && task !== true && r.task !== task));
+      && !(r.task && forTask && r.task !== forTask));
     if (!known) throw err(CODE, `no trust run ${runUid} for ${story} / ${repo} / ${step}`, `\`yad build trust ${story} --repo ${repo} ${step} --verdict …\` prints the uid of the run it records`);
   }
   const { buildState, already, reopened } = planStep(ctx.buildState, {
@@ -432,33 +438,53 @@ export function tasksInBranch(branch) {
   return [...String(branch || '').matchAll(/(?:^|[/_])(ep-[a-z0-9-]+?-s\d+-t\d+)(?=$|[-_/])/gi)].map((m) => m[1].toLowerCase());
 }
 
-// The ship of a task merged with no PR/MR, read from the commit in the repo's own checkout.
-function shipWithoutPr(where, { story, task, repo, mergeCommit, today }) {
+// A commit in the repo's own checkout, checked as evidence of a task: it exists, it is on the default
+// branch (origin's, fetched first; the local one when there is no origin), and it names the task by the
+// rules `yad reconcile check` reads every commit with — a `Task:` trailer, a task branch a merge brought in,
+// or the full id in the subject; never a revert, never a mention in the body.
+function checkCommit(where, { story, task, repo, mergeCommit }) {
   const cwd = where.checkout;
+  const hasOrigin = run('git', ['remote', 'get-url', 'origin'], { cwd }).ok;
   const head = run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { cwd }).stdout;
   const branch = where.defaultBranch || (head.startsWith('origin/') ? head.slice(7) : 'main');
-  if (!run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd }).ok) {
-    throw err(CODE, `could not fetch ${branch} in ${repo} to check the commit`, 'check the network and your login, then run this again');
+  let ref = `refs/heads/${branch}`;
+  if (hasOrigin) {
+    if (!run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd }).ok) {
+      throw err(CODE, `could not fetch ${branch} in ${repo} to check the commit`, 'check the network and your login, then run this again');
+    }
+    ref = `refs/remotes/origin/${branch}`;
   }
   const sha = run('git', ['rev-parse', '--verify', '--quiet', `${mergeCommit}^{commit}`], { cwd }).stdout;
   if (!sha) throw err(CODE, `${mergeCommit} is not a commit in ${repo}`, 'fetch it, or check the SHA');
-  if (!run('git', ['merge-base', '--is-ancestor', sha, `refs/remotes/origin/${branch}`], { cwd }).ok) {
+  if (!run('git', ['merge-base', '--is-ancestor', sha, ref], { cwd }).ok) {
     throw err(CODE, `${mergeCommit} is not on ${repo}'s ${branch}`, 'a ship is recorded once the work is merged into the default branch');
   }
-  // What the commit is evidence of, by the rules `yad reconcile check` reads every commit with: a `Task:`
-  // trailer, a task branch a merge brought in, or the full id in the subject — never a revert, never a
-  // mention in the body. A commit that merged a PR/MR is recorded from that PR, with its approvers.
   const rec = readCommit(cwd, sha);
   if (!rec) throw err(CODE, `${mergeCommit} could not be read in ${repo}`, 'check the SHA');
-  const viaPr = prOfSubject(rec.subject);
-  if (viaPr) throw err(CODE, `${mergeCommit} merged PR #${viaPr}`, `record it from that PR, with its approvers: yad build ship ${story} --task ${task} --repo ${repo} --pr ${viaPr}`);
   if (!tasksOfCommit(rec).some((x) => x.task === `${story}-${task}`)) {
     throw err(CODE, `${mergeCommit} does not name ${story}-${task}`, 'the commit must name the task it ships: its Task: trailer, the task branch a merge commit brought in, or the full id in its subject');
   }
+  const body = run('git', ['log', '-1', '--format=%b', sha], { cwd }).stdout;
+  return { sha, rec, body, date: run('git', ['log', '-1', '--format=%cs', sha], { cwd }).stdout };
+}
+
+// The ship of a task merged with no PR/MR. A commit that merged one is refused, so the ship keeps that PR's
+// approvers: GitHub's "Merge pull request #N from …" and GitLab's "See merge request …!N" are certain; a
+// squash subject ending "(#N)" may name an issue instead, so it is refused only when the platform confirms
+// PR #N merged as this very commit.
+function shipWithoutPr(where, { story, task, repo, mergeCommit, today, readable, runner }) {
+  const c = checkCommit(where, { story, task, repo, mergeCommit });
+  const certain = prOfCommit(c.rec.subject, c.body);
+  let viaPr = certain.certain ? certain.pr : null;
+  if (!viaPr && certain.pr && readable) {
+    const got = readMergedPr(where.platform, certain.pr, { cwd: where.checkout, runner });
+    if (got.ok && got.merged && got.mergeCommit === c.sha) viaPr = certain.pr;
+  }
+  if (viaPr) throw err(CODE, `${mergeCommit} merged PR/MR #${viaPr}`, `record it from that PR/MR, with its approvers: yad build ship ${story} --task ${task} --repo ${repo} --pr ${viaPr}`);
   return {
-    story, task, repo, branch: null, pr: 'none', mergeCommit: sha, gates: [],
+    story, task, repo, branch: null, pr: 'none', mergeCommit: c.sha, gates: [],
     ai_review: null, engineer_review: [], companion: { trailer: false, cards: false, chat: false },
-    risk: null, shippedAt: run('git', ['log', '-1', '--format=%cs', sha], { cwd }).stdout || today,
+    risk: null, shippedAt: c.date || today,
   };
 }
 
@@ -486,7 +512,7 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
   // A task merged with no PR/MR (the user's decision, 2026-10-20): the commit is the evidence, so it must be
   // on the default branch and name the task. Nobody approved a PR, so there are no approvers.
   if (where.checkout && (!pr || pr === true) && mergeCommit && mergeCommit !== true && !approvers.length) {
-    ship = shipWithoutPr(where, { story, task, repo, mergeCommit, today });
+    ship = shipWithoutPr(where, { story, task, repo, mergeCommit, today, readable, runner });
   } else if (readable && byHand) throw err(CODE, `the ship is read from PR #${pr || '?'} on ${where.platform}`, '--merge-commit and --approver are for a repo whose platform cannot be read; drop them');
   const usable = readable;
   if (where.platform && !where.checkout && !byHand) {
@@ -526,8 +552,10 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     if (!mergeCommit || mergeCommit === true) {
       throw err(CODE, where.platform ? `${cliFor(where.platform)} is not available to read the PR` : `${repo} has no platform to read the PR from`, '--merge-commit <sha> (and --approver <login> for each approver) records it by hand');
     }
+    // In the repo's checkout the commit is checked as evidence too; only with no checkout is it taken as given.
+    const c = where.checkout ? checkCommit(where, { story, task, repo, mergeCommit }) : null;
     ship = {
-      story, task, repo, branch: null, pr: pr && pr !== true ? `#${pr}` : 'local', mergeCommit, gates: [],
+      story, task, repo, branch: null, pr: pr && pr !== true ? `#${pr}` : 'local', mergeCommit: c ? c.sha : mergeCommit, gates: [],
       ai_review: null, engineer_review: approvers.map((a) => ({ approver: a, engagement: 'none' })),
       companion: { trailer: false, cards: false, chat: false }, risk: null, shippedAt: today,
     };

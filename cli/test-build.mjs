@@ -111,7 +111,7 @@ test('yad build: start → step → trust → ship → done, and every reader ag
     assert.deepEqual([closed.via, typeof closed.run], ['human', 'string']);
     assert.equal(read(file).repos.api.currentStep, 'engineer-review');
 
-    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'a'.repeat(40), '--approver', 'bob');
+    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01, '--approver', 'bob');
     assert.equal(r.code, 0, r.out);
     assert.equal(status(dir), 'in-build', 'a first ship puts an approved story in Build');
     // Not every task shipped: refused, naming what is missing.
@@ -131,7 +131,7 @@ test('yad build: start → step → trust → ship → done, and every reader ag
     const ships = fs.readdirSync(path.join(dir, '.sdlc/build-log')).sort();
     assert.deepEqual(ships, ['EP-l-S01-T01-api.json', 'EP-l-S01-T02-api.json']);
     const ship = read(path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json'));
-    assert.deepEqual([ship.story, ship.task, ship.repo, ship.mergeCommit, ship.engineer_review[0].approver], ['EP-l-S01', 'T01', 'api', 'a'.repeat(40), 'bob']);
+    assert.deepEqual([ship.story, ship.task, ship.repo, ship.mergeCommit, ship.engineer_review[0].approver], ['EP-l-S01', 'T01', 'api', sha.T01, 'bob']);
     assert.equal(fs.readdirSync(path.join(dir, '.sdlc/trust-log')).length, 4);
 
     // And every reader says so.
@@ -540,8 +540,24 @@ test('yad build ship with no PR: the commit names the task by the reconcile rule
     r = ship('T03', commit('docs: notes\n\nfollow-up to EP-l-S01-T03'));
     assert.match(r.out, /does not name EP-l-S01-T03/, 'a mention in the body is not evidence');
     r = ship('T03', commit('Merge pull request #42 from org/feat/EP-l-S01-T03-x'));
-    assert.match(r.out, /merged PR #42/);
+    assert.match(r.out, /merged PR\/MR #42/);
     assert.match(r.out, /--pr 42/);
+    // GitLab's merge commit names its MR in the body.
+    git(api, 'checkout', '-q', '-b', 'feat/EP-l-S01-T03-x');
+    write(api, { 'src/t03.js': 'x\n' });
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', 'feat: three');
+    git(api, 'checkout', '-q', 'main');
+    git(api, 'merge', '-q', '--no-ff', '-m', "Merge branch 'feat/EP-l-S01-T03-x' into 'main'\n\nSee merge request team/api!12", 'feat/EP-l-S01-T03-x');
+    git(api, 'push', '-q', 'origin', 'main');
+    r = ship('T03', git(api, 'rev-parse', 'HEAD'));
+    assert.match(r.out, /merged PR\/MR #12/);
+    // A subject ending (#346) may cite an issue: with no platform to confirm it, it is no PR.
+    r = ship('T04', commit('feat: EP-l-S01-T04 orders (#346)'));
+    assert.equal(r.code, 0, r.out);
+    // By hand, with an approver: still checked as evidence of the task.
+    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T05', '--repo', 'api', '--merge-commit', commit('docs: unrelated'), '--approver', 'bob');
+    assert.match(r.out, /does not name EP-l-S01-T05/);
     r = ship('T03', commit('feat: EP-l-S01-T03 squashed'));
     assert.equal(r.code, 0, r.out);
     // No platform at all: the same check, and pr none.
@@ -569,13 +585,24 @@ test('yad build step: done --task for another task is refused; only implement re
     }
     const impl = read(path.join(dir, '.sdlc/build-state/EP-l-S01.json')).repos.api.steps.find((s) => s.id === 'implement');
     assert.deepEqual([impl.closed.task, ...impl.runs.map((x) => x.task)], ['T03', 'T01', 'T02'], 'the task defaults to the one the step was reopened for');
+    // A close with no task is not "already done" for T04, and a run already used for a close is not reused.
+    r = yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', 'implement', '--verdict', 'approved-unchanged', '--json');
+    const used = json(r).uid;
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'in_progress', '--task', 'T04');
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'done', '--run', used);
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'done', '--task', 'T09');
+    assert.match(r.out, /implement was closed for T04, not T09/);
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'checks', 'done');
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'in_progress', '--task', 'T05');
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'done', '--run', used);
+    assert.match(r.out, new RegExp(`trust run ${used} already closed implement`));
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 
-test('prOfSubject: the PR a merge or squash subject names (#346 review 5)', async () => {
-  const { prOfSubject } = await import('./ship-drift.mjs');
-  assert.equal(prOfSubject('Merge pull request #42 from org/feat/x'), 42);
-  assert.equal(prOfSubject('feat: orders (#17)'), 17);
-  assert.equal(prOfSubject('feat: orders #17 later'), null);
-  assert.equal(prOfSubject(''), null);
+test('prOfCommit: certain for a GitHub or GitLab merge, only a maybe for a squash (#346 review 6)', async () => {
+  const { prOfCommit } = await import('./ship-drift.mjs');
+  assert.deepEqual(prOfCommit('Merge pull request #42 from org/feat/x'), { pr: 42, certain: true });
+  assert.deepEqual(prOfCommit("Merge branch 'feat/x' into 'main'", 'See merge request team/api!12'), { pr: 12, certain: true });
+  assert.deepEqual(prOfCommit('feat: orders (#17)'), { pr: 17, certain: false });
+  assert.deepEqual(prOfCommit('feat: orders #17 later'), { pr: null, certain: false });
 });

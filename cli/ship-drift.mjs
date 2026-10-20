@@ -39,8 +39,17 @@ const SHA = /^[0-9a-f]{7,64}$/;
 // A branch NAME, never revision syntax: `main~1`, `main@{1}`, `HEAD` or a leading `-` would read another
 // commit than the branch's tip, and hide what merged (review 3).
 const BRANCH = /^(?!-)(?!HEAD$)(?!.*(?:\.\.|@\{|\/\/|\.lock$|\/$|\.$))[A-Za-z0-9._/-]+$/;
-// The PR/MR number a commit's subject names: GitHub's "Merge pull request #N", or a squash's "… (#N)".
-export const prOfSubject = (subject) => Number((String(subject).match(/^Merge pull request #(\d+)\b/) || String(subject).match(/\(#(\d+)\)\s*$/) || [])[1]) || null;
+// The PR/MR a commit says it merged. `certain` for GitHub's "Merge pull request #N from …" and GitLab's
+// "See merge request <project>!N" body line; a squash subject ending "(#N)" is only a maybe — that is also
+// how an issue is cited.
+export function prOfCommit(subject = '', body = '') {
+  const gh = String(subject).match(/^Merge pull request #(\d+) from /);
+  if (gh) return { pr: Number(gh[1]), certain: true };
+  const gl = String(body).match(/^See merge request \S+!(\d+)\s*$/m);
+  if (gl) return { pr: Number(gl[1]), certain: true };
+  const sq = String(subject).match(/\(#(\d+)\)\s*$/);
+  return sq ? { pr: Number(sq[1]), certain: false } : { pr: null, certain: false };
+}
 const storyOf = (task) => task.replace(/-T\d+$/, '');
 const shaOf = (v) => (typeof v === 'string' && SHA.test(v.toLowerCase()) ? v.toLowerCase() : null);
 
@@ -335,7 +344,8 @@ export function shipDrift(root, { platform = true, epics = null, runner, env = p
         // known, else from the merge commit (a task merged with no PR).
         const evSha = shaOf(ev.sha);
         const prNo = Number.isInteger(ev.pr) ? ev.pr : null;
-        const viaPr = prNo || prOfSubject(ev.subject || '');
+        const said = prOfCommit(ev.subject || '');
+        const viaPr = prNo || (said.certain ? said.pr : null);
         const base = `yad build ship ${s.story} --task ${t} --repo ${repoName}`;
         const engineer = viaPr ? `record the ship with \`${base} --pr ${viaPr}\``
           : `record the ship with \`${base} --pr <n>\` (the PR/MR that merged it)${evSha ? `, or \`${base} --merge-commit ${evSha.slice(0, 12)}\` if it merged with no PR/MR` : ''}`;
