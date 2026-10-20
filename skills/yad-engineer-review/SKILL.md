@@ -146,7 +146,8 @@ engineer-review rule is satisfied (Step 2). Then:
   --follow-up --ship`: the same states, and once merged its merge is added to the task's ship
   (`followUps`), never a second ship. Shape: `references/ship-and-record.md`.
 - **Record the ship** — `yad build ship <story> --task <task> --repo <repo> --pr <n>` (what `--ship` runs),
-  once the PR/MR has merged. It reads the merge commit, the branch, the checks that passed, the approvers (with the
+  once the PR/MR has merged. A grouped PR (#350) — several small tasks of one story — ships each task it
+  carries from the same `--pr`; a task that is not the branch's is found with `--pr`, as its commits carry it. It reads the merge commit, the branch, the checks that passed, the approvers (with the
   engagement signal), the body's `Risk level:` and the merge date from the platform, refuses a PR that is
   not merged or that comes from another task's branch, and writes the ship to its own shard
   `epics/<epic>/.sdlc/build-log/<story>-<task>-<repo>.json` (shape: `references/ship-and-record.md`). A

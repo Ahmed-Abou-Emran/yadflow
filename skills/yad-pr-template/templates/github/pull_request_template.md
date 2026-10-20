@@ -1,4 +1,4 @@
-<!-- SDLC PR template (Phase 3 build plan §D). One atomic task per PR. -->
+<!-- SDLC PR template (Phase 3 build plan §D). One atomic task per PR (or a few small tasks of one story). -->
 
 ## Summary
 <!-- What this PR does, in one or two sentences. -->
