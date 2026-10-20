@@ -1105,7 +1105,10 @@ test('a task branch whose words start with "followup" is the task\'s own until i
     };
     const base = { story: 'EP-l-S01', task: 'T02', repo: 'api', today: '2026-10-20', runner, prReader: () => ({ ok: true, reviews: [] }) };
     assert.deepEqual([(await buildMerged(P, base)).state, (await buildMerged(P, base)).pr], ['merged', 5]);
-    const r = await buildShip(P, { ...base, pr: '5' });
+    // Older than the page the listing reads: the PR asked about still counts (review 3).
+    const older = { ...base, runner: (cmd, args) => (cmd === 'gh' && args[1] === 'list' ? { ok: true, stdout: '[]', stderr: '' } : runner(cmd, args)) };
+    assert.equal((await buildMerged(P, { ...older, pr: '5' })).state, 'merged');
+    const r = await buildShip(P, { ...older, pr: '5' });
     assert.equal(r.changed, true);
     assert.equal(read(path.join(dir, '.sdlc/build-log/EP-l-S01-T02-api.json')).mergeCommit, sha.T02);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }

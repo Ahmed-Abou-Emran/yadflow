@@ -604,7 +604,7 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     // A follow-up branch is never the task's own ship, and a follow-up should come from one. The name is the
     // task's own only when nothing else can be (`ownPrs`): before the ship, with no plain-named PR for the task.
     const follows = isFollowUpBranch(got.branch, story, task);
-    if (follows && !followUp && !followUpIsOwn(ctx, where, { story, task, repo, runner })) throw err(CODE, `PR #${pr} is from ${got.branch}, a follow-up branch of ${story}-${task}`, `add it to the task's ship: yad build ship ${story} --task ${task} --repo ${repo} --pr ${pr} --follow-up`);
+    if (follows && !followUp && !followUpIsOwn(ctx, where, { story, task, repo, runner, asked: { number: Number(pr), state: got.state || 'merged' } })) throw err(CODE, `PR #${pr} is from ${got.branch}, a follow-up branch of ${story}-${task}`, `add it to the task's ship: yad build ship ${story} --task ${task} --repo ${repo} --pr ${pr} --follow-up`);
     if (followUp && !follows) warn(`PR #${pr} is from ${got.branch || '(no branch)'}, not a follow-up branch (fix/${story}-${task}-followup-<words>) — check it is a follow-up of ${story}-${task}`);
     const pull = prReader(where.platform, pr, { cwd: where.checkout, runner });
     const seen = new Set();
@@ -661,13 +661,15 @@ export function ownPrs(prs) {
   return plain.some((x) => x.state !== 'closed') ? plain : prs;
 }
 
-// May a follow-up-named PR be the task's own ship? Not once the task has shipped, and not while a plain-named
-// PR for it is open or merged. A listing that fails is a refusal, never a guess.
-function followUpIsOwn(ctx, where, { story, task, repo, runner }) {
+// May the follow-up-named PR `asked` (`{ number, state }`) be the task's own ship? Not once the task has
+// shipped, and not while a plain-named PR for it is open or merged. The asked PR always counts, even when it
+// is older than the page the listing reads. A listing that fails is a refusal, never a guess.
+function followUpIsOwn(ctx, where, { story, task, repo, runner, asked }) {
   if (readShips(ctx.epicDir).some((s) => s.story === story && s.task === task && s.repo === repo)) return false;
   const found = findTaskPrs(where.platform, { story, task }, { cwd: where.checkout, runner });
   if (!found.ok) throw err(CODE, `could not list the PRs/MRs of ${repo} to see whether this follow-up branch is ${story}-${task}'s own: ${found.reason}`, 'log in, then run this again');
-  return ownPrs(found.prs).some((x) => x.followUp);
+  const prs = [...found.prs.filter((x) => x.number !== asked.number), { ...asked, followUp: true }];
+  return ownPrs(prs).some((x) => x.number === asked.number);
 }
 
 // Two commit ids for the same commit: a ship recorded by hand may hold the short or upper-case form.
@@ -801,9 +803,7 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   const follows = isFollowUpBranch(got.branch, story, task);
   // A follow-up-named PR asked about by number is the task's own only by the same rule as the search.
   if (follows && !followUp && pr && pr !== true) {
-    const found = findTaskPrs(where.platform, { story, task }, { cwd: where.checkout, runner });
-    if (!found.ok) throw err(CODE, `could not list the PRs/MRs of ${repo}: ${found.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, then run this again`);
-    if (!ownPrs(found.prs).some((x) => x.followUp)) throw err(CODE, `PR/MR #${n} is from ${got.branch}, a follow-up branch, while ${id}'s own PR/MR is another`, `ask about the task's own: yad build merged ${story} --task ${task} --repo ${repo}`);
+    if (!followUpIsOwn(ctx, where, { story, task, repo, runner, asked: { number: n, state: got.state || (got.merged ? 'merged' : 'open') } })) throw err(CODE, `PR/MR #${n} is from ${got.branch}, a follow-up branch, while ${id}'s own PR/MR is another`, `ask about the task's own: yad build merged ${story} --task ${task} --repo ${repo}`);
   }
   const state = got.state || (got.merged ? 'merged' : null);
   if (followUp && !follows && carries !== 'none' && !(ship && state === 'merged')) warn(`PR/MR #${n} is from ${got.branch}, not a follow-up branch (fix/${id}-followup-<words>) — check it is a follow-up of ${id}`);
