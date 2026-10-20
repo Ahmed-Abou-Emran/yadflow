@@ -124,8 +124,9 @@ Walk the steps for `repo` starting at `from`/`currentStep`. For each step:
    you stop — ask
    `yad dial open-pr --json` and use its `advance`. **`auto`** — the project's standing approval: from the
    task branch, run `yad open-pr --via auto` **without asking**. It refuses (and pushes nothing) unless the
-   dial is auto and the `checks` step is closed now for this task (so close it with `--task <T>`), naming a
-   run that passed (`checks=pass`) and was not rejected; it records the opened PR/MR on the lane (`opened`). If it refuses, stop and report why.
+   dial is auto, the `checks` step is closed now, and each task the branch's commits carry (one, or a
+   group of small tasks of the story — #350) has its newest close naming it (so close it with `--task <T>`)
+   with a run that passed (`checks=pass`) and was not rejected; it records the opened PR/MR on the lane (`opened`). If it refuses, stop and report why.
    **`human`** — stop and ask the person to approve opening it, then run `yad open-pr`. The merge is
    always a person's, whatever the dial.
 6. **Always stop at `engineer-review`** (it is `locked`): hand off to `yad-engineer-review` for the human merge

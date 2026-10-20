@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { ok, info, hand, warn, run, readJSON, readJSONStrict, writeJSON, isPlainObject, exists } from './lib.mjs';
 import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, nextAction, loadAutomation, effectiveAdvance, effectiveAction } from './epic-state.mjs';
 import { DEFAULT_LIFECYCLE, laneOrder, laneAuthorSteps } from './lifecycle.mjs';
@@ -480,7 +481,7 @@ export function isFollowUpBranch(branch, story, task) {
 // also asks that it names the task, by the rules `yad reconcile check` reads every commit with — a `Task:`
 // trailer, a task branch a merge brought in, or the full id in the subject. By hand, where the platform
 // cannot be read, the person vouches for it: it may not name a DIFFERENT task, and naming none is a warning.
-function checkCommit(where, { story, task, repo, mergeCommit, strict = true, fetch = true, noTask = 'recorded as you say it ships' }) {
+function checkCommit(where, { story, task, repo, mergeCommit, strict = true, fetch = true, noTask = 'recorded as you say it ships', group = null }) {
   const cwd = where.checkout;
   const hasOrigin = run('git', ['remote', 'get-url', 'origin'], { cwd }).ok;
   const head = run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { cwd }).stdout;
@@ -504,7 +505,11 @@ function checkCommit(where, { story, task, repo, mergeCommit, strict = true, fet
   if (!rec) throw err(CODE, `${mergeCommit} could not be read in ${repo}`, 'check the SHA');
   const named = tasksOfCommit(rec).map((x) => x.task);
   const want = `${story}-${task}`;
-  if (!named.includes(want)) {
+  // A grouped PR (#350): its merge commit names the branch's task; it ships every task the PR carries.
+  // By hand there is no PR to ask: the merge commit's own merged range is read (`group: 'range'`).
+  if (group === 'range') group = mergeRangeTasks(cwd, sha);
+  const inGroup = Array.isArray(group) && group.includes(want) && named.length && named.every((t) => group.includes(t));
+  if (!named.includes(want) && !inGroup) {
     if (strict || named.length) {
       throw err(CODE, named.length ? `${mergeCommit} names ${named.join(', ')}, not ${want}` : `${mergeCommit} does not name ${want}`,
         'the commit must name the task it ships: its Task: trailer, the task branch a merge commit brought in, or the full id in its subject');
@@ -597,10 +602,12 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     if (!got.ok) throw err(CODE, `could not read PR #${pr} in ${repo}: ${got.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, then run this again`);
     if (!got.merged) throw err(CODE, `PR #${pr} in ${repo} is not merged`, 'a ship is recorded once the PR/MR merges');
     if (!got.mergeCommit) throw err(CODE, `PR #${pr} in ${repo} is merged, but the platform names no merge commit`, 'record it from the commit instead: yad build ship … --merge-commit <sha> with no --pr');
-    // The PR's branch names the task it carries (`feat/EP-x-S01-T01-…`): the ship is never put on another.
-    const carries = branchTask(got.branch, story, task);
-    if (carries === 'other') throw err(CODE, `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, 'check --task and --pr');
+    // The PR carries the task (`prCarries`): its branch names it, or — a grouped PR (#350) — its commits do.
+    // The ship is never put on a task the PR does not carry.
+    const { carries, tasks: group } = prCarries(where, pr, got, { story, task, runner });
+    if (carries === 'other') throw err(CODE, group?.length ? `PR #${pr}'s commits carry ${group.join(', ')}, not ${story}-${task}` : `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, group?.length ? `check --task and --pr; a PR/MR carries a task by a commit's Task: trailer (what spec-link reads), not by a mention in a subject` : 'check --task and --pr');
     if (carries === 'none') warn(`PR #${pr} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${story}-${task}`);
+    if (carries === 'group') info(`PR #${pr} is a grouped PR: its commits carry ${group.join(', ')}`);
     // A follow-up branch is never the task's own ship, and a follow-up should come from one. The name is the
     // task's own only when nothing else can be (`ownPrs`): before the ship, with no plain-named PR for the task.
     const follows = isFollowUpBranch(got.branch, story, task);
@@ -617,7 +624,7 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     if (got.checksRead === false) warn(`could not read the checks of PR #${pr} — gates is left empty`);
     if (!pull.ok) warn(`could not read the approvals of PR #${pr} (${pull.reason}) — engineer_review is left empty; \`yad review reconcile\` fills it later`);
     // What merged must be on the default branch, and may not name another task — the same check as by hand.
-    const c = checkCommit(where, { story, task, repo, mergeCommit: got.mergeCommit, strict: false, fetch });
+    const c = checkCommit(where, { story, task, repo, mergeCommit: got.mergeCommit, strict: false, fetch, group: carries === 'group' ? group : null });
     ship = {
       story, task, repo, branch: got.branch, pr: got.url || `#${pr}`, mergeCommit: c.sha, gates: got.checks,
       ai_review: null, engineer_review: engineerReview,
@@ -630,7 +637,7 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
       throw err(CODE, where.platform ? `${cliFor(where.platform)} is not available to read the PR` : `${repo} has no platform to read the PR from`, '--merge-commit <sha> (and --approver <login> for each approver) records it by hand');
     }
     // In the repo's checkout the commit is checked as evidence too; only with no checkout is it taken as given.
-    const c = where.checkout ? checkCommit(where, { story, task, repo, mergeCommit, strict: false, fetch }) : null;
+    const c = where.checkout ? checkCommit(where, { story, task, repo, mergeCommit, strict: false, fetch, group: 'range' }) : null;
     // A commit whose own merge subject names a PR is that PR's: a different --pr is refused.
     const said = c ? prOfCommit(c.rec.subject, c.body) : null;
     if (said?.certain && pr && pr !== true && Number(pr) !== said.pr) throw err(CODE, `${mergeCommit} merged PR/MR #${said.pr}, not #${pr}`, `--pr ${said.pr}`);
@@ -653,6 +660,141 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
 
 // Add a follow-up's merge to the task's ship, where the ship lives (its shard, or the folded log). The same
 // PR/MR or merge commit twice is refused; the story's status is left as it is.
+// The task a commit message carries, read as the spec-link gate reads it: git's own trailer parser
+// (`git interpret-trailers --parse --no-divider`, the rules `%(trailers)` applies to a commit — the trailer
+// block, the key in any case, folded values), then the FIRST non-empty `Task:` value, and only when it is a
+// task id. Used on messages the platform returns; local commits are read by git itself (`gitTasks`).
+const TASK_ID_ONLY = /^EP-[a-z0-9-]+-S\d+-T\d+$/;
+// Run in the code repo's own checkout (`cwd`), so its git settings apply as they do to `gitTasks`. Throws
+// when git cannot read the message: that is a failed read, never "no task".
+export function trailerTask(message, { cwd } = {}) {
+  const r = spawnSync('git', ['interpret-trailers', '--parse', '--no-divider'], { input: String(message || ''), encoding: 'utf8', cwd });
+  if (r.error || r.status !== 0) throw new Error(`git interpret-trailers failed${r.error ? `: ${r.error.message}` : ''}`);
+  for (const line of String(r.stdout).split('\n')) {
+    const m = line.match(/^task[ \t]*:[ \t]*(.*?)[ \t]*$/i);
+    if (m && m[1]) return TASK_ID_ONLY.test(m[1]) ? m[1] : null;
+  }
+  return null;
+}
+
+// The tasks the commits of a `git log` range carry: each commit's FIRST `Task:` trailer, read by git as the
+// spec-link gate reads it. `null` when git cannot read the range.
+function gitTasks(cwd, args) {
+  const r = run('git', ['log', '--format=%(trailers:key=Task,valueonly,separator=%x1e)%x00', ...args], { cwd });
+  if (!r.ok) return null;
+  const ids = r.stdout.split('\0').map((x) => x.split('\x1e')[0].trim()).filter((v) => TASK_ID_ONLY.test(v));
+  return [...new Set(ids)].sort((x, y) => x.localeCompare(y, 'en', { numeric: true }));
+}
+
+// The tasks a PR/MR's own commits carry by their `Task:` lines (issue #350): a grouped PR carries several
+// small tasks of one story, each commit naming its own. Asked of the platform — the one source every reader
+// uses (`build ship`, `build merged`). `{ ok, tasks, partial }` or `{ ok: false, reason }`.
+const COMMIT_PAGE = 100;
+export function prTasks(platform, n, { cwd, runner = run } = {}) {
+  let messages;
+  if (platform === 'gitlab') {
+    const r = runner('glab', ['api', `projects/:id/merge_requests/${n}/commits?per_page=${COMMIT_PAGE}`], { cwd });
+    if (!r.ok) return { ok: false, reason: r.stderr || 'glab api merge_requests commits failed' };
+    try { messages = (JSON.parse(r.stdout) || []).map((c) => c?.message || ''); } catch { return { ok: false, reason: 'unreadable glab answer' }; }
+  } else {
+    // The whole message, as the commit holds it: `gh pr view --json commits` splits it into a headline and a
+    // body, and joining them back can make a trailer the commit does not have.
+    const r = runner('gh', ['api', `repos/{owner}/{repo}/pulls/${n}/commits?per_page=${COMMIT_PAGE}`], { cwd });
+    if (!r.ok) return { ok: false, reason: r.stderr || 'gh api pulls commits failed' };
+    try { messages = (JSON.parse(r.stdout) || []).map((c) => c?.commit?.message || ''); } catch { return { ok: false, reason: 'unreadable gh answer' }; }
+  }
+  if (!Array.isArray(messages)) return { ok: false, reason: 'unreadable answer' };
+  let tasks;
+  try { tasks = [...new Set(messages.map((m) => trailerTask(m, { cwd })).filter(Boolean))]; } catch (e) { return { ok: false, reason: e.message }; }
+  return { ok: true, tasks, partial: messages.length >= COMMIT_PAGE };
+}
+
+// Does PR/MR `n` (read as `got`) carry `story`-`task`? `this` — its branch names it; `group` — another task's
+// branch, but its own commits carry this one too (a grouped PR); `other` / `none` — as `branchTask`. `tasks`
+// is what its commits carry, when they were asked. One rule for `build ship` and `build merged`.
+function prCarries(where, n, got, { story, task, runner }) {
+  const byBranch = branchTask(got.branch, story, task);
+  if (byBranch === 'this') return { carries: 'this', tasks: null };
+  const asked = prTasks(where.platform, n, { cwd: where.checkout, runner });
+  const id = `${story}-${task}`;
+  if (asked.ok && asked.tasks.includes(id)) return { carries: 'group', tasks: asked.tasks };
+  // A list cut short could hold the task further on: as unread as a failed read.
+  if (!asked.ok || asked.partial) {
+    if (byBranch === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}, and its commits could not all be read to see whether it carries ${task} too${asked.ok ? ' (more than one page of them)' : `: ${asked.reason}`}`, asked.ok ? `a grouped PR/MR of ${COMMIT_PAGE} commits or more is not read; a group is for small tasks — give ${task} its own PR/MR` : /interpret-trailers/.test(asked.reason) ? 'check that git runs here, then run this again' : 'log in, then run this again');
+    return { carries: byBranch, tasks: null };
+  }
+  // The commits were read and carry other tasks, not this one: that is evidence, whatever the branch says.
+  if (byBranch === 'none' && asked.tasks.length) return { carries: 'other', tasks: asked.tasks };
+  return { carries: byBranch, tasks: asked.tasks };
+}
+
+// The task ids the commits of `range` carry by `Task:` lines, merges left out — what the spec-link gate reads
+// on a PR. `null` when git cannot read the range.
+export function rangeTasks(cwd, range) {
+  return gitTasks(cwd, ['--no-merges', range]);
+}
+
+// The size limit of a grouped PR (#350): `group_limit: { lines, files }` in the Product settings, 200 lines
+// and 10 files by default. A value that is not a positive whole number is read as its default, and said.
+export const GROUP_LIMIT = { lines: 200, files: 10 };
+export function groupLimit(settings) {
+  const raw = isPlainObject(settings) ? settings.group_limit : undefined;
+  const out = { ...GROUP_LIMIT };
+  const bad = [];
+  if (raw !== undefined && !isPlainObject(raw)) bad.push('group_limit');
+  for (const k of ['lines', 'files']) {
+    const v = isPlainObject(raw) ? raw[k] : undefined;
+    if (v === undefined) continue;
+    if (Number.isInteger(v) && v > 0) out[k] = v;
+    else bad.push(`group_limit.${k}`);
+  }
+  return { ...out, bad };
+}
+
+// How big a PR's change is, from the merge base (`base...HEAD`, three dots: what the PR adds, not what the
+// base gained since): lines added + deleted, and files. A binary file counts as a file with no lines.
+export function changeSize(cwd, base) {
+  const r = run('git', ['diff', '--numstat', '-z', `${base}...HEAD`], { cwd });
+  if (!r.ok) return null;
+  let lines = 0;
+  let files = 0;
+  const parts = r.stdout.split('\0');
+  for (let i = 0; i < parts.length; i++) {
+    const m = parts[i].match(/^(\d+|-)\t(\d+|-)\t(.*)$/s);
+    if (!m) continue;
+    files += 1;
+    if (m[1] !== '-') lines += Number(m[1]);
+    if (m[2] !== '-') lines += Number(m[2]);
+    // A rename prints its two paths as the next two fields.
+    if (m[3] === '') i += 2;
+  }
+  return { lines, files };
+}
+
+// The warning for a grouped PR over its size limit (#350): a group is for SMALL tasks. Warn only; nothing
+// refuses on it. Returns the lines to print, or none.
+export function groupWarnings(cwd, base, ids, settings) {
+  if (!ids || new Set(ids).size < 2) return [];
+  const out = [];
+  const stories = [...new Set(ids.map((t) => t.replace(/-T\d+$/, '')))];
+  if (stories.length > 1) out.push(`this PR/MR groups tasks of more than one story (${stories.join(', ')}) — a group is several small tasks of ONE story`);
+  const limit = groupLimit(settings);
+  if (limit.bad.length) out.push(`${limit.bad.join(', ')} in the Product settings is not a positive whole number — the default (${GROUP_LIMIT.lines} lines, ${GROUP_LIMIT.files} files) is used`);
+  const size = changeSize(cwd, base);
+  if (!size) out.push(`could not measure the change against ${base}, so the grouped PR's size limit was not checked`);
+  else if (size.lines > limit.lines || size.files > limit.files) {
+    out.push(`this grouped PR/MR (${ids.length} tasks) changes ${size.lines} lines in ${size.files} files — over the limit for a group (${limit.lines} lines, ${limit.files} files); split it, or open each task on its own`);
+  }
+  return out;
+}
+
+// The tasks a merge commit's own merged range carries by `Task:` lines (`<sha>^1..<sha>^2`) — a grouped PR
+// recorded by hand, where the platform cannot be read. A squash or a fast-forward has no range: none.
+function mergeRangeTasks(cwd, sha) {
+  if (!run('git', ['rev-parse', '--verify', '--quiet', `${sha}^2`], { cwd }).ok) return [];
+  return gitTasks(cwd, ['--no-merges', `${sha}^1..${sha}^2`]) || [];
+}
+
 // The PRs/MRs that can be the task's OWN (issue #350): those not named as follow-ups, and — only when there
 // is none of those that is not closed — the follow-up-named ones, as a task may simply be about follow-ups
 // (`…-T03-followup-reminders`). One rule for `build merged` and `build ship`.
@@ -790,16 +932,17 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
     if (!live.length) {
       info(`no ${followUp ? 'follow-up ' : ''}PR/MR carries ${id} in ${repo} yet${followUp && recorded.size > 1 ? ' that is not already recorded' : ''}${found.partial ? ` among its newest ${PR_PAGE}` : ''}`);
       hand(found.partial ? `if it is older, name it: yad build merged ${story} --task ${task} --repo ${repo}${followUp ? ' --follow-up' : ''} --pr <n>`
-        : followUp ? `a follow-up is opened from fix/${id}-followup-<words>` : 'open it with `yad open-pr`, then run this again');
+        : followUp ? `a follow-up is opened from fix/${id}-followup-<words>`
+          : `open it with \`yad open-pr\`, then run this again; in a grouped PR named after another task, name it: --pr <n>`);
       return out('none', { partial: found.partial });
     }
     n = live[0].number;
   }
   const got = first?.ok ? first : readMergedPr(where.platform, n, { cwd: where.checkout, runner });
   if (!got.ok) throw err(CODE, `could not read PR/MR #${n} in ${repo}: ${got.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, then run this again`);
-  // A number given by hand must be this task's PR: its branch may not name another task.
-  const carries = branchTask(got.branch, story, task);
-  if (carries === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}`, 'check --task and --pr');
+  // A number given by hand must carry this task: its branch, or (a grouped PR, #350) its commits.
+  const { carries, tasks: group } = prCarries(where, n, got, { story, task, runner });
+  if (carries === 'other') throw err(CODE, group?.length ? `PR/MR #${n}'s commits carry ${group.join(', ')}, not ${id}` : `PR/MR #${n} is from ${got.branch}, which names another task than ${id}`, 'check --task and --pr');
   const follows = isFollowUpBranch(got.branch, story, task);
   // A follow-up-named PR — named by --pr, recorded by the dial, or found — is the task's own only by the rule
   // `build ship` applies, so `merged` is never answered for a PR the ship then refuses.
@@ -827,7 +970,7 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   // stacked parent is a refusal now, not a `merged` the ship then refuses.
   if (!got.mergeCommit) throw err(CODE, `PR/MR #${n} in ${repo} is merged, but the platform names no merge commit`, 'record it from the commit instead: yad build ship … --merge-commit <sha> with no --pr');
   // The warning for a commit naming no task is `build ship`'s to give, once, when it records; a read only asks.
-  const c = checkCommit(where, { story, task, repo, mergeCommit: got.mergeCommit, strict: false, fetch, noTask: ship ? null : 'check it ships' });
+  const c = checkCommit(where, { story, task, repo, mergeCommit: got.mergeCommit, strict: false, fetch, noTask: ship ? null : 'check it ships', group: carries === 'group' ? group : null });
   // A ship file `build ship` would not write (another repo's of the same file name, or one it cannot read).
   const blocked = followUp ? null : shipBlocked(ctx.epicDir, { story, task, repo });
   if (blocked) shipRefused(blocked, { story, task, repo });
@@ -853,28 +996,39 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
 // task's `checks` close names a run that passed and was not rejected; the opened PR is recorded on the lane
 // (`opened`), so `yad build merged` and people can see the dial opened it. The merge stays a person's.
 //
-// PURE: may `task`'s PR/MR be opened without asking — `{ ok, close, run }` or `{ ok: false, message, hint }`.
-// One mechanical rule: only the `checks` step's CURRENT close counts. It must be done, and name this task —
-// on the close (`--task`), or on the run it names. An older close kept in `runs` never counts: once the step
-// is reopened, for this task or the next, the work it checked has moved on, so a person opens that PR.
-export function planAutoOpen(lane, trustRuns, { story, repo, task }) {
+// PURE: may the PR/MR carrying `tasks` (one, or a group of one story's small tasks — #350) be opened without
+// asking? `{ ok, runs: { T: run } }` or `{ ok: false, message, hint }`. One rule, for one task or several:
+//   - the `checks` step is passed NOW — a step reopened (for a task of the group or the next) and not closed
+//     again holds every task, so work its runs never checked is not opened;
+//   - each task's NEWEST close (the current one, else the latest kept in `runs`) names it — on the close
+//     (`--task`) or on the run it names; a close naming no task counts for none — and that run passed
+//     (`checks=pass`) and was not rejected;
+//   - no task of the group was already opened by the dial.
+export function planAutoOpen(lane, trustRuns, { story, repo, task = null, tasks = null }) {
+  const want = tasks || [task];
   const no = (message, hint) => ({ ok: false, message, hint });
   const at = `${story} / ${repo}`;
   if (!isPlainObject(lane) || !Array.isArray(lane.steps)) return no(`${at} has no lane`, 'the yad-run skill walks the lane before a PR is opened');
-  const prior = (Array.isArray(lane.opened) ? lane.opened : []).find((o) => o?.task === task);
-  if (prior) return no(`${story}-${task}'s PR/MR was already opened by the dial: #${prior.pr}`, 'ask the platform whether it merged: yad build merged … --ship; a new PR/MR for the task is opened by a person');
+  const prior = (Array.isArray(lane.opened) ? lane.opened : []).find((o) => want.includes(o?.task));
+  if (prior) return no(`${story}-${prior.task}'s PR/MR was already opened by the dial: #${prior.pr}`, 'ask the platform whether it merged: yad build merged … --ship; a new PR/MR for the task is opened by a person');
   const row = lane.steps.find((s) => s?.id === 'checks');
-  const close = isPassed(row) && isPlainObject(row.closed) && row.closed.run ? row.closed : null;
-  const run = close ? (trustRuns || []).find((r) => r?.uid === close.run && r.story === story && r.repo === repo && r.step === 'checks') : null;
-  const closeFor = close?.task || run?.task || null;
-  const closeHint = `run the checks for ${task}, then close the step with its run and the task: yad build step ${story} --repo ${repo} checks done --run <uid> --task ${task}`;
-  if (!close) return no(`${at}: checks is not closed${row?.task ? ` (it is open for ${row.task})` : ''}`, closeHint);
-  if (closeFor !== task) return no(`${at}: the checks close is ${closeFor ? `for ${closeFor}` : 'for no task'}, not ${task}`, closeHint);
-  if (!run) return no(`${at}: the checks close for ${task} names trust run ${close.run}, which is not recorded`, 'record the run with `yad build trust`, then close the step with it');
-  if (run.task && run.task !== task) return no(`${at}: the checks close names run ${run.uid}, which is for ${run.task}`, closeHint);
-  if (run.verdict === 'rejected') return no(`${at}: the checks run for ${task} (${run.uid}) is rejected`, 'fix what failed, run the checks again, and ask a person to open the PR/MR');
-  if (run.signals?.checks !== 'pass') return no(`${at}: the checks run for ${task} (${run.uid}) did not record checks=pass`, 'a PR/MR is opened without asking only after the checks passed: yad build trust … checks --signal checks=pass');
-  return { ok: true, close, run };
+  const closeHint = (t) => `run the checks for ${t}, then close the step with its run and the task: yad build step ${story} --repo ${repo} checks done --run <uid> --task ${t}`;
+  if (!isPassed(row) || !isPlainObject(row.closed) || !row.closed.run) return no(`${at}: checks is not closed${row?.task ? ` (it is open for ${row.task})` : ''}`, closeHint(row?.task || want[0]));
+  const runOf = (uid) => (trustRuns || []).find((r) => r?.uid === uid && r.story === story && r.repo === repo && r.step === 'checks') || null;
+  // Oldest first: `runs` in the order the closes were kept, then the current close.
+  const closes = [...(Array.isArray(row.runs) ? row.runs : []), row.closed].filter((c) => isPlainObject(c) && c.run);
+  const runs = {};
+  for (const t of want) {
+    const close = closes.filter((c) => (c.task || runOf(c.run)?.task || null) === t).pop();
+    if (!close) return no(`${at}: checks has not closed for ${t}`, closeHint(t));
+    const run = runOf(close.run);
+    if (!run) return no(`${at}: the checks close for ${t} names trust run ${close.run}, which is not recorded`, 'record the run with `yad build trust`, then close the step with it');
+    if (run.task && run.task !== t) return no(`${at}: the checks close for ${t} names run ${run.uid}, which is for ${run.task}`, closeHint(t));
+    if (run.verdict === 'rejected') return no(`${at}: the checks run for ${t} (${run.uid}) is rejected`, 'fix what failed, run the checks again, and ask a person to open the PR/MR');
+    if (run.signals?.checks !== 'pass') return no(`${at}: the checks run for ${t} (${run.uid}) did not record checks=pass`, 'a PR/MR is opened without asking only after the checks passed: yad build trust … checks --signal checks=pass');
+    runs[t] = run;
+  }
+  return { ok: true, runs, run: runs[want[want.length - 1]] };
 }
 
 // The tasks a branch could carry, as `{ story, task }`, that are stories of this Product. A branch name has
@@ -902,7 +1056,8 @@ export function branchTasks(root, branch) {
 
 // The facts `yad open-pr --via auto` needs from the Product before anything is pushed: the dial, the lane
 // and its checks run. Throws a refusal; returns `{ file }`, the build-state the record is written to.
-export function autoOpenCheck(root, { story, task, repo }) {
+export function autoOpenCheck(root, { story, task = null, tasks = null, repo }) {
+  const want = tasks || [task];
   const eff = effectiveAction(loadAutomation(root), 'open-pr');
   if (eff.advance !== 'auto') {
     throw err(CODE, eff.why === 'kill' ? 'the open-pr dial is auto, but the kill switch (or an unreadable .sdlc/automation.json) holds it at human' : 'the open-pr dial is human, so a person approves opening this PR/MR',
@@ -911,21 +1066,21 @@ export function autoOpenCheck(root, { story, task, repo }) {
   const ctx = storyContext(root, story);
   if (!ctx.entry.repos.includes(repo)) throw err(CODE, `${story} does not declare ${repo}`, `its repos: ${ctx.entry.repos.join(', ') || 'none'}`);
   // A shipped task's checks close is the shipped work's: a follow-up is opened by a person.
-  if (readShips(ctx.epicDir).some((s) => s.story === story && s.task === task && s.repo === repo)) {
-    throw err(CODE, `${story}-${task} has already shipped in ${repo}`, `a follow-up PR/MR (fix/${story}-${task}-followup-<words>) is opened by a person`);
-  }
+  const shipped = want.find((t) => readShips(ctx.epicDir).some((s) => s.story === story && s.task === t && s.repo === repo));
+  if (shipped) throw err(CODE, `${story}-${shipped} has already shipped in ${repo}`, `a follow-up PR/MR (fix/${story}-${shipped}-followup-<words>) is opened by a person`);
   const lane = lanes(ctx.buildState, story).repos[repo];
-  const plan = planAutoOpen(lane, readTrustRuns(ctx.epicDir), { story, repo, task });
+  const plan = planAutoOpen(lane, readTrustRuns(ctx.epicDir), { story, repo, tasks: want });
   if (!plan.ok) throw err(CODE, plan.message, plan.hint);
-  return { file: ctx.file, run: plan.run.uid };
+  return { file: ctx.file, run: plan.run.uid, runs: Object.fromEntries(Object.entries(plan.runs).map(([t, r]) => [t, r.uid])) };
 }
 
 // Record the PR/MR the dial opened on its lane. Re-read strictly: the file may have changed while the PR was
 // being opened, and nothing here writes over content it cannot read.
-export function recordAutoOpen(file, { story, repo, task, pr, url, run, by, date }) {
+// A grouped PR (#350) is recorded once per task it carries, each with its own checks run.
+export function recordAutoOpen(file, { story, repo, task = null, tasks = null, runs = {}, pr, url, run, by, date }) {
   const bs = lanes(readJSONStrict(file, null), story);
   const lane = liveLane(bs, story, repo);
-  const opened = [...(Array.isArray(lane.opened) ? lane.opened : []), { task, pr, url, via: 'auto', run, by, date }];
+  const opened = [...(Array.isArray(lane.opened) ? lane.opened : []), ...(tasks || [task]).map((t) => ({ task: t, pr, url, via: 'auto', run: runs[t] || run, by, date }))];
   writeJSON(file, { ...bs, repos: { ...bs.repos, [repo]: { ...lane, opened } } });
 }
 

@@ -588,6 +588,8 @@ Solo mode (`yad mode solo --reason "<why>"`) waives the approval, and the merge 
   to auto and shows that step's run record as advice; nothing has to be earned. Every review gate — the
   engineer review and each Shape review — is **never** automatic. `yad dial open-pr --to auto` is a standing
   approval to open each task's PR/MR once its checks pass, without asking; the merge stays a person's.
+  A few small tasks of one story may share a PR (each commit keeps its own `Task:` line); `yad open-pr` warns
+  when the group is over the Product's `group_limit`, and each task ships from that PR.
 - **Global "back to manual" switch:** `yad kill --reason "<why>"` holds every step at human approval
   instantly, recorded in `.sdlc/automation.json`; `yad unkill` turns it off.
 - **Solo or team:** `yad mode` shows who must approve. `yad mode solo --reason "<why>"` waives approvals

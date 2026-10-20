@@ -63,8 +63,9 @@ while step is a Build step (not engineer-review):
 # OPEN_PR — checks closed for a task, by either dial: open its PR/MR (#356)
 if `yad dial open-pr --json`.advance == "auto":
     yad open-pr --via auto            # from the task branch; refuses unless the checks step is closed now
-                                      #   for this task (--task above) with a run that passed and was not
-                                      #   rejected; records `opened` on the lane
+                                      #   and each task the commits carry (a group, #350) has its newest
+                                      #   close (--task above) with a run that passed and was not rejected;
+                                      #   records `opened` on the lane, once per task
 else:
     STOP and ask the person to approve opening it; then `yad open-pr`
 

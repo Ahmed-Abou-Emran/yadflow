@@ -1,4 +1,4 @@
-<!-- SDLC MR template (Phase 3 build plan §D). One atomic task per MR. -->
+<!-- SDLC MR template (Phase 3 build plan §D). One atomic task per MR (or a few small tasks of one story). -->
 <!-- GITLAB 2700-CHARACTER LIMIT: the yad-pr-template gate reads $CI_MERGE_REQUEST_DESCRIPTION, which
      GitLab truncates at 2700 characters — a heading past the cutoff reads as missing even though you
      can see it here. Keep Summary, Impact & Risk (with its filled risk-level line) and Checklist

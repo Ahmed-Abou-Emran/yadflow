@@ -36,6 +36,7 @@ import { c, log, info, warn, fail, hand, ok, run, exists, readJSON, refuse, inJS
 import { detectPlatform, resolveBaseBranch } from './platform.mjs';
 import { registryEntryFor } from './find-product.mjs';
 import { repoPathFromGitUrl } from './protection.mjs';
+import { rangeTasks, groupWarnings } from './build.mjs';
 
 // GitLab hands CI only this many characters of a merge request description (#164, #343).
 const GITLAB_DESCRIPTION_CUT = 2700;
@@ -298,6 +299,13 @@ export async function runChecks(dir, opts = {}) {
     return refuse(`base '${base}' is not a commit here`, 'fetch it (git fetch origin), or pass --base <ref>');
   }
   info(`${isProduct ? 'Product' : 'code repo'} ${path.basename(repoRoot)} · branch ${branchName} · base ${base}`);
+  // A grouped PR (#350) — commits carrying several tasks — is warned about over its size limit, as
+  // `yad open-pr` warns. Never a failed gate.
+  if (!isProduct) {
+    const ids = rangeTasks(repoRoot, `${base}..HEAD`);
+    const productSettings = opts.product ? (readJSON(path.join(opts.product, '.sdlc/product.json'), null) || readJSON(path.join(opts.product, '.sdlc/hub.json'), null)) : null;
+    for (const line of groupWarnings(repoRoot, base, ids, productSettings || {})) warn(line);
+  }
   if (!git(repoRoot, ['merge-base', '--is-ancestor', base, 'HEAD']).ok) {
     info(`this branch is not on top of ${base}: CI on GitHub tests the merge of the two, this run the branch tip — rebase onto ${base} for the same answer`);
   }

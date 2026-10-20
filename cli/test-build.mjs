@@ -839,18 +839,18 @@ test('yad build merged: a ship build ship would not write (a file another repo\'
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 
-test('planAutoOpen: only the checks step\'s current close, naming this task, with a run that passed and was not rejected, opens a PR without asking (#356)', async () => {
+test('planAutoOpen: the checks step passed now, and each task\'s newest close names it with a run that passed and was not rejected (#356, #350)', async () => {
   const { planAutoOpen } = await import('./build.mjs');
   const at = { story: 'EP-l-S01', repo: 'api' };
   const run = (uid, over = {}) => ({ uid, story: 'EP-l-S01', repo: 'api', step: 'checks', verdict: 'approved-unchanged', signals: { checks: 'pass' }, ...over });
   const lane = (checks, extra = {}) => ({ currentStep: 'engineer-review', steps: [{ id: 'implement', status: 'done' }, { id: 'checks', status: 'done', ...checks }], ...extra });
   const ask = (l, runs, task = 'T01') => planAutoOpen(l, runs, { ...at, task });
-  // Not closed, or closed for another task.
+  // Not closed, or closed for another task only.
   assert.match(ask(lane({}), []).message, /checks is not closed/);
-  assert.match(ask(lane({ closed: { run: 'a', task: 'T02' } }), [run('a', { task: 'T02' })]).message, /the checks close is for T02, not T01/);
-  // A close and a run naming no task count for no task: the next task's branch cannot ride on it (review 1).
-  assert.match(ask(lane({ closed: { run: 'a' } }), [run('a')]).message, /the checks close is for no task, not T01/);
-  assert.match(ask(lane({ closed: { run: 'a' } }), [run('a')], 'T02').message, /for no task, not T02/);
+  assert.match(ask(lane({ closed: { run: 'a', task: 'T02' } }), [run('a', { task: 'T02' })]).message, /checks has not closed for T01/);
+  // A close and a run naming no task count for no task: the next task's branch cannot ride on it.
+  assert.match(ask(lane({ closed: { run: 'a' } }), [run('a')]).message, /has not closed for T01/);
+  assert.match(ask(lane({ closed: { run: 'a' } }), [run('a')], 'T02').message, /has not closed for T02/);
   assert.equal(ask(lane({ closed: { run: 'a' } }), [run('a', { task: 'T01' })]).ok, true, 'the run names it');
   assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a', { task: 'T02' })]).message, /run a, which is for T02/);
   // A close naming a run that is not recorded, a rejected run, a run without checks=pass.
@@ -859,12 +859,24 @@ test('planAutoOpen: only the checks step\'s current close, naming this task, wit
   assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a', { signals: { checks: 'fail' } })]).message, /did not record checks=pass/);
   assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a', { signals: {} })]).message, /did not record checks=pass/);
   assert.equal(ask(lane({ closed: { run: 'a', task: 'T01' } }), [run('a')]).ok, true);
-  // A close kept in `runs` never counts: the step was reopened — for the next task, or for this one again
-  // with new work its old run never checked (review 1).
+  // The step reopened and not closed again holds every task — for the next task, or this one again with
+  // new work its old run never checked.
   assert.match(ask(lane({ status: 'todo', task: 'T02', runs: [{ run: 'a', task: 'T01' }] }), [run('a')]).message, /checks is not closed \(it is open for T02\)/);
   assert.match(ask(lane({ status: 'blocked', task: 'T01', runs: [{ run: 'a', task: 'T01' }] }), [run('a')]).message, /it is open for T01/);
-  // Already opened by the dial: not a second time.
+  // Closed again: the NEWEST close for the task counts — an earlier pass never hides a later rejected run.
+  const again = lane({ closed: { run: 'b', task: 'T01' }, runs: [{ run: 'a', task: 'T01' }] });
+  assert.match(ask(again, [run('a'), run('b', { verdict: 'rejected' })]).message, /\(b\) is rejected/);
+  assert.equal(ask(lane({ closed: { run: 'b', task: 'T01' }, runs: [{ run: 'a', task: 'T01' }] }), [run('a', { verdict: 'rejected' }), run('b')]).ok, true);
+  // A group (#350): T01's close kept in `runs`, T02's current — both count while the step is passed now.
+  const group = lane({ closed: { run: 'b', task: 'T02' }, runs: [{ run: 'a', task: 'T01' }] });
+  const both = planAutoOpen(group, [run('a'), run('b')], { ...at, tasks: ['T01', 'T02'] });
+  assert.deepEqual([both.ok, Object.keys(both.runs)], [true, ['T01', 'T02']]);
+  assert.match(planAutoOpen(group, [run('a', { signals: { checks: 'fail' } }), run('b')], { ...at, tasks: ['T01', 'T02'] }).message, /checks run for T01 \(a\) did not record checks=pass/);
+  assert.match(planAutoOpen(group, [run('a'), run('b')], { ...at, tasks: ['T01', 'T02', 'T03'] }).message, /checks has not closed for T03/);
+  assert.match(planAutoOpen(lane({ status: 'todo', task: 'T03', runs: [{ run: 'a', task: 'T01' }, { run: 'b', task: 'T02' }] }), [run('a'), run('b')], { ...at, tasks: ['T01', 'T02'] }).message, /open for T03/);
+  // Already opened by the dial: not a second time, for any task of the group.
   assert.match(ask(lane({ closed: { run: 'a', task: 'T01' } }, { opened: [{ task: 'T01', pr: 12 }] }), [run('a')]).message, /already opened by the dial: #12/);
+  assert.match(planAutoOpen(group, [run('a'), run('b')], { ...at, tasks: ['T01', 'T02'] , }).ok && planAutoOpen({ ...group, opened: [{ task: 'T02', pr: 4 }] }, [run('a'), run('b')], { ...at, tasks: ['T01', 'T02'] }).message, /EP-l-S01-T02's PR\/MR was already opened by the dial: #4/);
   assert.match(ask(null, []).message, /has no lane/);
 });
 
@@ -1118,4 +1130,159 @@ test('a task branch whose words start with "followup" is the task\'s own until i
     assert.equal(r.changed, true);
     assert.equal(read(path.join(dir, '.sdlc/build-log/EP-l-S01-T02-api.json')).mergeCommit, sha.T02);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+// A grouped PR's branch in `api`: two commits, T01 and T02, merged into main as PR #20 with a merge commit.
+function groupedMerge(api, { merge = true } = {}) {
+  git(api, 'checkout', '-q', '-b', 'feat/EP-l-S01-T01-small-fixes');
+  for (const t of ['T01', 'T02']) {
+    write(api, { [`src/g-${t}.js`]: `${t}\n` });
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', `fix: small ${t}\n\nTask: EP-l-S01-${t}`);
+  }
+  git(api, 'checkout', '-q', 'main');
+  if (merge) git(api, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #20 from o/feat/EP-l-S01-T01-small-fixes', 'feat/EP-l-S01-T01-small-fixes');
+  else {
+    git(api, 'merge', '-q', '--squash', 'feat/EP-l-S01-T01-small-fixes');
+    git(api, 'commit', '-q', '-m', 'fix: small fixes (#20)\n\nTask: EP-l-S01-T01');
+  }
+  git(api, 'push', '-q', 'origin', 'main');
+  return git(api, 'rev-parse', 'HEAD');
+}
+
+test('a grouped PR: several small tasks of one story in one PR, each shipped from it (#350)', async () => {
+  const { buildShip, buildMerged, prTasks, trailerTask } = await import('./build.mjs');
+  const { W, P, dir, api } = workspace({ tasks: '# Tasks\n\n- [ ] T01 — a\n- [ ] T02 — b\n- [ ] T03 — c\n' });
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
+    const m = groupedMerge(api);
+    // A Task: trailer as git reads it: the last paragraph, the key in any case, the first one (review 1).
+    assert.equal(trailerTask('fix: x\n\nTask: EP-l-S01-T01\nTask: EP-l-S01-T02'), 'EP-l-S01-T01');
+    assert.equal(trailerTask('fix: x\r\n\r\ntask:  EP-l-S01-T02 \r\n'), 'EP-l-S01-T02');
+    assert.equal(trailerTask('fix: x\n\nTask: EP-l-S01-T07\nmore words\n\nTask: EP-l-S01-T04'), 'EP-l-S01-T04', 'a Task: line in a middle paragraph is not a trailer');
+    assert.equal(trailerTask('fix: x\n\nTask: not-an-id'), null);
+    // git's own trailer rules (review 2): prose before it, the title alone, a folded value, an empty first one.
+    assert.equal(trailerTask('fix: a\n\nSome prose here.\nTask: EP-l-S01-T01'), null);
+    assert.equal(trailerTask('Task: EP-l-S01-T01'), null);
+    assert.equal(trailerTask('fix: a\n\nTask: EP-l-S01-T01\n---\nfoo'), null);
+    assert.equal(trailerTask('fix: a\n\nTask:\n  EP-l-S01-T01'), 'EP-l-S01-T01');
+    assert.equal(trailerTask('fix: a\n\nTask:\nTask: EP-l-S01-T02'), 'EP-l-S01-T02');
+    const view = { state: 'MERGED', mergedAt: '2026-10-20T10:00:00Z', mergeCommit: { oid: m }, headRefName: 'feat/EP-l-S01-T01-small-fixes', url: 'https://github.com/o/api/pull/20', body: '', statusCheckRollup: [] };
+    const commits = { commits: [{ commit: { message: 'fix: small T01\n\nTask: EP-l-S01-T01' } }, { commit: { message: 'fix: small T02\n\nTask: EP-l-S01-T02' } }] };
+    let commitsOk = true;
+    const runner = (cmd, args) => {
+      if (cmd === 'gh' && args[0] === 'api' && args[1].startsWith('repos/{owner}/{repo}/pulls/20/commits')) return commitsOk ? { ok: true, stdout: JSON.stringify(commits.commits), stderr: '' } : { ok: false, stdout: '', stderr: 'denied' };
+      if (cmd === 'gh' && args[1] === 'view' && args[2] === '20') return { ok: true, stdout: JSON.stringify(view), stderr: '' };
+      if (cmd === 'gh' && args[1] === 'list') return { ok: true, stdout: JSON.stringify([{ number: 20, state: 'MERGED', headRefName: view.headRefName, url: view.url }]), stderr: '' };
+      return { ok: false, stdout: '', stderr: 'x' };
+    };
+    const base = { story: 'EP-l-S01', repo: 'api', today: '2026-10-20', runner, prReader: () => ({ ok: true, reviews: [] }) };
+    assert.deepEqual(prTasks('github', 20, { runner }).tasks, ['EP-l-S01-T01', 'EP-l-S01-T02']);
+    // T02 is not the branch's task: the search does not find it, by --pr it does.
+    let r = await buildMerged(P, { ...base, task: 'T02' });
+    assert.equal(r.state, 'none');
+    r = await buildMerged(P, { ...base, task: 'T02', pr: '20' });
+    assert.deepEqual([r.state, r.mergeCommit], ['merged', m]);
+    // A task the PR does not carry is refused; commits that cannot be read are a refusal, never a guess.
+    await assert.rejects(() => buildMerged(P, { ...base, task: 'T03', pr: '20' }), /PR\/MR #20's commits carry EP-l-S01-T01, EP-l-S01-T02, not EP-l-S01-T03/);
+    // A branch naming no task whose commits carry other tasks: that is evidence, not a warning (review 1).
+    view.headRefName = 'fix/typo';
+    await assert.rejects(() => buildShip(P, { ...base, task: 'T03', pr: '20' }), /PR #20's commits carry EP-l-S01-T01, EP-l-S01-T02, not EP-l-S01-T03/);
+    view.headRefName = 'feat/EP-l-S01-T01-small-fixes';
+    commitsOk = false;
+    await assert.rejects(() => buildShip(P, { ...base, task: 'T02', pr: '20' }), /its commits could not all be read to see whether it carries T02 too: denied/);
+    commitsOk = true;
+    // More than a page of commits: as unread as a failed read (review 1).
+    const many = commits.commits;
+    commits.commits = Array.from({ length: 100 }, () => ({ commit: { message: 'chore: x' } }));
+    await assert.rejects(() => buildShip(P, { ...base, task: 'T02', pr: '20' }), /\(more than one page of them\)/);
+    commits.commits = many;
+    // Each task ships from the one PR, with the same merge commit.
+    await buildShip(P, { ...base, task: 'T01', pr: '20' });
+    await buildShip(P, { ...base, task: 'T02', pr: '20' });
+    const ship = (t) => read(path.join(dir, `.sdlc/build-log/EP-l-S01-${t}-api.json`));
+    assert.deepEqual([ship('T01').mergeCommit, ship('T02').mergeCommit, ship('T02').pr], [m, m, 'https://github.com/o/api/pull/20']);
+    assert.equal((await buildMerged(P, { ...base, task: 'T02', pr: '20' })).state, 'shipped');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('a grouped PR by hand: the merge commit\'s merged range carries the tasks; a squash names only one (#350)', async () => {
+  const { buildShip } = await import('./build.mjs');
+  for (const merge of [true, false]) {
+    const { W, P, api } = workspace();
+    try {
+      const m = groupedMerge(api, { merge });
+      const ship = () => buildShip(P, { story: 'EP-l-S01', task: 'T02', repo: 'api', mergeCommit: m, today: '2026-10-20' });
+      if (merge) assert.equal((await ship()).ship.mergeCommit, m);
+      else await assert.rejects(ship, /names EP-l-S01-T01, not EP-l-S01-T02/);
+    } finally { fs.rmSync(W, { recursive: true, force: true }); }
+  }
+});
+
+test('grouped PR size: lines and files from the merge base, binary counted; warn only, over group_limit (#350)', async () => {
+  const { changeSize, groupLimit, groupWarnings } = await import('./build.mjs');
+  const { W, api } = workspace();
+  try {
+    git(api, 'checkout', '-q', '-b', 'g');
+    write(api, { 'big.txt': Array.from({ length: 150 }, (_, i) => `l${i}`).join('\n') + '\n', 'two.txt': 'a\nb\n' });
+    fs.writeFileSync(path.join(api, 'bin.dat'), Buffer.from([0, 1, 2, 0, 255]));
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', 'fix: a\n\nTask: EP-l-S01-T01');
+    assert.deepEqual(changeSize(api, 'origin/main'), { lines: 152, files: 3 });
+    const ids = ['EP-l-S01-T01', 'EP-l-S01-T02'];
+    assert.deepEqual(groupWarnings(api, 'origin/main', ['EP-l-S01-T01'], {}), [], 'one task is not a group');
+    assert.deepEqual(groupWarnings(api, 'origin/main', ids, {}), [], 'under the default limit');
+    assert.match(groupWarnings(api, 'origin/main', ids, { group_limit: { lines: 100 } })[0], /changes 152 lines in 3 files — over the limit for a group \(100 lines, 10 files\)/);
+    assert.match(groupWarnings(api, 'origin/main', ids, { group_limit: { files: 2 } })[0], /over the limit/);
+    assert.deepEqual(groupLimit({ group_limit: { lines: -1, files: 'x' } }), { lines: 200, files: 10, bad: ['group_limit.lines', 'group_limit.files'] });
+    assert.match(groupWarnings(api, 'origin/main', ['EP-l-S01-T01', 'EP-l-S02-T01'], {})[0], /tasks of more than one story/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad open-pr on a grouped branch: the body lists every task; --via auto checks each task\'s run and records each (#350)', async () => {
+  const { runOpenPr } = await import('./openpr.mjs');
+  const { W, P, dir, api } = workspace({ tasks: '# Tasks\n\n- [ ] T01 — a\n- [ ] T02 — b\n' });
+  const prev = process.exitCode;
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github', default_branch: 'main' }, { name: 'web', path: '../web' }] }) });
+    git(P, 'add', '-A');
+    git(P, 'commit', '-q', '-m', 'chore: register api on github');
+    groupedMerge(api, { merge: false });
+    git(api, 'reset', '-q', '--hard', 'origin/main~1');
+    git(api, 'push', '-q', '-f', 'origin', 'main');
+    git(api, 'checkout', '-q', 'feat/EP-l-S01-T01-small-fixes');
+    let seen = null;
+    const creator = (_p, o) => { seen = o; return { ok: true, url: 'https://github.com/o/api/pull/21' }; };
+    const runner = () => ({ ok: false, stdout: '', stderr: 'no platform here' });
+    // A person opens it: the body lists both tasks; nothing is recorded.
+    let res = await runOpenPr(api, { product: P, creator, runner, today: '2026-10-20' });
+    assert.deepEqual(res.tasks, ['EP-l-S01-T01', 'EP-l-S01-T02']);
+    assert.match(seen.body, /Story \/ task: `EP-l-S01-T01`, `EP-l-S01-T02`/);
+    assert.match(seen.body, /specs\/EP-l-S01\//);
+    // On the standing approval: each task's checks must have passed — T02's has not closed yet.
+    yad(P, 'dial', 'open-pr', '--to', 'auto');
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    for (const step of ['spec', 'tasks']) yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', step, 'done');
+    const close = (task) => {
+      for (const step of ['implement', 'checks']) {
+        const uid = json(yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', step, '--verdict', 'approved-unchanged', ...(step === 'checks' ? ['--signal', 'checks=pass'] : []), '--task', task, '--json')).uid;
+        yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', step, 'done', '--run', uid, '--task', task);
+      }
+    };
+    close('T01');
+    const open = () => runOpenPr(api, { product: P, via: 'auto', creator, runner, today: '2026-10-20' });
+    await assert.rejects(open, /checks has not closed for T02/);
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'in_progress', '--task', 'T02');
+    close('T02');
+    res = await open();
+    assert.deepEqual(res.tasks, ['EP-l-S01-T01', 'EP-l-S01-T02']);
+    const opened = read(path.join(dir, '.sdlc/build-state/EP-l-S01.json')).repos.api.opened;
+    assert.deepEqual(opened.map((o) => [o.task, o.pr, o.via]), [['T01', 21, 'auto'], ['T02', 21, 'auto']]);
+    assert.notEqual(opened[0].run, opened[1].run, 'each task names its own checks run');
+    // A commit of another story on the branch: refused before the push.
+    write(api, { 'src/other.js': 'o\n' });
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', 'fix: other\n\nTask: EP-l-S02-T01');
+    await assert.rejects(open, /carries tasks of another story: EP-l-S02-T01/);
+  } finally { process.exitCode = prev; fs.rmSync(W, { recursive: true, force: true }); }
 });

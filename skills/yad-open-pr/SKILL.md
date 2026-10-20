@@ -16,6 +16,11 @@ the Product.
 - Run **inside the code repo** under `{project-root}/demo-repos/<repo>/` (or pass `--repo <name>` to
   resolve it from `.sdlc/repos.json`). The branch must be the task branch, not the default branch.
 - **Platform** is detected from the `origin` remote (or the registry / `--platform`).
+- **Grouped PR (#350)** — several small tasks of ONE story may go in one PR/MR, each commit keeping its own
+  `Task:` line. `yad open-pr` reads the tasks from the commits, lists them all in the body's Story / task
+  line, and warns (never refuses) when the change is over the Product's `group_limit` (default 200 lines,
+  10 files, from the merge base) or the tasks belong to more than one story. Each task ships from the PR:
+  `yad build ship <story> --task <T> --repo <r> --pr <n>` for each.
 - **Title** — defaults to the last commit subject (one atomic task = one branch = one PR/MR), so it
   follows the same Conventional-Commits style and passes the `pr-title` gate. Override with `--title`.
 - **Body** — the committed template (`.github/pull_request_template.md` /
@@ -88,9 +93,12 @@ came from.
 `yad open-pr --via auto`. Before it pushes anything it refuses unless: this is a task branch in a code repo
 the Product registers, carrying exactly one task of this Product (`EP-<slug>-S<n>-T<n>`, in any case and under
 any folders; `--task` only confirms it — a branch carrying none is refused); the dial is auto and the
-kill switch is off; and the lane's `checks` step is closed now for that task (the close, or its run, names
-it — close it with `--task`), naming a trust run that passed (`checks=pass`) and was not rejected. An older
-close does not count: once `checks` is reopened, a person opens the PR/MR. A `--task` other than the branch's
+kill switch is off; and the lane's `checks` step is passed **now**, and each task's newest
+close names it (the close, or its run — close it with `--task`) with a trust run that passed (`checks=pass`)
+and was not rejected. A step reopened and not closed again holds every task. A grouped PR (#350) — its
+commits carry several small tasks of the branch's story — is opened only when every task passes, and is
+recorded once per task. The base is fetched first, so tasks merged since the last fetch are not counted; a
+failed fetch refuses `--via auto`. A `--task` other than the branch's
 task is refused, and so is a Product branch. A task already opened this way, or one that has already shipped (a follow-up is opened by a person), is refused. Once open, the PR/MR is
 recorded on the lane (`opened`: task, number, url, the run, who, when) — commit it from the Product with
 `yad checkpoint --push`. Without `--via` (or `--via human`) it opens as before and records nothing. The

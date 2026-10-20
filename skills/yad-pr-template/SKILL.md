@@ -48,7 +48,8 @@ routing helper.
 - The Impact & Risk block reuses the conventions of earlier steps: the `Task: <story>-<task>` trailer
   (`yad-implement`), the contract surface (`yad-architecture` / contract-check), and the
   approver count (`yad-review-gate`).
-- **PR/MR title.** One atomic task = one branch = one PR/MR, so the title **defaults to that task's
+- **PR/MR title.** One atomic task = one branch = one PR/MR (or a group of small tasks of one story, #350,
+  whose body lists every task), so the title **defaults to that task's
   commit subject** and follows the same Conventional Commits style — `<type>: <lowercase imperative
   description, no trailing period>`, proper nouns/acronyms keep their case (`config.yaml`
   `build.pr_title_style`; see `CONTRIBUTING.md`). Because PRs are squash-merged, the title becomes the

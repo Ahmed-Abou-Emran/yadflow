@@ -145,7 +145,10 @@ at the engineer review in `yad-engineer-review`: merged as authored → `approve
 
 ## Hard rules (build plan §B, Cross-cutting)
 
-- **One atomic task = one branch = one PR/MR.** Never bundle tasks; never exceed the declared files.
+- **One atomic task = one branch = one PR/MR.** Never bundle tasks; never exceed the declared files. The one
+  exception (#350): several SMALL tasks of the same story may share one branch and PR/MR, each commit
+  keeping its own `Task:` line, under the Product's `group_limit` (default 200 lines, 10 files) — `yad open-pr`
+  warns when a group is over it.
 - **Light loop per task.** Do not re-run the heavy spec ceremony; that already ran once in Step A.
 - **Never widen the contract here.** Surface changes go back to the architecture gate (Step 5).
 - **The step never advances itself.** A scope overrun or contract touch always halts. The

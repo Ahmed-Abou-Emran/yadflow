@@ -162,6 +162,9 @@ Build by hand"** below.
 11. Set a Build step to run on its own: `yad dial <epic> <story> --repo <repo> <step> --to auto`. It prints
     the step's run record in that repo as advice (runs, % approved unchanged) and never refuses on it. The
     engineer review is a gate, so it is refused. `--to human` puts a step back.
+    Several small tasks of one story may share one PR (#350): each commit keeps its own `Task:` line,
+    `yad open-pr` lists them all and warns over the Product's `group_limit` (200 lines, 10 files by
+    default), and each task ships from the PR with `yad build ship … --pr <n>`.
     `yad dial open-pr --to auto` is the project's standing approval to open each task's PR/MR once its
     checks pass, without asking (#356): `yad-run` then runs `yad open-pr --via auto`, which checks this
     task's checks run passed and records the PR on the lane. The merge is always a person's.
