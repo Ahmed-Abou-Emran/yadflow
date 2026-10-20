@@ -315,9 +315,11 @@ export function shipDrift(root, { platform = true, epics = null, runner, env = p
         // `yad checkpoint --retro-ship` records ONE ship per (story, repo), marked as a pre-tracking backfill,
         // and needs the story `in-build` or `shipped` first. So it is offered once, only while (story, repo)
         // has no ship at all and the story's file carries its ID, and only for a story that predates
-        // tracking; every other line says to record the ship as yad-engineer-review does (review 1).
-        const engineer = 'record the ship with `yad build ship <story> --task <T> --repo <r> --pr <n>` (#346)';
+        // tracking; every other line names the `yad build ship` command for it (#346): from its PR when one is
+        // known, else from the merge commit (a task merged with no PR).
         const evSha = shaOf(ev.sha);
+        const prNo = Number.isInteger(ev.pr) ? ev.pr : null;
+        const engineer = `record the ship with \`yad build ship ${s.story} --task ${t} --repo ${repoName} ${prNo ? `--pr ${prNo}` : evSha ? `--merge-commit ${evSha.slice(0, 12)}` : '--pr <n>'}\``;
         let fix = engineer;
         if (!recorded.length && !suggested && s.sameFile && asArg(repoName) === repoName) {
           fix = `if ${s.story} predates ledger tracking: yad checkpoint --retro-ship ${s.epic}/${s.story} --repo ${repoName} --task ${t}${evSha ? ` --merge-commit ${evSha.slice(0, 12)}` : ''} (the story's status must be in-build or shipped first); otherwise ${engineer}`;

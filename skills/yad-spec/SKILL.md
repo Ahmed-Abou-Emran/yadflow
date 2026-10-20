@@ -153,9 +153,7 @@ verdict is **anchored to the human who accepts the spec**, never self-graded:
 `yad-run` records a provisional entry when the spec is generated; this acceptance finalizes it (same
 pattern as the engineer review finalizing `implement` at `yad-engineer-review`). Finalize it with
 `yad build trust <story> --repo <repo> spec --uid <uid> --verdict <v>` — the `uid` is `closed.run` on the
-`spec` step in `build-state/<story>.json` — or, when `yad-run` recorded none, write it with
-`yad build trust <story> --repo <repo> spec --verdict <v> --signal human_edited_spec=<true|false>` (the
-lane must exist: `yad build start <story> --repo <repo>`). Never write the shard by hand. Schema:
+`spec` step in `build-state/<story>.json`. Never write the shard by hand. Schema:
 `../yad-epic/references/state-schema.md`. **Run standalone, no trust entry is written** — the
 log measures orchestrated runs. The record is advice: the `spec` dial is
 whatever the team sets with `yad dial`, and this step never changes it.

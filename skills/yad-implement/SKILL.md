@@ -77,8 +77,8 @@ declared files are wrong is a spec bug, not an implementation decision.
 
 This stop is a **scope overrun** — a halt condition that pulls in a human regardless of any automation
 dial. When this step is driven by the orchestrator (`yad-run`, Phase 4), the stop must be legible to
-it: `yad build step <story> --repo <repo> implement blocked --reason "scope overrun: <which file>"` (it
-writes the step's `record`) — and
+it: `yad build step <story> --repo <repo> implement blocked --task <task> --reason "scope overrun: <which file>"`
+(it writes the step's `record`) — and
 surface `scope_overrun: true` so the run records a `rejected` trust entry and halts (it never advances
 past a boundary breach). The same applies to the Step 5 contract-surface stop (`contract_touch: true`).
 
@@ -136,9 +136,9 @@ finalize a `tasks` trust entry, anchored to what the human/dev actually did with
 - the task is **re-scoped** first (its `Files:`/boundary edited) → `approved-with-edits`
   (signal `task_rescoped: true`);
 - the task list is discarded / regenerated → `rejected`.
-Record it with `yad build trust <story> --repo <repo> tasks --verdict <v> --signal task_rescoped=<true|false>`
-(or finalize the run `yad-run` recorded: `--uid <closed.run of the tasks step>`); it writes its own shard
-with a fresh `uid`, so concurrent writers never conflict. Never write the shard by hand. Schema: `../yad-epic/references/state-schema.md`. The record is advice: the `tasks` dial
+Under `yad-run` the run is already recorded: finalize it with
+`yad build trust <story> --repo <repo> tasks --uid <uid> --verdict <v>`, where `<uid>` is `closed.run` on the
+`tasks` step in `build-state/<story>.json`. Never write the shard by hand. Schema: `../yad-epic/references/state-schema.md`. The record is advice: the `tasks` dial
 is whatever the team sets with `yad dial`. (The `implement` step's own verdict is finalized later,
 at the engineer review in `yad-engineer-review`: merged as authored → `approved-unchanged`; edited first →
 `approved-with-edits`; scope/contract/checks halt → `rejected`.)

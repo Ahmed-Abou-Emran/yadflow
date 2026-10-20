@@ -32,7 +32,10 @@ if bs.status == "skipped":                            # E39: the whole lane was 
     STOP — report bs.record.reason                    #   `yad skip <epic> <story> --repo <repo>`; do not drive it.
                                                       #   `yad unskip <epic> <story> --repo <repo>` puts it back.
                                                       # Never write a single Build step as skipped or deferred.
-step  = from or bs.currentStep
+step  = from or bs.currentStep                       # from: the lane's current step only — or, with a task,
+                                                      #   implement once the lane is at engineer-review:
+                                                      #   `yad build step … implement in_progress --task <T>`
+                                                      #   reopens implement and checks for that task
 
 while step is a Build step (not engineer-review):
     result = run_step_skill(step)                     # the skill(s) `yad next --json` names for this lane
@@ -40,7 +43,7 @@ while step is a Build step (not engineer-review):
     signals = derive_signals(step, result)            # see "Deriving signals"
     verdict = derive_verdict(signals)                 # rejected | approved-with-edits | approved-unchanged
     uid = `yad build trust <story> --repo <repo> <step> --verdict <verdict> --signal <name>=<value> …
-           --ran-by <machine|human> --json`.uid        # writes ONE shard, trust-log/<story>-<repo>-<step>-<uid>.json,
+           --ran-by <machine|human> [--task <T>] --json`.uid        # writes ONE shard, trust-log/<story>-<repo>-<step>-<uid>.json,
                                                        #   with a fresh uid and the dial in force; never by hand
 
     eff = effective_dial(step, bs, cfg)               # see "Effective dial"
@@ -51,7 +54,7 @@ while step is a Build step (not engineer-review):
         yad build step <story> --repo <repo> <step> blocked --reason "<check FAIL | scope overrun | contract touch | ambiguous>"
         checkpoint; STOP and report the human action needed
     elif eff == "auto":
-        yad build step <story> --repo <repo> <step> done --via auto --run <uid>   # the closing record; currentStep moves on
+        yad build step <story> --repo <repo> <step> done --via auto --run <uid> [--task <T>]   # the closing record; currentStep moves on
         checkpoint; continue  # Step B advance
     else:  # "human"
         yad build step <story> --repo <repo> <step> done --run <uid>

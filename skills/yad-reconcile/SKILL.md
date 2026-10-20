@@ -49,7 +49,8 @@ Run `yad reconcile check` (optionally `--thread EP-<genesis>`). For each thread 
     (its status must be `in-build` or `shipped` first); otherwise record the ship with
     `yad build ship <story> --task <T> --repo <r> --pr <n>`. A retroactive ship covers only the tasks merged up to it (by its merge commit or date);
   - a story whose every repo holds merged work or a ship, but whose `status:` is not `shipped` — a hint,
-    not counted: if no task is left, run `yad build done <story>`;
+    not counted: if no task is left, run `yad build done <story>` — when it refuses (no lane yet, a repo
+    not cloned), its message names what to run first;
   - a **possible match** to check by hand, for a story not yet shipped or recorded in that repo: a full
     story ID in a commit subject with no task, or a short scope tag such as `feat(s06):`. Never counted. A
     story ID only in a commit body is not evidence.

@@ -60,12 +60,12 @@ without the `{ epic, ships }` wrapper):
       "pr": "<url|#|local>",
       "mergeCommit": "<sha>",
       "gates": ["spec-link", "contract-check", "build-test-lint"],
-      "ai_review": "coderabbit (advisory)",
+      "ai_review": null,
       "engineer_review": [
         { "approver": "amelia-dev", "engagement": "verified" },
         { "approver": "carol-k", "engagement": "none" }
       ],
-      "companion": { "trailer": true, "cards": true, "chat": false },
+      "companion": { "trailer": true, "cards": false, "chat": false },
       "risk": "low",
       "shippedAt": "2026-06-06"
     }

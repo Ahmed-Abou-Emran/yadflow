@@ -2041,9 +2041,9 @@ test('#365 reconcile: a merged task with no ship record is reported, with the co
     assert.deepEqual(missing, ['EP-shop-S01-T01', 'EP-shop-S02-T01'], 'the shipped T02 is not reported');
     const s1 = kinds(r, 'merged-no-ship').find((f) => f.story === 'EP-shop-S01');
     // A ship already exists for (S01, backend), so the retro command would be refused: say so instead.
-    assert.match(s1.fix, /record the ship with `yad build ship <story> --task <T> --repo <r> --pr <n>`/);
+    assert.match(s1.fix, new RegExp(`^record the ship with \`yad build ship EP-shop-S01 --task T01 --repo backend --merge-commit ${shas[0].slice(0, 12)}\`$`));
     const s2 = kinds(r, 'merged-no-ship').find((f) => f.story === 'EP-shop-S02');
-    assert.match(s2.fix, new RegExp(`^if EP-shop-S02 predates ledger tracking: yad checkpoint --retro-ship EP-shop/EP-shop-S02 --repo backend --task T01 --merge-commit ${shas[2].slice(0, 12)} \\(the story's status must be in-build or shipped first\\); otherwise record the ship with \`yad build ship <story> --task <T> --repo <r> --pr <n>\``));
+    assert.match(s2.fix, new RegExp(`^if EP-shop-S02 predates ledger tracking: yad checkpoint --retro-ship EP-shop/EP-shop-S02 --repo backend --task T01 --merge-commit ${shas[2].slice(0, 12)} \\(the story's status must be in-build or shipped first\\); otherwise record the ship with \`yad build ship EP-shop-S02 --task T01 --repo backend --merge-commit ${shas[2].slice(0, 12)}\``));
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 

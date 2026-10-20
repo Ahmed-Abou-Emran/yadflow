@@ -457,3 +457,58 @@ test('yad build done: a status write that fails puts the lanes back; another bui
     } finally { fs.chmodSync(story(dir), 0o644); }
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('yad build step --task: the next task reopens implement and checks once the lane is at the review step; each close is kept (#346)', () => {
+  const { W, P, dir } = workspace();
+  try {
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    for (const step of ['spec', 'tasks']) yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', step, 'done');
+    let r = yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', 'implement', '--verdict', 'approved-unchanged', '--task', 'T01', '--json');
+    const t1 = json(r).uid;
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'done', '--run', t1, '--task', 'T01');
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'in_progress', '--task', 'T02');
+    assert.match(r.out, /once the lane is at engineer-review/, 'not before checks is done for T01');
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'checks', 'done', '--task', 'T01');
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'in_progress');
+    assert.match(r.out, /implement is already done/, 'no --task, no reopen');
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'blocked', '--task', 'T02', '--reason', 'scope overrun: b.js');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /implement is blocked again, for T02/);
+    const file = path.join(dir, '.sdlc/build-state/EP-l-S01.json');
+    let lane = read(file).repos.api;
+    const impl = lane.steps.find((s) => s.id === 'implement');
+    assert.deepEqual([lane.currentStep, impl.status, impl.record.reason, impl.runs[0].task, impl.runs[0].run], ['implement', 'blocked', 'scope overrun: b.js', 'T01', t1]);
+    assert.equal(lane.steps.find((s) => s.id === 'checks').status, 'todo', 'checks is owed again for T02');
+    r = yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', 'implement', '--verdict', 'approved-with-edits', '--task', 'T02', '--json');
+    const t2 = json(r).uid;
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'done', '--run', t2, '--task', 'T02');
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'checks', 'done', '--task', 'T02');
+    lane = read(file).repos.api;
+    assert.equal(lane.currentStep, 'engineer-review');
+    assert.deepEqual(lane.steps.find((s) => s.id === 'implement').closed, { by: 'alice', date: lane.steps.find((s) => s.id === 'implement').closed.date, via: 'human', run: t2, task: 'T02' });
+    assert.equal(read(path.join(dir, `.sdlc/trust-log/EP-l-S01-api-implement-${t2}.json`)).task, 'T02');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build ship: a task merged with no PR is recorded from its commit on the default branch (#346)', async () => {
+  const { buildShip } = await import('./build.mjs');
+  const { W, P, dir, api } = workspace();
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
+    write(api, { 'src/x.js': 'x\n' });
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', 'feat: x\n\nTask: EP-l-S01-T01');
+    const sha = git(api, 'rev-parse', 'HEAD');
+    const runner = () => ({ ok: false, stdout: '', stderr: 'no PR is read' });
+    // Not pushed yet: not on the default branch.
+    await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', mergeCommit: sha, today: '2026-10-20', runner }), /is not on api's main/);
+    git(api, 'push', '-q', 'origin', 'main');
+    await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T02', repo: 'api', mergeCommit: sha, today: '2026-10-20', runner }), /does not name EP-l-S01-T02/);
+    const r = await buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', mergeCommit: sha.slice(0, 12), today: '2026-10-20', runner });
+    assert.equal(r.changed, true);
+    const ship = read(path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json'));
+    assert.deepEqual([ship.pr, ship.mergeCommit, ship.engineer_review], ['none', sha, []]);
+    // Hand-given approvers are still refused where the platform can be read.
+    await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T02', repo: 'api', mergeCommit: sha, approvers: ['bob'], today: '2026-10-20', runner }), /the ship is read from PR/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});

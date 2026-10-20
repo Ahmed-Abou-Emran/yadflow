@@ -44,6 +44,9 @@ export const STEP_MOVES = ['in_progress', 'in_review', 'done', 'blocked'];
 const LANE = laneOrder(DEFAULT_LIFECYCLE);
 const AUTHOR = new Set(laneAuthorSteps(DEFAULT_LIFECYCLE));
 const REVIEW_STEP = LANE.find((id) => !AUTHOR.has(id)) || 'engineer-review';
+// The steps walked once per task (the user's decision, 2026-10-20): `implement` and every author step after
+// it. A story's tasks each go through them in turn, so a later task reopens them.
+export const PER_TASK = new Set(LANE.slice(LANE.indexOf('implement')).filter((id) => AUTHOR.has(id)));
 
 export const storyEpic = (story) => String(story).replace(/-S\d+$/, '');
 
@@ -99,7 +102,8 @@ const activeStep = (lane) => {
 // PURE: move one step of a lane. Only the lane's active step moves, so a lane is never walked out of order.
 // `done` writes the closing record (E18) and moves `currentStep` on; `blocked` needs a reason, written as
 // the step's record. The review step is closed by `build done`, which checks every task shipped first.
-export function planStep(buildState, { story, repo, step, to, reason = null, by = null, date = null, via = 'human', run = null }) {
+export function planStep(buildState, { story, repo, step, to, reason = null, by = null, date = null, via = 'human', run = null, task = null }) {
+  if (task != null && !TASK_RE.test(String(task))) throw err(CODE, `--task must be a task id such as T02 (got '${task}')`, '--task T02');
   if (!STEP_MOVES.includes(to)) throw err(CODE, `'${to}' is not a step state this sets`, `one of: ${STEP_MOVES.join(', ')}`);
   const bs = lanes(buildState, story);
   const lane = liveLane(bs, story, repo);
@@ -108,11 +112,40 @@ export function planStep(buildState, { story, repo, step, to, reason = null, by 
   if (step === REVIEW_STEP && to === 'done') {
     throw err(CODE, `${REVIEW_STEP} is closed by \`yad build done ${story}\``, 'it checks that every task has a ship record first');
   }
+  const active = activeStep(lane);
   if (isPassed(target)) {
     if (to === 'done') return { buildState: bs, already: true };
-    throw err(CODE, `${step} is already done in ${story} / ${repo}`, 'a closed step is not reopened here');
+    // The next task reopens the per-task steps — once the lane has walked them all for the task before
+    // (it is at the review step) and the review is not closed. Each close stays in `runs`, by task.
+    const reopen = PER_TASK.has(step) && task && active?.id === REVIEW_STEP && stepStatus(active) !== 'blocked';
+    if (!reopen) {
+      throw err(CODE, `${step} is already done in ${story} / ${repo}`, PER_TASK.has(step)
+        ? `the next task reopens it once the lane is at ${REVIEW_STEP}: yad build step ${story} --repo ${repo} ${step} ${to} --task <T>`
+        : 'a closed step is not reopened');
+    }
+    const at = LANE.indexOf(step);
+    const keep = (s) => {
+      const n = { ...s };
+      if (n.closed) n.runs = [...(Array.isArray(n.runs) ? n.runs : []).filter((r) => r?.run !== n.closed.run || r?.task !== n.closed.task), n.closed];
+      delete n.closed;
+      delete n.record;
+      return n;
+    };
+    const steps = lane.steps.map((s) => {
+      if (s?.id === step) {
+        const n = { ...keep(s), status: to };
+        if (to === 'blocked') {
+          if (reason == null || reason === true || !String(reason).trim()) throw err(CODE, 'a halt needs a reason', `yad build step ${story} --repo ${repo} ${step} blocked --task ${task} --reason "<what a person must resolve>"`);
+          n.record = { reason: String(reason).trim(), by, date };
+        }
+        return n;
+      }
+      // The per-task steps after it are owed again for this task.
+      if (PER_TASK.has(s?.id) && LANE.indexOf(s.id) > at && isPassed(s)) return { ...keep(s), status: 'todo' };
+      return s;
+    });
+    return { buildState: { ...bs, repos: { ...bs.repos, [repo]: { ...lane, currentStep: step, steps } } }, already: false, reopened: task };
   }
-  const active = activeStep(lane);
   if (active && active.id !== step) {
     throw err(CODE, `${story} / ${repo} is at ${active.id}, not ${step}`, `move ${active.id} first — the lane is walked in order`);
   }
@@ -126,7 +159,7 @@ export function planStep(buildState, { story, repo, step, to, reason = null, by 
     if (reason == null || reason === true || !String(reason).trim()) throw err(CODE, 'a halt needs a reason', `yad build step ${story} --repo ${repo} ${step} blocked --reason "<what a person must resolve>"`);
     next.record = { reason: String(reason).trim(), by, date };
   }
-  if (to === 'done') next.closed = { by, date, via, ...(run ? { run } : {}) };
+  if (to === 'done') next.closed = { by, date, via, ...(run ? { run } : {}), ...(task ? { task } : {}) };
   const steps = lane.steps.map((s) => (s?.id === step ? next : s));
   let currentStep;
   if (to === 'done') {
@@ -138,7 +171,8 @@ export function planStep(buildState, { story, repo, step, to, reason = null, by 
 }
 
 // PURE: a trust entry, checked. `signals` is { name: value } from `--signal name=value`.
-export function trustEntry({ story, repo, step, verdict, signals = {}, ranBy = 'human', note = null, date = null, lane = null, uid }) {
+export function trustEntry({ story, repo, step, verdict, signals = {}, ranBy = 'human', note = null, date = null, lane = null, uid, task = null }) {
+  if (task != null && !TASK_RE.test(String(task))) throw err(CODE, `--task must be a task id such as T02 (got '${task}')`, '--task T02');
   if (!AUTHOR.has(step)) throw err(CODE, `'${step}' has no trust entry`, `trust is recorded for: ${[...AUTHOR].join(', ')}`);
   if (!VERDICTS.includes(verdict)) throw err(CODE, `'${verdict}' is not a verdict`, `one of: ${VERDICTS.join(', ')}`);
   if (!['machine', 'human'].includes(ranBy)) throw err(CODE, `--ran-by must be machine or human (got '${ranBy}')`, 'machine when the orchestrator advanced it, else human');
@@ -161,6 +195,7 @@ export function trustEntry({ story, repo, step, verdict, signals = {}, ranBy = '
     story, repo, step, uid,
     automation: advance === 'auto' ? 'machine_advance' : 'human_approve', advance,
     verdict, signals: out, ranBy, date,
+    ...(task ? { task } : {}),
     ...(note ? { note: String(note) } : {}),
   };
 }
@@ -260,7 +295,7 @@ export async function buildStart(root, { story, repo, today } = {}) {
   return { story, repo, changed: true, lane: buildState.repos[repo], file: rel(root, ctx.file) };
 }
 
-export async function buildStep(root, { story, repo, step, to, reason, via = 'human', run: runUid = null, today } = {}) {
+export async function buildStep(root, { story, repo, step, to, reason, via = 'human', run: runUid = null, task = null, today } = {}) {
   repoArg(repo, `yad build step ${story || '<story>'} --repo <name> <step> ${STEP_MOVES.join('|')}`);
   if (!step || !to) throw err(CODE, 'a step and the state to move it to are required', `yad build step ${story} --repo ${repo} <step> ${STEP_MOVES.join('|')}`);
   const ctx = storyContext(root, story);
@@ -269,8 +304,8 @@ export async function buildStep(root, { story, repo, step, to, reason, via = 'hu
     const known = readTrustRuns(ctx.epicDir).some((r) => r.uid === runUid && r.story === story && r.repo === repo && r.step === step);
     if (!known) throw err(CODE, `no trust run ${runUid} for ${story} / ${repo} / ${step}`, `\`yad build trust ${story} --repo ${repo} ${step} --verdict …\` prints the uid of the run it records`);
   }
-  const { buildState, already } = planStep(ctx.buildState, {
-    story, repo, step, to, reason, by: recordActor(root), date: today, via, run: runUid === true ? null : runUid,
+  const { buildState, already, reopened } = planStep(ctx.buildState, {
+    story, repo, step, to, reason, by: recordActor(root), date: today, via, run: runUid === true ? null : runUid, task: task === true ? null : task,
   });
   if (already) {
     ok(`${step} is already done in ${story} / ${repo} — nothing changed`);
@@ -278,13 +313,13 @@ export async function buildStep(root, { story, repo, step, to, reason, via = 'hu
   }
   writeJSON(ctx.file, buildState);
   const lane = buildState.repos[repo];
-  ok(`${story} / ${repo}: ${step} is ${to}${to === 'blocked' ? ` — ${String(reason).trim()}` : ''}`);
+  ok(`${story} / ${repo}: ${step} is ${to}${reopened ? ` again, for ${reopened}` : ''}${to === 'blocked' ? ` — ${String(reason).trim()}` : ''}`);
   if (to === 'done') info(`next: ${lane.currentStep}`);
   hand('commit with `yad checkpoint --push`');
   return { story, repo, step, status: to, currentStep: lane.currentStep, changed: true };
 }
 
-export async function buildTrust(root, { story, repo, step, verdict, signals = {}, ranBy = 'human', note = null, uid = null, today } = {}) {
+export async function buildTrust(root, { story, repo, step, verdict, signals = {}, ranBy = 'human', note = null, uid = null, task = null, today } = {}) {
   repoArg(repo, `yad build trust ${story || '<story>'} --repo <name> <step> --verdict <${VERDICTS.join('|')}>`);
   if (!step) throw err(CODE, 'a step is required', `yad build trust ${story} --repo ${repo} <step> --verdict <v>`);
   if (!verdict || verdict === true) throw err(CODE, '--verdict is required', `one of: ${VERDICTS.join(', ')}`);
@@ -304,7 +339,7 @@ export async function buildTrust(root, { story, repo, step, verdict, signals = {
   }
   const bs = lanes(ctx.buildState, story);
   const lane = liveLane(bs, story, repo);
-  const entry = trustEntry({ story, repo, step, verdict, signals, ranBy, note, date: today, lane, uid: randomBytes(4).toString('hex') });
+  const entry = trustEntry({ story, repo, step, verdict, signals, ranBy, note, date: today, lane, uid: randomBytes(4).toString('hex'), task: task === true ? null : task });
   const res = writeTrustRun(ctx.epicDir, entry);
   if (!res.written) throw err(CODE, `a trust run named ${path.basename(res.file)} is already there`, 'run it again: a new uid is drawn each time');
   ok(`trust run ${entry.uid} recorded: ${story} / ${repo} / ${step} — ${verdict}`);
@@ -379,6 +414,30 @@ export function tasksInBranch(branch) {
   return [...String(branch || '').matchAll(/(?:^|[/_])(ep-[a-z0-9-]+?-s\d+-t\d+)(?=$|[-_/])/gi)].map((m) => m[1].toLowerCase());
 }
 
+// The ship of a task merged with no PR/MR, read from the commit in the repo's own checkout.
+function shipWithoutPr(where, { story, task, repo, mergeCommit, today }) {
+  const cwd = where.checkout;
+  const head = run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { cwd }).stdout;
+  const branch = where.defaultBranch || (head.startsWith('origin/') ? head.slice(7) : 'main');
+  if (!run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd }).ok) {
+    throw err(CODE, `could not fetch ${branch} in ${repo} to check the commit`, 'check the network and your login, then run this again');
+  }
+  const sha = run('git', ['rev-parse', '--verify', '--quiet', `${mergeCommit}^{commit}`], { cwd }).stdout;
+  if (!sha) throw err(CODE, `${mergeCommit} is not a commit in ${repo}`, 'fetch it, or check the SHA');
+  if (!run('git', ['merge-base', '--is-ancestor', sha, `refs/remotes/origin/${branch}`], { cwd }).ok) {
+    throw err(CODE, `${mergeCommit} is not on ${repo}'s ${branch}`, 'a ship is recorded once the work is merged into the default branch');
+  }
+  const message = run('git', ['log', '-1', '--format=%B', sha], { cwd }).stdout;
+  if (!message.toLowerCase().includes(`${story}-${task}`.toLowerCase())) {
+    throw err(CODE, `${mergeCommit} does not name ${story}-${task}`, 'the commit (its Task: trailer, or the merged branch in a merge commit) must name the task it ships');
+  }
+  return {
+    story, task, repo, branch: null, pr: 'none', mergeCommit: sha, gates: [],
+    ai_review: null, engineer_review: [], companion: { trailer: false, cards: false, chat: false },
+    risk: null, shippedAt: run('git', ['log', '-1', '--format=%cs', sha], { cwd }).stdout || today,
+  };
+}
+
 const riskFromBody = (body) => (String(body).match(/^\s*Risk level:\s*(low|medium|high)\b/im) || [])[1]?.toLowerCase() || null;
 
 export async function buildShip(root, { story, task, repo, pr, mergeCommit = null, approvers = [], today, runner = run, prReader = readPr } = {}) {
@@ -400,17 +459,21 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
   // folder's repo — the Product's own PR #n.
   const readable = where.platform && where.checkout && (runner !== run || platformReady(where.platform));
   const byHand = (mergeCommit && mergeCommit !== true) || approvers.length;
-  if (readable && byHand) throw err(CODE, `the ship is read from PR #${pr || '?'} on ${where.platform}`, '--merge-commit and --approver are for a repo whose platform cannot be read; drop them');
+  // A task merged with no PR/MR (the user's decision, 2026-10-20): the commit is the evidence, so it must be
+  // on the default branch and name the task. Nobody approved a PR, so there are no approvers.
+  if (readable && (!pr || pr === true) && mergeCommit && mergeCommit !== true && !approvers.length) {
+    ship = shipWithoutPr(where, { story, task, repo, mergeCommit, today });
+  } else if (readable && byHand) throw err(CODE, `the ship is read from PR #${pr || '?'} on ${where.platform}`, '--merge-commit and --approver are for a repo whose platform cannot be read; drop them');
   const usable = readable;
   if (where.platform && !where.checkout && !byHand) {
     throw err(CODE, `${repo} is not checked out here, so its PR cannot be read`, `\`yad repo clone ${repo}\` fetches it; or record it by hand with --merge-commit <sha> and --approver <login>`);
   }
-  if (usable && (!pr || pr === true)) throw err(CODE, '--pr <n> is required', `the merged PR/MR the ship is read from: yad build ship ${story} --task ${task} --repo ${repo} --pr <n>`);
-  if (usable) {
+  if (!ship && usable && (!pr || pr === true)) throw err(CODE, '--pr <n> is required', `the merged PR/MR the ship is read from: yad build ship ${story} --task ${task} --repo ${repo} --pr <n>`);
+  if (ship) { /* recorded from the commit above */ } else if (usable) {
     const got = readMergedPr(where.platform, pr, { cwd: where.checkout, runner });
-    if (!got.ok) throw err(CODE, `could not read PR #${pr} in ${repo}: ${got.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, or pass --merge-commit <sha> and --approver <login>`);
+    if (!got.ok) throw err(CODE, `could not read PR #${pr} in ${repo}: ${got.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, then run this again`);
     if (!got.merged) throw err(CODE, `PR #${pr} in ${repo} is not merged`, 'a ship is recorded once the PR/MR merges');
-    if (!got.mergeCommit) throw err(CODE, `PR #${pr} in ${repo} is merged, but the platform names no merge commit`, 'record it by hand once you know the commit: --merge-commit <sha> (on a repo whose platform cannot be read)');
+    if (!got.mergeCommit) throw err(CODE, `PR #${pr} in ${repo} is merged, but the platform names no merge commit`, 'record it from the commit instead: yad build ship … --merge-commit <sha> with no --pr');
     // The PR's branch names the task it carries (`feat/EP-x-S01-T01-…`): the ship is never put on another.
     // The expected id first: an epic slug may itself read like a task (`EP-aws-s3-t2-backup`).
     const esc = `${story}-${task}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

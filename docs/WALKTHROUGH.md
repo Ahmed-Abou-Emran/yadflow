@@ -146,7 +146,7 @@ Build by hand"** below.
     request, and it never calls anyone an owner.
 10. `yad-engineer-review` → `ai-review` (advisory) → `approve` (the human engineer gate) → `ship` (merge,
     then `yad build ship <story> --task <T> --repo <r> --pr <n>` records it from the merged PR and puts the
-    story `in-build`; once every task shipped, `yad build done <story>` sets it `shipped`). The machine-written
+    story `in-build`; once every task has shipped, `yad build done <story>` sets it `shipped`). The machine-written
     ledgers (`build-log.json`, `trust-log.json`, `build-state/`) are committed by **`yad checkpoint --push`**
     — a `chore(product)` audit-trail commit Build runs for you, so no one hand-commits this state.
     The `trust-log`/`build-log` entries are written as per-entry **shard files** (so parallel stories of one

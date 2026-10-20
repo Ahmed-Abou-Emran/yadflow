@@ -246,9 +246,10 @@ ${c.bold('Build helpers')}
                                        Commit by convention (trailers, atomic guard); --manual is
                                        the door past the Product's ledger hook, reason recorded
   yad build start <story> --repo <r>   ${c.dim('(on the Product)')} Begin a story's Build lane in one repo
-  yad build step <story> --repo <r> <step> in_progress|in_review|done|blocked [--reason] [--run <uid>] [--via auto|human]
-                                       Move the lane's current step; done records how it closed
-  yad build trust <story> --repo <r> <step> --verdict <v> [--signal k=v] [--ran-by machine|human] [--note]
+  yad build step <story> --repo <r> <step> in_progress|in_review|done|blocked [--reason <text>] [--run <uid>] [--via auto|human] [--task <T>]
+                                       Move the lane's current step; done records how it closed.
+                                       --task <T> reopens implement/checks for the next task
+  yad build trust <story> --repo <r> <step> --verdict <v> [--signal k=v] [--ran-by machine|human] [--note] [--task <T>]
                                        Record a step run's trust entry (prints its uid); --uid <uid>
                                        --verdict <v> finalizes one already recorded
   yad build ship <story> --task <T> --repo <r> --pr <n>
@@ -931,8 +932,8 @@ async function main() {
       if (badSignal) { refuse(`--signal ${badSignal}: expected name=value`, '--signal checks=pass'); break; }
       for (const sgl of o.signal || []) signals[sgl.slice(0, sgl.indexOf('='))] = sgl.slice(sgl.indexOf('=') + 1);
       if (action === 'start') result = await commands.buildStart(o.dir, { story, repo: o.repo, today });
-      else if (action === 'step') result = await commands.buildStep(o.dir, { story, repo: o.repo, step: a3, to: a4, reason: o.reason, via: o.via || 'human', run: o.run || null, today });
-      else if (action === 'trust') result = await commands.buildTrust(o.dir, { story, repo: o.repo, step: a3, verdict: o.verdict, signals, ranBy: o['ran-by'] || 'human', note: o.note || null, uid: o.uid || null, today });
+      else if (action === 'step') result = await commands.buildStep(o.dir, { story, repo: o.repo, step: a3, to: a4, reason: o.reason, via: o.via || 'human', run: o.run || null, task: o.task || null, today });
+      else if (action === 'trust') result = await commands.buildTrust(o.dir, { story, repo: o.repo, step: a3, verdict: o.verdict, signals, ranBy: o['ran-by'] || 'human', note: o.note || null, uid: o.uid || null, task: o.task || null, today });
       else if (action === 'ship') result = await commands.buildShip(o.dir, { story, task: o.task, repo: o.repo, pr: o.pr, mergeCommit: o['merge-commit'] || null, approvers: o.approver || [], today });
       else result = await commands.buildDone(o.dir, { story, today, fetch: !o.noFetch });
       break;
