@@ -720,7 +720,7 @@ function prCarries(where, n, got, { story, task, runner }) {
   if (asked.ok && asked.tasks.includes(id)) return { carries: 'group', tasks: asked.tasks };
   // A list cut short could hold the task further on: as unread as a failed read.
   if (!asked.ok || asked.partial) {
-    if (byBranch === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}, and its commits could not all be read to see whether it carries ${task} too${asked.ok ? ' (more than one page of them)' : `: ${asked.reason}`}`, asked.ok ? `a grouped PR/MR of ${COMMIT_PAGE} commits or more is not read; a group is for small tasks — give ${task} its own PR/MR` : 'log in, then run this again');
+    if (byBranch === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}, and its commits could not all be read to see whether it carries ${task} too${asked.ok ? ' (more than one page of them)' : `: ${asked.reason}`}`, asked.ok ? `a grouped PR/MR of ${COMMIT_PAGE} commits or more is not read; a group is for small tasks — give ${task} its own PR/MR` : /interpret-trailers/.test(asked.reason) ? 'check that git runs here, then run this again' : 'log in, then run this again');
     return { carries: byBranch, tasks: null };
   }
   // The commits were read and carry other tasks, not this one: that is evidence, whatever the branch says.
