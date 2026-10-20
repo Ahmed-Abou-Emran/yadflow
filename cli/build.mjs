@@ -801,8 +801,9 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   const carries = branchTask(got.branch, story, task);
   if (carries === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}`, 'check --task and --pr');
   const follows = isFollowUpBranch(got.branch, story, task);
-  // A follow-up-named PR asked about by number is the task's own only by the same rule as the search.
-  if (follows && !followUp && pr && pr !== true) {
+  // A follow-up-named PR — named by --pr, recorded by the dial, or found — is the task's own only by the rule
+  // `build ship` applies, so `merged` is never answered for a PR the ship then refuses.
+  if (follows && !followUp) {
     if (!followUpIsOwn(ctx, where, { story, task, repo, runner, asked: { number: n, state: got.state || (got.merged ? 'merged' : 'open') } })) throw err(CODE, `PR/MR #${n} is from ${got.branch}, a follow-up branch, while ${id}'s own PR/MR is another`, `ask about the task's own: yad build merged ${story} --task ${task} --repo ${repo}`);
   }
   const state = got.state || (got.merged ? 'merged' : null);
