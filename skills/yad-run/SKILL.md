@@ -119,7 +119,14 @@ Walk the steps for `repo` starting at `from`/`currentStep`. For each step:
      each task's run and close are kept apart (the engineer review finalizes the right one).
    - `closed` is the step's **closing record** (E18): how the lane moved past it, and which run did it.
      Never write one over a `closed` already on the step. See `references/run-loop.md`.
-5. **Always stop at `engineer-review`** (it is `locked`): hand off to `yad-engineer-review` for the human merge
+5. **Opening the task's PR/MR (#356).** Once `checks` has closed `done` for a task, ask
+   `yad dial open-pr --json` and use its `advance`. **`auto`** — the project's standing approval: from the
+   task branch, run `yad open-pr --via auto` **without asking**. It refuses (and pushes nothing) unless the
+   dial is auto and this task's `checks` close names a run that passed (`checks=pass`) and was not
+   rejected; it records the opened PR/MR on the lane (`opened`). If it refuses, stop and report why.
+   **`human`** — stop and ask the person to approve opening it, then run `yad open-pr`. The merge is
+   always a person's, whatever the dial.
+6. **Always stop at `engineer-review`** (it is `locked`): hand off to `yad-engineer-review` for the human merge
    gate, which finalizes the trust verdict (confirm/override the provisional one).
 
 **Commit the machine-written state.** After each iteration's writes (the trust-log shard in 2 and the

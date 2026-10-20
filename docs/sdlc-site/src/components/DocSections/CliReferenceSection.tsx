@@ -42,6 +42,7 @@ const GROUPS = [
       'yad unblock <epic> <step> — clear a recorded blocker once the wait is over',
       'yad dial <step> [--to auto|human] — a Shape author step\'s dial for the whole project (.sdlc/automation.json; recorded only for now). A review gate is always human',
       'yad dial <epic> <story> --repo <name> <step> [--to auto|human] — a Build lane step\'s dial; shows its run record as advice, never as a rule',
+      'yad dial open-pr [--to auto|human] — the standing approval to open each task\'s PR/MR once its checks pass (yad open-pr --via auto); the merge stays a person\'s (#356)',
       'yad kill --reason <why> · yad unkill — hold every step at advance: human, or release it',
       'yad mode [solo --reason <why> | team] — who must approve: solo waives approvals (the merge still decides), team counts them',
       'yad assign <epic> <step> [--to <name>] [--force] · yad unassign · yad owners [<epic>] — step owners; advice, not a lock (the capture hook warns anyone else who edits)',

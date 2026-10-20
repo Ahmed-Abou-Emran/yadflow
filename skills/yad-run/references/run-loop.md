@@ -60,6 +60,13 @@ while step is a Build step (not engineer-review):
         yad build step <story> --repo <repo> <step> done --run <uid>
         checkpoint; STOP and report "waiting for human at <next>"
 
+# checks closed for a task: open its PR/MR (#356)
+if `yad dial open-pr --json`.advance == "auto":
+    yad open-pr --via auto            # from the task branch; refuses unless this task's checks run passed
+                                      #   and was not rejected; records `opened` on the lane
+else:
+    STOP and ask the person to approve opening it; then `yad open-pr`
+
 # reached engineer-review: always stop, hand to yad-engineer-review (human gate, finalizes the verdict)
 ```
 
@@ -152,6 +159,8 @@ Reverting (`--to human`) and the kill switch are always one move.
 ## What stays human, always
 
 - `engineer-review` — the merge gate. `yad-run` always stops here and hands to `yad-engineer-review`.
+  Opening a task's PR/MR asks a person too, unless the project gave a standing approval with
+  `yad dial open-pr --to auto` (#356) — the kill switch holds it at human.
   The merge stays a person's; whether it happened is asked of the platform with
   `yad build merged <story> --task <T> --repo <r> --ship` (#355) — never waited for in chat.
 - The Shape steps — this loop never drives them. A Shape author step's dial may be set to auto for the

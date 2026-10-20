@@ -728,6 +728,7 @@ export const MODULES: Module[] = [
         body: [
           { kind: 'p', text: 'Automation is **switched on by the team and reversible in one move**. The orchestrator `yad-run` drives a story\'s Build, recording every run\'s verdict in a trust log. A diff merged as authored is `approved-unchanged`; one edited first is `approved-with-edits`; a failed one is `rejected`.' },
           { kind: 'p', text: 'When the team wants a Build step to run on its own, `yad dial <epic> <story> --repo <repo> <step> --to auto` switches it. It prints that step\'s run record — how many runs, how many approved unchanged — as advice, and never refuses on it: nothing has to be earned. A review gate is always refused.' },
+          { kind: 'p', text: 'Opening each task\'s PR/MR can be approved once for the whole project: `yad dial open-pr --to auto`. Then `yad-run` opens it without asking as soon as the task\'s checks pass (`yad open-pr --via auto`), and records it on the lane. The merge is always a person\'s.' },
           { kind: 'callout', tone: 'key', text: 'The kill switch is instant: `yad kill --reason "<why>"` holds every step at `advance: human`, recorded with who and when. `yad unkill` turns it off. No code change, no per-step edits.' },
         ],
         commands: [

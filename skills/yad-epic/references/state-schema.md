@@ -134,18 +134,22 @@ also absent by default:
 
 ```json
 { "schemaVersion": 10, "kill": { "on": true, "reason": "bad deploy", "by": "al", "date": "2026-09-15" },
-  "steps": { "architecture": "auto" } }
+  "steps": { "architecture": "auto" }, "actions": { "open-pr": "auto" } }
 ```
 
 `kill` is written by `yad kill --reason "<why>"` / `yad unkill`; while `on`, every step is held at
 `advance: human`; the record a `yad unkill` or a second `yad kill` replaces is kept as `kill.previous`, one level
 deep. `steps` lists the feature Shape AUTHOR steps (not the Foundation's) the project set to `auto` with `yad dial <step> --to
-auto` — `human` is the key's absence. A Shape `auto` is **recorded, not acted on**: nothing drives a Shape
+auto` — `human` is the key's absence. `actions` (#356) lists the ACTIONS the project allows without asking,
+the same way: today only `"open-pr": "auto"`, written by `yad dial open-pr --to auto` — the standing approval
+for `yad open-pr --via auto` to open a task's PR/MR once its checks pass. It is the one Build-time dial kept
+here, because it is set for the whole project, not per lane; the kill switch holds it at human too. An older
+yadflow that rewrites this file drops `actions`, which turns the approval off (the safe direction). A Shape `auto` is **recorded, not acted on**: nothing drives a Shape
 step on its own until the engine runs agents (E26). A Build step's dial is not here; it is on its lane in
 `build-state`. A review gate is never `auto`. A file that will not parse is read as the kill switch ON,
 and nothing writes over it. `yad doctor` reports a broken file (`automation`), an active switch
 (`automation:kill`), a gate set to auto (`automation:gate`), a Build step listed here
-(`automation:build-step`), an unknown id or value (`automation:unknown`), and a `kill_switch: true` left in
+(`automation:build-step`), an unknown id or value (`automation:unknown`, under `actions` too), and a `kill_switch: true` left in
 `_bmad/sdlc/config.yaml`, which nothing reads any more (`automation:legacy-kill`).
 
 **When a chain disagrees with the catalogue, the chain wins.** A change-epic seeded by hand before E42
@@ -743,6 +747,7 @@ Each `steps[]` entry:
 | `automation` / `advance` | `human_approve`/`human` \| `machine_advance`/`auto` | Dial 2, written under both names (the OLD one is read). Defaults to `human_approve`; `yad dial <epic> <story> --repo <r> <step> --to auto` flips it (E34 — nothing to earn), never on the `engineer-review` gate. |
 | `locked` | `true` \| `false` | `engineer-review` is `true` — it never auto-advances (build plan §E). |
 | `closed` | `{ by, date, via, run, task? }` | Written by `yad build step <story> --repo <r> <step> done` when the lane moves past the step (the `engineer-review` step by `yad build done`): `via` is `auto` or `human`, `run` names the trust-log run (E18), and `task` the task it closed for, when given. See "Closing records". |
+| `opened` | `[{ task, pr, url, via, run, by, date }]` | On the **lane** (beside `steps`), not on a step: each task PR/MR opened on the project's standing approval, `yad open-pr --via auto` (#356). `via` is `auto`; `run` is the `checks` trust run that allowed it. `yad build merged` reads the number from here before it searches. A PR/MR a person opened is not listed. |
 | `runs` | `[{ by, date, via, run, task }]` | `implement` and the steps after it are walked once per task: `yad build step … implement in_progress --task <T>` reopens them for the next task once the lane is at `engineer-review`, and keeps each earlier close here, so the engineer review finds the run of the task it finalizes. |
 | `status` | the same **step states** as the Shape chain | Lifecycle. This file is **not** migrated to shape 7 — the `yad build` commands write it, not the engine, so a rewrite would be undone by their next write. `yad-run` advances `done` steps and marks a halted lane `blocked` **with a `record`** naming the halt cause (a failed check, a scope overrun, a contract touch): that record is what separates a halted lane from one nobody started, because a bare `blocked` is the pre-shape-7 spelling of `todo` and still reads that way here. A lane halted by an older `yad-run` carries no record and reads as `todo` until the next run rewrites it — nothing advances past it either way. |
 

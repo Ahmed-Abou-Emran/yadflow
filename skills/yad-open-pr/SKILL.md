@@ -83,6 +83,16 @@ The CLI pushes the branch (sets upstream, the user's own auth), fills the templa
 PR/MR with the assignee set and no reviewers requested. It prints the base it resolved and where that
 came from.
 
+**`--via auto` — opened on the standing approval (#356).** When the project set
+`yad dial open-pr --to auto`, the `yad-run` skill opens a task's PR/MR without asking, with
+`yad open-pr --via auto`. Before it pushes anything it refuses unless: this is a task branch in a code repo
+the Product registers (the branch, or `--task`, names `EP-<slug>-S<n>-T<n>`); the dial is auto and the
+kill switch is off; and the lane's `checks` close for that task names a trust run that passed
+(`checks=pass`) and was not rejected. A task already opened this way is refused. Once open, the PR/MR is
+recorded on the lane (`opened`: task, number, url, the run, who, when) — commit it from the Product with
+`yad checkpoint --push`. Without `--via` (or `--via human`) it opens as before and records nothing. The
+merge is always a person's.
+
 The non-default-base warning is **advisory — it does not block, and the PR/MR is already open by the
 time you read it.** If the base was intended (a stacked PR, a release branch), carry on. If it was
 not, do **not** just retarget the open PR — that leaves the AI first pass skipped. Close it, fix the
