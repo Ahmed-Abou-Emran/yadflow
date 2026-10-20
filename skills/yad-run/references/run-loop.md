@@ -43,7 +43,7 @@ while step is a Build step (not engineer-review):
     signals = derive_signals(step, result)            # see "Deriving signals"
     verdict = derive_verdict(signals)                 # rejected | approved-with-edits | approved-unchanged
     uid = `yad build trust <story> --repo <repo> <step> --verdict <verdict> --signal <name>=<value> …
-           --ran-by <machine|human> [--task <T>] --json`.uid        # writes ONE shard, trust-log/<story>-<repo>-<step>-<uid>.json,
+           --ran-by <machine|human> {--task <T>} --json`.uid        # writes ONE shard, trust-log/<story>-<repo>-<step>-<uid>.json,
                                                        #   with a fresh uid and the dial in force; never by hand
 
     eff = effective_dial(step, bs, cfg)               # see "Effective dial"
@@ -54,18 +54,23 @@ while step is a Build step (not engineer-review):
         yad build step <story> --repo <repo> <step> blocked [--task <T>] --reason "<check FAIL | scope overrun | contract touch | ambiguous>"
         checkpoint; STOP and report the human action needed
     elif eff == "auto":
-        yad build step <story> --repo <repo> <step> done --via auto --run <uid> [--task <T>]   # the closing record; currentStep moves on
-        checkpoint; continue  # Step B advance
+        yad build step <story> --repo <repo> <step> done --via auto --run <uid> {--task <T>}   # the closing record; currentStep moves on
+        checkpoint; if step == checks: OPEN_PR; continue  # Step B advance
     else:  # "human"
-        yad build step <story> --repo <repo> <step> done --run <uid>
-        checkpoint; STOP and report "waiting for human at <next>"
+        yad build step <story> --repo <repo> <step> done --run <uid> {--task <T>}
+        checkpoint; if step == checks: OPEN_PR; STOP and report "waiting for human at <next>"
 
-# checks closed for a task: open its PR/MR (#356)
+# OPEN_PR — checks closed for a task, by either dial: open its PR/MR (#356)
 if `yad dial open-pr --json`.advance == "auto":
-    yad open-pr --via auto            # from the task branch; refuses unless this task's checks run passed
-                                      #   and was not rejected; records `opened` on the lane
+    yad open-pr --via auto            # from the task branch; refuses unless the checks step is closed now
+                                      #   for this task (--task above) with a run that passed and was not
+                                      #   rejected; records `opened` on the lane
 else:
     STOP and ask the person to approve opening it; then `yad open-pr`
+
+# {--task <T>}: REQUIRED on the implement and checks legs, left out on spec and tasks. <T> is the `task`
+# input, else the task `yad-implement` worked on. Without it the checks close names no task, and
+# `yad open-pr --via auto` refuses it.
 
 # reached engineer-review: always stop, hand to yad-engineer-review (human gate, finalizes the verdict)
 ```

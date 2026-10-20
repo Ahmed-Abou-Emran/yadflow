@@ -683,11 +683,13 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
     info(`PR/MR #${n} was opened by the dial on ${opened.date || 'an earlier day'}`);
   }
   // The recorded PR closed without a merge: a person may have opened another, so search as usual.
+  let first = null;
   if (opened) {
-    const first = readMergedPr(where.platform, n, { cwd: where.checkout, runner });
+    first = readMergedPr(where.platform, n, { cwd: where.checkout, runner });
     if (first.ok && first.state === 'closed') {
       info(`PR/MR #${n}, opened by the dial, was closed without a merge — looking for another`);
       n = null;
+      first = null;
     }
   }
   if (!n) {
@@ -709,7 +711,7 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
     }
     n = live[0].number;
   }
-  const got = readMergedPr(where.platform, n, { cwd: where.checkout, runner });
+  const got = first?.ok ? first : readMergedPr(where.platform, n, { cwd: where.checkout, runner });
   if (!got.ok) throw err(CODE, `could not read PR/MR #${n} in ${repo}: ${got.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, then run this again`);
   // A number given by hand must be this task's PR: its branch may not name another task.
   const carries = branchTask(got.branch, story, task);

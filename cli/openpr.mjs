@@ -18,7 +18,7 @@ import { personLabel } from './riskmap.mjs';
 import { gateOpen } from './gate.mjs';
 import { unfoldedPaths, authorStepOf } from './fold.mjs';
 import { registryEntryFor } from './find-product.mjs';
-import { autoOpenCheck, recordAutoOpen } from './build.mjs';
+import { autoOpenCheck, recordAutoOpen, tasksInBranch } from './build.mjs';
 import { productDriftError } from './epic-state.mjs';
 import { err } from './errors.mjs';
 import { recordActor } from './skip.mjs';
@@ -292,14 +292,18 @@ export async function runOpenPr(root, opts = {}) {
     if (!meta?.name) throw err('YAD-STATE-009', `${repoRoot} is not a repo the Product registers, so it has no lane`, 'register it with `yad repo add`, or ask a person to open the PR/MR');
     const drift = productDriftError(productRoot);
     if (drift) throw drift;
-    // The branch is what is pushed, so a --task naming another task is refused, never believed.
-    const fromBranch = taskFromBranch(branch);
-    if (opts.task && fromBranch && opts.task !== fromBranch) throw err('YAD-STATE-009', `--task ${opts.task} is not the task ${branch} carries (${fromBranch})`, 'drop --task, or switch to that task\'s branch');
-    const id = opts.task || fromBranch;
-    const m = String(id || '').match(/^(EP-[a-z0-9-]+-S\d+)-(T\d+)$/);
+    // The task the branch carries, read as `yad build merged` reads it (any case, under any folders). The
+    // branch is what is pushed, so a --task naming another task is refused, never believed.
+    const named = [...new Set(tasksInBranch(branch))];
+    if (named.length > 1) throw err('YAD-STATE-009', `${branch} names more than one task: ${named.join(', ')}`, 'open it from a branch that carries one task');
+    const given = opts.task ? String(opts.task).toLowerCase() : null;
+    if (given && named.length && given !== named[0]) throw err('YAD-STATE-009', `--task ${opts.task} is not the task ${branch} carries (${named[0]})`, 'drop --task, or switch to that task\'s branch');
+    const m = String(given || named[0] || '').match(/^ep-([a-z0-9-]+)-s(\d+)-t(\d+)$/);
     if (!m) throw err('YAD-STATE-009', `${branch} names no task (expected …EP-<slug>-S<n>-T<n>…)`, 'open it from the task branch, or pass --task EP-<slug>-S<n>-T<n>');
-    auto = { productRoot, story: m[1], task: m[2], repo: meta.name, ...autoOpenCheck(productRoot, { story: m[1], task: m[2], repo: meta.name }) };
-    info(`opened on the standing approval: ${m[1]}-${m[2]}'s checks passed (run ${auto.run}), and the open-pr dial is auto`);
+    const story = `EP-${m[1]}-S${m[2]}`;
+    const taskId = `T${m[3]}`;
+    auto = { productRoot, story, task: taskId, repo: meta.name, ...autoOpenCheck(productRoot, { story, task: taskId, repo: meta.name }) };
+    info(`opened on the standing approval: ${story}-${taskId}'s checks passed (run ${auto.run}), and the open-pr dial is auto`);
   }
 
   // The Product's default_branch, which only applies when the PR targets the Product ITSELF

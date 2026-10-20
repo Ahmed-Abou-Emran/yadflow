@@ -51,7 +51,8 @@ beside it as advice and never refuses on it. The kill switch (`yad kill`) holds 
 
 - `epic` / `story` / `repo` — the story and code repo to drive (ask if not provided).
 - `action` — `run` (default) | `set-dial` | `kill` | `unkill`.
-- For `run`: optional `task` (the atomic task id for the `implement`/`checks` legs) and `from`. The lane
+- For `run`: `task` (the atomic task id for the `implement`/`checks` legs — when not given, the task
+  `yad-implement` works on; every trust run and close on those legs names it with `--task`) and `from`. The lane
   is walked in order, so `from` may only name the lane's current step — or, with `task`, `implement`
   once the lane is at `engineer-review`: that reopens `implement` and `checks` for the next task
   (`yad build step <story> --repo <repo> implement in_progress --task <task>`).
@@ -119,7 +120,8 @@ Walk the steps for `repo` starting at `from`/`currentStep`. For each step:
      each task's run and close are kept apart (the engineer review finalizes the right one).
    - `closed` is the step's **closing record** (E18): how the lane moved past it, and which run did it.
      Never write one over a `closed` already on the step. See `references/run-loop.md`.
-5. **Opening the task's PR/MR (#356).** Once `checks` has closed `done` for a task, ask
+5. **Opening the task's PR/MR (#356).** Once `checks` has closed `done` for a task — by either dial, before
+   you stop — ask
    `yad dial open-pr --json` and use its `advance`. **`auto`** — the project's standing approval: from the
    task branch, run `yad open-pr --via auto` **without asking**. It refuses (and pushes nothing) unless the
    dial is auto and the `checks` step is closed now for this task (so close it with `--task <T>`), naming a

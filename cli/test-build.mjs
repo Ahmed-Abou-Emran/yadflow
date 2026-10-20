@@ -959,6 +959,11 @@ test('yad open-pr --via auto: opened on the standing approval only after this ta
     assert.deepEqual(lane.opened, [{ task: 'T01', pr: 12, url: 'https://github.com/o/api/pull/12', via: 'auto', run: checks, by: 'alice', date: '2026-10-20' }]);
     // Not a second time.
     await assert.rejects(open, /already opened by the dial: #12/);
+    // The same task spelled in another case, or under more folders, is read as the same task (review 2).
+    await assert.rejects(() => open({ task: 'ep-l-s01-t01' }), /already opened by the dial: #12/);
+    git(api, 'checkout', '-q', '-b', 'amn/feat/ep-l-s01-t01-again');
+    await assert.rejects(open, /already opened by the dial: #12/);
+    git(api, 'checkout', '-q', branch);
     // `yad build merged` reads the recorded number: no search is needed (the listing would fail here).
     const view = (cmd, args) => (cmd === 'gh' && args[1] === 'view' && args[2] === '12'
       ? { ok: true, stdout: JSON.stringify({ state: 'OPEN', headRefName: branch, url: 'u12', body: '', statusCheckRollup: [] }), stderr: '' }
