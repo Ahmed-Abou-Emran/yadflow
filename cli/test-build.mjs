@@ -1041,6 +1041,12 @@ test('follow-ups: a fix/<story>-<task>-followup branch never competes with the t
     await assert.rejects(() => buildMerged(P, { ...base, pr: '9' }), /a follow-up branch, while EP-l-S01-T01's own PR\/MR is another/);
     views[9] = { ...followUpPr, state: 'MERGED', mergeCommit: { oid: sha.T02 } };
     await assert.rejects(() => buildShip(P, { ...base, pr: '9' }), /a follow-up branch of EP-l-S01-T01/);
+    // A follow-up-named PR recorded by the dial is held to the same rule (review 4).
+    const bsFile = path.join(dir, '.sdlc/build-state/EP-l-S01.json');
+    fs.mkdirSync(path.dirname(bsFile), { recursive: true });
+    fs.writeFileSync(bsFile, JSON.stringify({ story: 'EP-l-S01', repos: { api: { currentStep: 'engineer-review', steps: [], opened: [{ task: 'T01', pr: 9, via: 'auto' }] } } }));
+    await assert.rejects(() => buildMerged(P, base), /a follow-up branch, while EP-l-S01-T01's own PR\/MR is another/);
+    fs.rmSync(bsFile);
     delete views[9];
     await assert.rejects(() => buildMerged(P, { ...base, followUp: true }), /has no ship in api yet, so it has no follow-up/);
     await assert.rejects(() => buildShip(P, { ...base, pr: '9', followUp: true }), /has no ship in api yet/);
