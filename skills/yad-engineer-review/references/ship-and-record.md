@@ -86,9 +86,11 @@ commits keep the task's `Task:` line, so spec-link passes unchanged. Once it mer
 the task's ship** — never a second ship — by `yad build ship <story> --task <T> --repo <r> --pr <n> --follow-up`,
 or by `yad build merged … --follow-up --ship`, which asks the platform about the task's follow-up PRs/MRs.
 `followUps` is optional (absent until the first one) and lists `{ pr, branch, mergeCommit, date }` in the
-order they merged. The ship itself, `yad build done`, tidy and the epic seal are unchanged. Without
-`--follow-up`, `yad build merged` leaves follow-up branches out, so they never compete with the task's own
-PR/MR, and `yad build ship` refuses a follow-up PR as the task's ship.
+order they merged. The ship itself, `yad build done`, tidy and the epic seal are unchanged. Once the task has shipped,
+`yad build merged` answers `shipped` for it, so a follow-up never competes with the task's own PR/MR, and
+`yad build ship` refuses a follow-up PR as the task's ship. Before the task ships, a branch named like a
+follow-up (`…-T03-followup-reminders`) is just the task's own branch. A follow-up is opened by a person:
+`yad open-pr --via auto` refuses a task that has shipped.
 
 This is the Build analogue of Shape's `approvals.json` — files only, no hidden state, so a
 future service can drive ship by writing the same records. Like the trust log and build-state, it is a

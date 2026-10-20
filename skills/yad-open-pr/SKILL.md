@@ -91,7 +91,7 @@ any folders; `--task` only confirms it — a branch carrying none is refused); t
 kill switch is off; and the lane's `checks` step is closed now for that task (the close, or its run, names
 it — close it with `--task`), naming a trust run that passed (`checks=pass`) and was not rejected. An older
 close does not count: once `checks` is reopened, a person opens the PR/MR. A `--task` other than the branch's
-task is refused, and so is a Product branch. A task already opened this way is refused. Once open, the PR/MR is
+task is refused, and so is a Product branch. A task already opened this way, or one that has already shipped (a follow-up is opened by a person), is refused. Once open, the PR/MR is
 recorded on the lane (`opened`: task, number, url, the run, who, when) — commit it from the Product with
 `yad checkpoint --push`. Without `--via` (or `--via human`) it opens as before and records nothing. The
 merge is always a person's.
