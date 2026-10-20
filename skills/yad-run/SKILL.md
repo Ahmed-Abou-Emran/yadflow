@@ -30,8 +30,9 @@ beside it as advice and never refuses on it. The kill switch (`yad kill`) holds 
 - Automation config is `.sdlc/config.yaml` → `automation:` (`back_steps`, `default`). The kill
   switch and the Shape dials live in `.sdlc/automation.json`, and are read and written **only through the
   engine** — `yad dial … --json`, `yad kill`, `yad unkill`. Never read or edit either file for a dial.
-- Per-story Build state: `epics/<epic>/.sdlc/build-state/<story-id>.json` (per repo).
-- Trust ledger: **shard-then-fold** — each run is its own shard file
+- Per-story Build state: `epics/<epic>/.sdlc/build-state/<story-id>.json` (per repo), written by
+  `yad build start` and `yad build step` — never by hand.
+- Trust ledger: **shard-then-fold**, written by `yad build trust` — each run is its own shard file
   `epics/<epic>/.sdlc/trust-log/<story>-<repo>-<step>-<uid>.json` (a fresh `uid` per run, so concurrent
   writers never conflict); readers UNION the folded `trust-log.json` with every loose shard, and
   `yad tidy up` folds finished shards back into `trust-log.json`. Schemas:
@@ -50,8 +51,10 @@ beside it as advice and never refuses on it. The kill switch (`yad kill`) holds 
 
 - `epic` / `story` / `repo` — the story and code repo to drive (ask if not provided).
 - `action` — `run` (default) | `set-dial` | `kill` | `unkill`.
-- For `run`: optional `from` (the step id to start at; default the repo's `currentStep` in
-  build-state) and `task` (the atomic task id for the `implement`/`checks` legs).
+- For `run`: optional `task` (the atomic task id for the `implement`/`checks` legs) and `from`. The lane
+  is walked in order, so `from` may only name the lane's current step — or, with `task`, `implement`
+  once the lane is at `engineer-review`: that reopens `implement` and `checks` for the next task
+  (`yad build step <story> --repo <repo> implement in_progress --task <task>`).
 - For `set-dial`: `step` (a `back_steps` id), `to` — `human` | `auto` (the older `human_approve` |
   `machine_advance` mean the same two things).
 - For `kill`: `reason` (required). For `unkill`: an optional `reason`.
@@ -59,14 +62,14 @@ beside it as advice and never refuses on it. The kill switch (`yad kill`) holds 
 ## On Activation
 
 ### Step 0 — Load state
-Read `config.yaml` `automation` (for `back_steps`), the story's `build-state/<story>.json` (create it from the
-`back_steps` defaults if absent — all `advance: human` (`automation: human_approve`), `engineer-review` `locked:true`, and
-**write it to disk before the loop starts**, because `yad next` reads that file to know this lane
-exists), and `trust-log.json` (treat missing as `[]`). Resolve the code repo.
-
-If the file exists but has **no entry for this `repo`**, add that repo's entry from the same `back_steps`
-defaults — the file may already hold another repo, or a skipped lane — and never remove an entry you did
-not add. If this repo's entry is **`status: skipped`** (E39: the whole lane was set aside with
+Read `config.yaml` `automation` (for `back_steps`), the story's `build-state/<story>.json`, and
+`trust-log.json` (treat missing as `[]`). Resolve the code repo. If the story has **no lane for this
+`repo`** (no file, or a file without that repo's entry), run `yad build start <story> --repo <repo>` **before
+the loop starts**: it writes the lane from the `back_steps` defaults (all `advance: human`,
+`engineer-review` locked) and never touches another repo's entry, and `yad next` reads that file to know
+the lane exists. Never write `build-state/` or `trust-log/` by hand — the `yad build` commands write them
+in the shape every reader expects (#346).
+ If this repo's entry is **`status: skipped`** (E39: the whole lane was set aside with
 `yad skip <epic> <story> --repo <repo>`, because the story needs no change in this repo), **do not drive
 it**: stop, report the recorded `record.reason`, and point at `yad unskip <epic> <story> --repo <repo>` if
 the lane is owed after all. **Never write a Build step as `skipped` or `deferred`**: a lane is skipped
@@ -91,28 +94,29 @@ Walk the steps for `repo` starting at `from`/`currentStep`. For each step:
    winning. Unbound, the engine answers `spec`→`yad-spec`, `tasks`→ the tasks leg of `yad-spec`,
    `implement`→`yad-implement`, `checks`→`yad-checks`, which is what this step used to say. Pass
    `action: run` to `yad-checks`. Capture the result.
-2. **Derive trust signals & write a trust-log shard** — write the entry to its own file
-   `trust-log/<story>-<repo>-<step>-<uid>.json` (a fresh `uid` per run; never append to a shared file),
-   with `ranBy: machine` if this advance was automated, else `human` — see `references/run-loop.md` for
-   the derivation. Do this for *every* step run, pass or fail; the log is the evidence base.
+2. **Derive trust signals & record the run** — `yad build trust <story> --repo <repo> <step> --verdict <v>
+   --signal <name>=<value> … --ran-by <machine|human> --json` writes the entry to its own shard with a fresh
+   `uid` and prints it (`ranBy: machine` if this advance was automated, else `human`) — see
+   `references/run-loop.md` for the derivation. Do this for *every* step run, pass or fail; the log is the
+   evidence base. Keep the `uid`: the closing record names it.
 3. **Ask the engine for the effective dial:** `yad dial <epic> <story> --repo <repo> <step> --json`, and use
    its `advance`. It is `human` whenever the step is a gate (`why: gate` — a read never refuses one), the kill switch
    is on, or `.sdlc/automation.json` cannot be read (`automationError` says so) — so never work the dial out from the files yourself.
 4. **Decide:**
    - **HALT** if the step failed — any check FAIL, a scope overrun (`yad-implement` stopped on the
-     file-boundary rule), a contract-surface touch, or any ambiguity. Set the step `status: blocked`
-     **with a `record`** — `{ "reason": "<the halt cause>", "by": "<login or null>", "date":
-     "<YYYY-MM-DD>" }` — write the `rejected` trust entry, **stop the loop**, and report what a human
-     must resolve. The record is not decoration: since shape 7 a `blocked` step with nothing recorded
+     file-boundary rule), a contract-surface touch, or any ambiguity. Run
+     `yad build step <story> --repo <repo> <step> blocked --reason "<the halt cause>"` (it writes the
+     step's `record`) — the trust entry step 2 recorded for this run is the `rejected` one, so record
+     no second entry — **stop the loop**, and report what a human must resolve. The record is not decoration: since shape 7 a `blocked` step with nothing recorded
      on it reads as `todo` ("not started"), so a halt written without one is indistinguishable from a
      lane nobody has begun. `yad doctor` reports the difference as `step:no-record`.
-   - else if effective dial is **`advance: auto`** → set the step `done` **with a `closed`** —
-     `{ "by": "<login or null>", "date": "<YYYY-MM-DD>", "via": "auto", "run": "<the trust-log uid>" }` —
-     advance `currentStep` to the next step, and **continue the loop** (this is the Step B auto-advance
-     for `checks`).
-   - else (**`advance: human`**) → set the step `done`/`in_review`, and give a `done` step a `closed` —
-     `{ "by": "<login or null>", "date": "<YYYY-MM-DD>", "via": "human", "run": "<the trust-log uid>" }` —
-     then **stop** and report "waiting for a human at `<next-step>`".
+   - else if effective dial is **`advance: auto`** → `yad build step <story> --repo <repo> <step> done
+     --via auto --run <uid>` (it writes the `closed` record and moves `currentStep` on), and **continue the
+     loop** (this is the Step B auto-advance for `checks`).
+   - else (**`advance: human`**) → `yad build step <story> --repo <repo> <step> done --run <uid>`, then
+     **stop** and report "waiting for a human at `<next-step>`".
+   - On the `implement`/`checks` legs, pass `--task <task>` to `yad build trust` and `yad build step`, so
+     each task's run and close are kept apart (the engineer review finalizes the right one).
    - `closed` is the step's **closing record** (E18): how the lane moved past it, and which run did it.
      Never write one over a `closed` already on the step. See `references/run-loop.md`.
 5. **Always stop at `engineer-review`** (it is `locked`): hand off to `yad-engineer-review` for the human merge

@@ -453,7 +453,9 @@ From a `ready-for-build` story, do this **inside each code repo the story is tag
    Carry on. Not intended? Close it, pick the right base, and re-run — retargeting the open PR does not
    bring the AI first pass back, because eligibility is decided when the PR is created.
 5. **Engineer review + merge** — `yad-engineer-review` → AI review (advisory) → **engineer approval (a
-   human)** → merge. The ship is recorded in the build ledger and the story moves to `in-build` → `shipped`.
+   human)** → merge. `yad build ship <story> --task <T> --repo <r> --pr <n>` records the ship in the build
+   ledger from the merged PR and moves the story to `in-build`; once every task has shipped,
+   `yad build done <story>` moves it to `shipped`.
    That ledger is **shard-then-fold**: the ship lands as its own file under `.sdlc/build-log/` so two people
    shipping different tasks never collide, readers union those shards with the folded `build-log.json`, and
    `yad tidy up` folds them in later. An empty `build-log.json` is normal — it is only half the ledger.

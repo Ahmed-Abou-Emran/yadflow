@@ -8729,13 +8729,13 @@ test('gate repair stamps the step it closes as closed via repair, even with a br
 
 test('yad-run writes a closing record when it moves a lane past a step, pointing at its trust-log run (E18)', () => {
   const loop = fs.readFileSync(new URL('../skills/yad-run/references/run-loop.md', import.meta.url), 'utf8');
-  assert.match(loop, /bs\.step\.closed = \{ by: .*, via: "auto", run: uid \}/);
-  assert.match(loop, /bs\.step\.closed = \{ by: .*, via: "human", run: uid \}/);
-  assert.match(loop, /never over a `closed` already on the step/);
+  // Written with `yad build step` since #346, which writes the closing record itself.
+  assert.match(loop, /yad build step <story> --repo <repo> <step> done --via auto --run <uid>/);
+  assert.match(loop, /yad build step <story> --repo <repo> <step> done --run <uid>/);
   // SKILL.md is what the agent reads first, so it says the same.
   const skill = fs.readFileSync(new URL('../skills/yad-run/SKILL.md', import.meta.url), 'utf8');
-  assert.match(skill, /"via": "auto", "run": "<the trust-log uid>"/);
-  assert.match(skill, /"via": "human", "run": "<the trust-log uid>"/);
+  assert.match(skill, /yad build step <story> --repo <repo> <step> done\s+--via auto --run <uid>/);
+  assert.match(skill, /yad build step <story> --repo <repo> <step> done --run <uid>/);
 });
 
 // The platform reads that feed a closing record (E18). `gh` / `glab` are replaced by a scripted runner, so
@@ -9574,14 +9574,14 @@ test('yad-run and yad-status name the skipped Build lane, so neither drives nor 
   const run = fs.readFileSync(path.join(ROOT, 'skills/yad-run/SKILL.md'), 'utf8');
   assert.match(run, /`status: skipped`/);
   assert.match(run, /do not drive\s+it/);
-  assert.match(run, /no entry for this `repo`/);
+  assert.match(run, /no lane for this\s+`repo`/);
   assert.match(run, /Never write a Build step as `skipped` or `deferred`/);
   const status = fs.readFileSync(path.join(ROOT, 'skills/yad-status/SKILL.md'), 'utf8');
   assert.match(status, /`status: skipped`.*prints `skipped \(N\/A\)`/);
   // The pseudocode the loop follows step by step, not only the prose above it (E39 review).
   const loop = fs.readFileSync(path.join(ROOT, 'skills/yad-run/references/run-loop.md'), 'utf8');
   assert.match(loop, /if bs\.status == "skipped":/);
-  assert.match(loop, /never remove an entry you did not add/);
+  assert.match(loop, /it never touches another repo's\s+#?\s*entry|never touches another repo's/);
   const review = fs.readFileSync(path.join(ROOT, 'skills/yad-engineer-review/SKILL.md'), 'utf8');
   assert.match(review, /Check the lane is not skipped \(E39\)/);
   assert.match(review, /yad unskip <epic> <story> --repo <repo>` before recording a ship/);

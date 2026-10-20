@@ -25,44 +25,40 @@ stop, never automated, and bindable like any other step.
 
 ```
 cfg   = config.yaml.automation
-bs    = build-state/<story>.json.repos[<repo>]        # create the FILE from defaults if absent; if the file
-                                                      #   exists but has no entry for <repo>, add one from the
-                                                      #   defaults — never remove an entry you did not add
+bs    = build-state/<story>.json.repos[<repo>]        # absent: `yad build start <story> --repo <repo>` seeds it
+                                                      #   from the defaults (it never touches another repo's
+                                                      #   entry). Never write this file by hand (#346).
 if bs.status == "skipped":                            # E39: the whole lane was set aside with
     STOP — report bs.record.reason                    #   `yad skip <epic> <story> --repo <repo>`; do not drive it.
                                                       #   `yad unskip <epic> <story> --repo <repo>` puts it back.
                                                       # Never write a single Build step as skipped or deferred.
-step  = from or bs.currentStep
+step  = from or bs.currentStep                       # from: the lane's current step only
+if task and bs.currentStep == "engineer-review" and task has no close on implement:
+    yad build step <story> --repo <repo> implement in_progress --task <task>   # reopens implement and checks
+    step = "implement"                                                          #   for the next task
 
 while step is a Build step (not engineer-review):
     result = run_step_skill(step)                     # the skill(s) `yad next --json` names for this lane
 
     signals = derive_signals(step, result)            # see "Deriving signals"
     verdict = derive_verdict(signals)                 # rejected | approved-with-edits | approved-unchanged
-    uid = fresh_short_token()                          # e.g. `openssl rand -hex 4` — unique per run,
-                                                       #   never reuse; a collision would fuse two runs
-    write trust-log/<story>-<repo>-<step>-<uid>.json   # ONE shard file = ONE entry (never append to a shared file)
-      # `automation` is recorded in the OLD vocabulary (this is a history record, and `yad migrate`
-      #  deliberately leaves it alone). Read the step's dial from EITHER spelling.
-      = { story, repo, step, uid, automation: bs.step.automation ?? old_name_for(bs.step.advance), verdict, signals, ranBy, date }
+    uid = `yad build trust <story> --repo <repo> <step> --verdict <verdict> --signal <name>=<value> …
+           --ran-by <machine|human> [--task <T>] --json`.uid        # writes ONE shard, trust-log/<story>-<repo>-<step>-<uid>.json,
+                                                       #   with a fresh uid and the dial in force; never by hand
 
     eff = effective_dial(step, bs, cfg)               # see "Effective dial"
 
     if result is a HALT (failed / scope overrun / contract touch / ambiguous):
         # `blocked` needs its `record` (E38) — that is what separates a halted lane from one that has
         # simply not started. `reason` is the halt cause you already have in hand.
-        bs.step.status = "blocked"
-        bs.step.record = { reason: "<check FAIL | scope overrun | contract touch | ambiguous>",
-                           by: "<platform login, else git user.name, or null>", date: "<YYYY-MM-DD>" }
-        persist; checkpoint; STOP and report the human action needed
+        yad build step <story> --repo <repo> <step> blocked [--task <T>] --reason "<check FAIL | scope overrun | contract touch | ambiguous>"
+        checkpoint; STOP and report the human action needed
     elif eff == "auto":
-        bs.step.status = "done"
-        bs.step.closed = { by: "<platform login, else git user.name, or null>", date: "<YYYY-MM-DD>", via: "auto", run: uid }
-        advance bs.currentStep to next; persist; checkpoint; continue  # Step B advance
+        yad build step <story> --repo <repo> <step> done --via auto --run <uid> [--task <T>]   # the closing record; currentStep moves on
+        checkpoint; continue  # Step B advance
     else:  # "human"
-        bs.step.status = "done"
-        bs.step.closed = { by: "<platform login, else git user.name, or null>", date: "<YYYY-MM-DD>", via: "human", run: uid }
-        persist; checkpoint; STOP and report "waiting for human at <next>"
+        yad build step <story> --repo <repo> <step> done --run <uid>
+        checkpoint; STOP and report "waiting for human at <next>"
 
 # reached engineer-review: always stop, hand to yad-engineer-review (human gate, finalizes the verdict)
 ```

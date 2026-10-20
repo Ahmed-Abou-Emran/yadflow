@@ -11,8 +11,8 @@ a future release can recognise an older file and upgrade it instead of guessing.
 
 **When you author one of these files by hand, include the key**, exactly as the examples below show.
 Several kinds here — `state.json` on the seeding path, `change.json`, `contract-lock.json`,
-`build-state/<story-id>.json`, `design-links.json`, `test-links.json` — are written by skills, not by
-the CLI. `state.json` is the one both write, so omitting the key there makes the file flip between two
+`design-links.json`, `test-links.json` — are written by skills, not by the CLI. (`build-state/<story-id>.json`
+and the trust-log and build-log shards are written by the `yad build` commands since #346 — never by hand.) `state.json` is the one both write, so omitting the key there makes the file flip between two
 byte forms: the skill writes it without, the next `yad gate sync` adds it back. Write it and there is
 nothing to flip.
 
@@ -364,7 +364,7 @@ step is *not* done, and `blocked` is read by whether it has one, so the two neve
 | `review-passed` | `yad gate sync` / `yad gate ci`, or that skill | Its author step, closed when its gate passed because nothing closed it earlier |
 | `review-opened` | `yad gate open` (local ledger) / `yad gate sync` | An author step, closed when its review opened |
 | `repair` | `yad gate repair` | A stranded author step — an escape hatch, so it says so |
-| `auto` / `human` | the `yad-run` skill, in `build-state` | A Build lane step: the dial let the run go on by itself, or it stopped for a person |
+| `auto` / `human` | `yad build step … done [--via auto --run <uid>]`, in `build-state` | A Build lane step: the dial let the run go on by itself, or it stopped for a person |
 
 - **Optional keys are left out**, never written as `null`: a close with no PR has no `pr`.
 - **The first close wins.** A step that already has a `closed` keeps it; a re-sync never rewrites it.
@@ -385,7 +385,7 @@ No release before shape 7 ever wrote a record, so that is exact. The converse is
 has a verb: `yad unblock EP-<slug> <step>` (E37) moves `status` off `blocked` **and** removes the record
 in one write, because deleting only the record would turn the step silently into a `todo`. An author
 step whose earlier steps have all passed goes to `in_progress`; anything else, a review gate included,
-goes to `todo`. It never touches `build-state/<story>.json`, which the `yad-run` skill writes. On a verified
+goes to `todo`. It never touches `build-state/<story>.json`, which the `yad build` commands write. On a verified
 Product it refuses once the epic's ledger is on the default branch: CI owns `state.json` there and has no
 step for it yet.
 
@@ -704,7 +704,8 @@ steps to carry their own advance dial so the orchestrator (`yad-run`) can read i
 whether to advance on its own. Two new files under `.sdlc/` do this.
 
 > **Who commits these.** `build-state/<story-id>.json`, `trust-log.json`, and `build-log.json` are
-> **machine-written** by Build (`yad-run`, `yad-engineer-review`) and committed by
+> **machine-written** by the `yad build` commands (#346: `start`, `step`, `trust`, `ship`, `done`, which
+> the `yad-run` and `yad-engineer-review` skills run — never written by hand) and committed by
 > **`yad checkpoint`** — the Build analogue of the Shape `yad gate ci` sync. It lands them as
 > one `chore(product): sync Build state — <epic>/<story> by @<login>` audit-trail commit, on the
 > default branch, staging **only** these three ledgers by an explicit allowlist (never a Shape
@@ -741,8 +742,9 @@ Each `steps[]` entry:
 | `id` | `spec`, `tasks`, `implement`, `checks`, `engineer-review` | Build step identity (the `back_steps` from `config.yaml` + the human merge gate). |
 | `automation` / `advance` | `human_approve`/`human` \| `machine_advance`/`auto` | Dial 2, written under both names (the OLD one is read). Defaults to `human_approve`; `yad dial <epic> <story> --repo <r> <step> --to auto` flips it (E34 — nothing to earn), never on the `engineer-review` gate. |
 | `locked` | `true` \| `false` | `engineer-review` is `true` — it never auto-advances (build plan §E). |
-| `closed` | `{ by, date, via, run }` | Written by the `yad-run` skill when it moves the lane past the step: `via` is `auto` or `human`, and `run` names the trust-log run (E18). See "Closing records". |
-| `status` | the same **step states** as the Shape chain | Lifecycle. This file is **not** migrated to shape 7 — the `yad-run` / `yad-implement` skills write it, not the engine, so a rewrite would be undone by their next write. `yad-run` advances `done` steps and marks a halted lane `blocked` **with a `record`** naming the halt cause (a failed check, a scope overrun, a contract touch): that record is what separates a halted lane from one nobody started, because a bare `blocked` is the pre-shape-7 spelling of `todo` and still reads that way here. A lane halted by an older `yad-run` carries no record and reads as `todo` until the next run rewrites it — nothing advances past it either way. |
+| `closed` | `{ by, date, via, run, task? }` | Written by `yad build step <story> --repo <r> <step> done` when the lane moves past the step (the `engineer-review` step by `yad build done`): `via` is `auto` or `human`, `run` names the trust-log run (E18), and `task` the task it closed for, when given. See "Closing records". |
+| `runs` | `[{ by, date, via, run, task }]` | `implement` and the steps after it are walked once per task: `yad build step … implement in_progress --task <T>` reopens them for the next task once the lane is at `engineer-review`, and keeps each earlier close here, so the engineer review finds the run of the task it finalizes. |
+| `status` | the same **step states** as the Shape chain | Lifecycle. This file is **not** migrated to shape 7 — the `yad build` commands write it, not the engine, so a rewrite would be undone by their next write. `yad-run` advances `done` steps and marks a halted lane `blocked` **with a `record`** naming the halt cause (a failed check, a scope overrun, a contract touch): that record is what separates a halted lane from one nobody started, because a bare `blocked` is the pre-shape-7 spelling of `todo` and still reads that way here. A lane halted by an older `yad-run` carries no record and reads as `todo` until the next run rewrites it — nothing advances past it either way. |
 
 `currentStep` is the `id` the orchestrator is waiting on / about to run for that repo. The file is
 created when a story enters Build; all dials start `advance: human` (`automation: human_approve`) (the `config.yaml`
@@ -807,11 +809,12 @@ back:
 {
   "story": "EP-<slug>-S0N",
   "repo": "backend",
-  "step": "checks",
+  "step": "implement",
   "uid": "<short-unique-token>",
+  "task": "T01",
   "automation": "human_approve", "advance": "human",
   "verdict": "approved-unchanged",
-  "signals": { "checks": "pass", "human_edited_diff": false, "scope_overrun": false, "contract_touch": false },
+  "signals": { "human_edited_diff": false, "scope_overrun": false, "contract_touch": false },
   "ranBy": "machine",
   "date": "<YYYY-MM-DD>",
   "note": "<optional>"
@@ -826,6 +829,7 @@ back:
 | `verdict` | `approved-unchanged` \| `approved-with-edits` \| `rejected` | The trust signal. **Provisional verdict is derived** (below); the human gate for that step confirms or overrides it and finalizes the entry. |
 | `signals` | object | The raw inputs the provisional verdict was derived from. The fields present depend on the step (table below). |
 | `ranBy` | `machine` \| `human` | Whether the orchestrator advanced it or a human did. |
+| `task` | a task id, optional | The task the run was for, on the `implement`/`checks` legs (`yad build trust … --task <T>`). |
 
 **Per-step `signals` fields** (only the relevant ones are set; others may be omitted or `n/a`):
 
@@ -834,7 +838,7 @@ back:
 | `spec` | `human_edited_spec` | the human who accepts `specs/<story>/` (`yad-spec` Step 8) |
 | `tasks` | `task_rescoped` | first consume by `yad-implement` (Step 8) |
 | `implement` | `human_edited_diff`, `scope_overrun`, `contract_touch` | engineer review at `yad-engineer-review` |
-| `checks` | `checks` (`pass`\|`fail`) | the gate run itself (objective) |
+| `checks` | `checks` (`pass`\|`fail`\|`n/a`) | the gate run itself (objective) |
 
 **Deriving the provisional verdict** (build plan Step A; extended for `spec`/`tasks` in Phase 4b — the
 same three-way shape, anchored to each step's human gate, never self-graded):

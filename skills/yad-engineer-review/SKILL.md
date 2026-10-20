@@ -131,32 +131,38 @@ engineer-review rule is satisfied (Step 2). Then:
   `status: skipped`, it was set aside as needing no change: stop, and run
   `yad unskip <epic> <story> --repo <repo>` before recording a ship, so the two records never say opposite
   things (`yad doctor` fails that as `lane:…:contradiction`; `yad checkpoint --retro-ship` refuses it).
-- **Record the ship** — write the ship to its own shard
-  `epics/<epic>/.sdlc/build-log/<story>-<task>-<repo>.json` (readers union the folded `build-log.json` +
-  the loose shards, deduping by (story, task, repo) so a shard wins over a stale folded ship):
-  ```json
-  { "story": "<story>", "task": "<task>", "repo": "<repo>", "branch": "feat/<story>-<task>-…",
-    "pr": "<url|#>", "mergeCommit": "<sha>", "gates": ["spec-link","contract-check","build-test-lint"],
-    "ai_review": "coderabbit (advisory)", "engineer_review": [{"approver":"<platform login>","engagement":"<verified|none>"}],
-    "companion": {"trailer":true,"cards":true,"chat":false}, "risk": "<low|medium|high — the BODY's level>", "shippedAt": "<YYYY-MM-DD>" }
-  ```
-- **Update the story state** — when **every** task in `specs/<story>/tasks.md` has a ship record, set
-  the story frontmatter `status: shipped`; otherwise `status: in-build`. The chain
+- **Record the ship** — `yad build ship <story> --task <task> --repo <repo> --pr <n>`, once the PR/MR
+  has merged. It reads the merge commit, the branch, the checks that passed, the approvers (with the
+  engagement signal), the body's `Risk level:` and the merge date from the platform, refuses a PR that is
+  not merged or that comes from another task's branch, and writes the ship to its own shard
+  `epics/<epic>/.sdlc/build-log/<story>-<task>-<repo>.json` (shape: `references/ship-and-record.md`). A
+  repo whose platform cannot be read records it by hand: `--merge-commit <sha> --approver <login>`. A
+  task merged with no PR/MR: `--merge-commit <sha>` and no `--pr` (the commit must be on the default
+  branch and name the task in its `Task:` trailer or subject; the platform is asked whether a PR merged it,
+  and a PR that did is named instead). It moves the story to `in-build`. Never write the shard by hand.
+- **Update the story state** — when **every** task in each repo's `specs/<story>/tasks.md` has a ship,
+  run `yad build done <story>`: it checks that, closes the `engineer-review` step in each lane, and sets
+  the story `status: shipped`, so `yad next`, the epic seal and `yad tidy` all read it shipped. It needs
+  every repo the story declares cloned here, its `tasks.md` merged on the default branch, and a lane in
+  each repo whose earlier steps are done (a story that never ran through `yad-run`: `yad build start`,
+  then `yad build step … done` for each step; one shipped before the Build ledger existed:
+  `yad checkpoint --retro-ship`). It refuses, writing nothing, and says what is missing. The chain
   **epic → story → task → PR → mergeCommit** is now traceable end to end.
-- **Finalize the trust verdict (Phase 4).** If this story has a `build-state/<story>.json` (it ran
-  through `yad-run`), the engineer **confirms or overrides** the provisional trust verdict that the
-  orchestrator derived for this run, and the final verdict is written back into that run's trust shard
-  `epics/<epic>/.sdlc/trust-log/<story>-<repo>-implement-<uid>.json` (or, if the run was already folded
-  by `yad tidy up`, into its entry in the folded `trust-log.json`). The human has the last word on the trust signal: a diff merged
-  as authored is `approved-unchanged`; one the engineer edited before merge is `approved-with-edits`;
-  a rejected one is `rejected`. This is the run record `yad dial` shows the team beside a step's dial
-  (it never weakens the merge gate — the engineer still owns the merge).
+- **Finalize the trust verdict (Phase 4).** If this story ran through `yad-run`, the engineer **confirms or
+  overrides** the provisional trust verdict the orchestrator recorded for the `implement` run:
+  `yad build trust <story> --repo <repo> implement --uid <uid> --verdict <v>`, where `<uid>` is the run of
+  this task on the `implement` step in `build-state/<story>.json`: `closed.run` when `closed.task` is this
+  task, else the `run` of the entry in its `runs` list whose `task` is this task. It updates that run where it lives
+  (its shard, or its entry in the folded `trust-log.json` after `yad tidy up`). The human has the last
+  word on the trust signal: a diff merged as authored is `approved-unchanged`; one the engineer edited
+  before merge is `approved-with-edits`; a rejected one is `rejected`. This is the run record `yad dial`
+  shows the team beside a step's dial (it never weakens the merge gate — the engineer still owns the merge).
 - **Commit the machine-written ledgers.** Run `yad checkpoint --push` from `{project-root}` to commit
   the Build ledgers just written (the `build-log/` shard, and the `trust-log/` shard /
   `build-state/<story>.json` if the story ran through `yad-run`) as one `chore(product): …` audit-trail
   commit — default branch only, staging the shard dirs (`yad tidy up` folds finished shards later),
   never a Shape gate file. It is the Build analogue of the Shape `yad gate` sync. The
-  same commit also **carries the story `status:` flip** you just wrote (`approved → in-build/shipped`,
+  same commit also **carries the story `status:` flip** the commands wrote (`approved → in-build/shipped`,
   #112) — because that story now has a build-log ship, checkpoint stages `stories/<story>.md` alongside
   the ledgers, so the artifact never drifts from build-log and you never fall back to a raw git-to-main
   push. (The code-repo `tasks.md` is committed in its own repo as usual.)

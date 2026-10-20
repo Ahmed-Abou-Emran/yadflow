@@ -24,7 +24,14 @@ ship. Shipping records the merge and updates the story state so the whole chain 
 
 ## The build ledger — shard-then-fold (`epics/<epic>/.sdlc/build-log/` → `build-log.json`)
 
-Append-only, one record per shipped task. **Storage mirrors the trust log's "loose objects + `git gc`"
+Append-only, one record per shipped task, written by **`yad build ship <story> --task <T> --repo <r> --pr <n>`**
+(#346) from the merged PR/MR — never by hand. It fills `branch`, `pr`, `mergeCommit`, `gates` (the checks
+that passed on GitHub; the passing job names of the MR's head pipeline on GitLab, one page, child pipelines
+not included), `engineer_review` (approvers bound to the merged head, with the engagement signal), `risk`
+(the body's `Risk level:`, or `null`), `companion.trailer` (the body's `<!-- yad:trailer -->` marker; `cards`
+and `chat` are `false`), `ai_review` (`null`: the platform does not say) and `shippedAt` (the merge date).
+With no platform to read, `--merge-commit <sha>` and `--approver <login>` record the commit and the
+approvers, and the rest is empty. **Storage mirrors the trust log's "loose objects + `git gc`"
 model** so two people shipping different tasks of the same epic never collide on one file:
 - **Per-ship shard:** each ship is its own file `epics/<epic>/.sdlc/build-log/<story>-<task>-<repo>.json`
   = ONE ship object (the record below). `(story, task, repo)` is already unique, so no `uid` is needed;
@@ -50,15 +57,15 @@ without the `{ epic, ships }` wrapper):
       "task": "T01",
       "repo": "backend",
       "branch": "feat/EP-checkout-S01-T01-create-order",
-      "pr": "<url|#|local>",
+      "pr": "<url|#|none|local>",
       "mergeCommit": "<sha>",
       "gates": ["spec-link", "contract-check", "build-test-lint"],
-      "ai_review": "coderabbit (advisory)",
+      "ai_review": null,
       "engineer_review": [
         { "approver": "amelia-dev", "engagement": "verified" },
         { "approver": "carol-k", "engagement": "none" }
       ],
-      "companion": { "trailer": true, "cards": true, "chat": false },
+      "companion": { "trailer": true, "cards": false, "chat": false },
       "risk": "low",
       "shippedAt": "2026-06-06"
     }
