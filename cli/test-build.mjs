@@ -964,6 +964,12 @@ test('yad open-pr --via auto: opened on the standing approval only after this ta
     git(api, 'checkout', '-q', '-b', 'amn/feat/ep-l-s01-t01-again');
     await assert.rejects(open, /already opened by the dial: #12/);
     git(api, 'checkout', '-q', branch);
+    // An epic slug that reads like a task: the longest id is the task, never the shortest (review 3).
+    git(api, 'checkout', '-q', '-b', 'feat/EP-aws-s3-t2-backup-S01-T01');
+    await assert.rejects(open, /no epic state at epics\/EP-aws-s3-t2-backup/);
+    await assert.rejects(() => open({ task: 'EP-aws-s3-t2-backup-S01-T01' }), /no epic state at epics\/EP-aws-s3-t2-backup/);
+    await assert.rejects(() => open({ task: 'EP-l-S01-T01' }), /is not the task feat\/EP-aws-s3-t2-backup-S01-T01 carries/);
+    git(api, 'checkout', '-q', branch);
     // `yad build merged` reads the recorded number: no search is needed (the listing would fail here).
     const view = (cmd, args) => (cmd === 'gh' && args[1] === 'view' && args[2] === '12'
       ? { ok: true, stdout: JSON.stringify({ state: 'OPEN', headRefName: branch, url: 'u12', body: '', statusCheckRollup: [] }), stderr: '' }

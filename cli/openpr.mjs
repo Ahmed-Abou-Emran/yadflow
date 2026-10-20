@@ -18,7 +18,7 @@ import { personLabel } from './riskmap.mjs';
 import { gateOpen } from './gate.mjs';
 import { unfoldedPaths, authorStepOf } from './fold.mjs';
 import { registryEntryFor } from './find-product.mjs';
-import { autoOpenCheck, recordAutoOpen, tasksInBranch } from './build.mjs';
+import { autoOpenCheck, recordAutoOpen, branchTask } from './build.mjs';
 import { productDriftError } from './epic-state.mjs';
 import { err } from './errors.mjs';
 import { recordActor } from './skip.mjs';
@@ -292,16 +292,16 @@ export async function runOpenPr(root, opts = {}) {
     if (!meta?.name) throw err('YAD-STATE-009', `${repoRoot} is not a repo the Product registers, so it has no lane`, 'register it with `yad repo add`, or ask a person to open the PR/MR');
     const drift = productDriftError(productRoot);
     if (drift) throw drift;
-    // The task the branch carries, read as `yad build merged` reads it (any case, under any folders). The
-    // branch is what is pushed, so a --task naming another task is refused, never believed.
-    const named = [...new Set(tasksInBranch(branch))];
-    if (named.length > 1) throw err('YAD-STATE-009', `${branch} names more than one task: ${named.join(', ')}`, 'open it from a branch that carries one task');
-    const given = opts.task ? String(opts.task).toLowerCase() : null;
-    if (given && named.length && given !== named[0]) throw err('YAD-STATE-009', `--task ${opts.task} is not the task ${branch} carries (${named[0]})`, 'drop --task, or switch to that task\'s branch');
-    const m = String(given || named[0] || '').match(/^ep-([a-z0-9-]+)-s(\d+)-t(\d+)$/);
+    // The task: --task, else the LONGEST id the branch carries, in any case and under any folders — an epic
+    // slug may itself read like a task (`EP-aws-s3-t2-backup`), so the shortest would be the wrong one. The
+    // branch is what is pushed, so a --task it does not carry is refused, never believed: the same test
+    // `yad build merged` applies (`branchTask`).
+    const longest = (String(branch).match(/(?:^|[/_])(ep-[a-z0-9-]+-s\d+-t\d+)(?=$|[-_/])/i) || [])[1] || null;
+    const m = String(opts.task || longest || '').toLowerCase().match(/^ep-([a-z0-9-]+)-s(\d+)-t(\d+)$/);
     if (!m) throw err('YAD-STATE-009', `${branch} names no task (expected …EP-<slug>-S<n>-T<n>…)`, 'open it from the task branch, or pass --task EP-<slug>-S<n>-T<n>');
     const story = `EP-${m[1]}-S${m[2]}`;
     const taskId = `T${m[3]}`;
+    if (opts.task && branchTask(branch, story, taskId) === 'other') throw err('YAD-STATE-009', `--task ${opts.task} is not the task ${branch} carries`, 'drop --task, or switch to that task\'s branch');
     auto = { productRoot, story, task: taskId, repo: meta.name, ...autoOpenCheck(productRoot, { story, task: taskId, repo: meta.name }) };
     info(`opened on the standing approval: ${story}-${taskId}'s checks passed (run ${auto.run}), and the open-pr dial is auto`);
   }
@@ -340,7 +340,8 @@ export async function runOpenPr(root, opts = {}) {
   const push = run('git', ['push', '-u', 'origin', branch], { cwd: repoRoot });
   if (!push.ok) { fail(`git push failed — ${push.stderr.split('\n')[0] || 'unknown'}`); process.exitCode = 1; return; }
 
-  const task = opts.task || taskFromBranch(branch);
+  // Under --via auto, the task it was checked for, written the canonical way.
+  const task = auto ? `${auto.story}-${auto.task}` : opts.task || taskFromBranch(branch);
   const subject = run('git', ['log', '-1', '--format=%s'], { cwd: repoRoot }).stdout;
   const title = opts.title || subject || `task ${task || branch}`;
   // Summary = commit subject (Conventional-Commits "type:" prefix stripped) + body paragraphs,
