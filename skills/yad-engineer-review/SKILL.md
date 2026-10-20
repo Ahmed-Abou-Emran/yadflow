@@ -141,6 +141,10 @@ engineer-review rule is satisfied (Step 2). Then:
   (no platform, the repo not cloned here, `gh`/`glab` not logged in), when two PRs/MRs that are not
   closed carry the task, or when a merged PR's merge commit is not on the default branch or names
   another task, or its ship file cannot be written — stop and report what it says.
+- **A follow-up to a shipped task (#350)** — open it from `fix/<story>-<task>-followup-<words>`, its commits
+  keeping the task's `Task:` line. Ask about it with `yad build merged <story> --task <task> --repo <repo>
+  --follow-up --ship`: the same states, and once merged its merge is added to the task's ship
+  (`followUps`), never a second ship. Shape: `references/ship-and-record.md`.
 - **Record the ship** — `yad build ship <story> --task <task> --repo <repo> --pr <n>` (what `--ship` runs),
   once the PR/MR has merged. It reads the merge commit, the branch, the checks that passed, the approvers (with the
   engagement signal), the body's `Risk level:` and the merge date from the platform, refuses a PR that is

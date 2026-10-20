@@ -392,7 +392,8 @@ the product repo. Code repos are **separate git repos** under `demo-repos/<repo>
 5. **AI review → engineer review → merge** — `yad-engineer-review`: CodeRabbit is an advisory first pass
    (never the authority); a human engineer approves (one approver holds the merge; risk raises the reported count); on
    merge (`yad build merged … --ship` asks the platform, so nobody has to say it merged) `yad build ship`
-   records the ship in the build ledger from the merged PR — as a shard under
+   records the ship in the build ledger from the merged PR (a later fix to the task, from
+   `fix/<story>-<task>-followup-<words>`, is added to that ship with `--follow-up`) — as a shard under
    `.sdlc/build-log/`, which readers union with the folded `.sdlc/build-log.json` and `yad tidy up` later
    folds in — and the story state becomes `in-build`; `yad build done` makes it `shipped` once every task is. The epic → story → task → PR → mergeCommit chain is traceable both ways.
 
