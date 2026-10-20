@@ -57,7 +57,7 @@ without the `{ epic, ships }` wrapper):
       "task": "T01",
       "repo": "backend",
       "branch": "feat/EP-checkout-S01-T01-create-order",
-      "pr": "<url|#|local>",
+      "pr": "<url|#|none|local>",
       "mergeCommit": "<sha>",
       "gates": ["spec-link", "contract-check", "build-test-lint"],
       "ai_review": null,

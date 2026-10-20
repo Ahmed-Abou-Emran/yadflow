@@ -255,7 +255,8 @@ ${c.bold('Build helpers')}
   yad build ship <story> --task <T> --repo <r> --pr <n>
                                        Record a ship from the MERGED PR/MR (merge commit, checks,
                                        approvers); not \`yad ship\`, which commits and opens the PR.
-                                       No platform: --merge-commit <sha> [--approver <login>]…
+                                       Merged with no PR/MR: --merge-commit <sha> (no --pr).
+                                       No platform to read: --merge-commit <sha> [--approver <login>]…
   yad build done <story> [--no-fetch]  Every task shipped: status shipped, review step closed
   yad run checks [--title <text>] [--body <file>] [--base <ref>] [--no-build] [--no-fetch]
                                        Run every PR/MR gate here before you push, as CI would: this

@@ -39,6 +39,8 @@ const SHA = /^[0-9a-f]{7,64}$/;
 // A branch NAME, never revision syntax: `main~1`, `main@{1}`, `HEAD` or a leading `-` would read another
 // commit than the branch's tip, and hide what merged (review 3).
 const BRANCH = /^(?!-)(?!HEAD$)(?!.*(?:\.\.|@\{|\/\/|\.lock$|\/$|\.$))[A-Za-z0-9._/-]+$/;
+// The PR/MR number a commit's subject names: GitHub's "Merge pull request #N", or a squash's "… (#N)".
+export const prOfSubject = (subject) => Number((String(subject).match(/^Merge pull request #(\d+)\b/) || String(subject).match(/\(#(\d+)\)\s*$/) || [])[1]) || null;
 const storyOf = (task) => task.replace(/-T\d+$/, '');
 const shaOf = (v) => (typeof v === 'string' && SHA.test(v.toLowerCase()) ? v.toLowerCase() : null);
 
@@ -69,6 +71,33 @@ function mergedBranches(subject) {
   if (gh) return [gh[1]];
   const head = subject.match(/^Merge (?:remote-tracking )?branch(?:es)? ((?:'[^']+'(?:,\s*|\s+and\s+)?)+)/);
   return head ? [...head[1].matchAll(/'(?:origin\/)?([^']+)'/g)].map((m) => m[1]) : [];
+}
+
+// The tasks one commit is evidence of, and how: a `Task:` trailer; a task branch a merge commit brought in;
+// or a full task ID in the subject (a squash titled with its task, a merge titled with its pull request,
+// review 5) — never in a "Merge branch 'x' into 'y'" subject's "into …" part (review 4), a revert's, or one
+// of the Product's own records. A story ID only in a commit body is not evidence. ONE reader of these rules:
+// `yad reconcile check` and `yad build ship --merge-commit` (#346) agree on what names a task.
+export function tasksOfCommit({ parents = [], subject = '', trailers = '' }, { ownRecord = false } = {}) {
+  const out = [];
+  const add = (task, via) => { if (!out.some((x) => x.task === task)) out.push({ task, via }); };
+  for (const v of String(trailers).split('\x1e').map((x) => x.trim())) if (TASK_ID_RE.test(v)) add(v, 'trailer');
+  const brought = parents.length > 1 ? mergedBranches(subject) : [];
+  for (const b of brought) {
+    const branchTask = taskFromBranch(b);
+    if (branchTask && TASK_ID_RE.test(branchTask)) add(branchTask, 'merge commit');
+  }
+  if (!brought.length && !/^Merge (?:remote-tracking branch|branch(?:es)?|commit|tag)s? '/.test(subject) && !/^Revert\b/i.test(subject) && !ownRecord) {
+    for (const t of subject.match(TASK_IN_TEXT) || []) add(t, 'task ID in the subject');
+  }
+  return out;
+}
+
+// One commit, read the way `yad reconcile check` reads every commit: { sha, date, parents, subject, trailers },
+// or null.
+export function readCommit(dir, sha) {
+  const recs = logRecords(dir, ['-1', '--end-of-options', sha, '--'], { skipped: 0 });
+  return recs?.[0] || null;
 }
 
 // The commits of one `git log`, as { sha, date, parents, subject, trailers } — or null when git could not
@@ -131,22 +160,9 @@ export function readRepoMerges(root, repo) {
   // work (review 3).
   const ownRecord = (subject) => judged.state === 'product' && /^chore\(product\):/.test(subject);
   for (const { sha, date, parents, subject, trailers } of records) {
-    const isMerge = parents.length > 1;
-    let hadTask = false;
-    for (const v of trailers.split('\x1e').map((s) => s.trim())) {
-      if (TASK_ID_RE.test(v)) { add(v, { sha, date, via: 'trailer' }); hadTask = true; }
-    }
-    const brought = isMerge ? mergedBranches(subject) : [];
-    for (const b of brought) {
-      const branchTask = taskFromBranch(b);
-      if (branchTask && TASK_ID_RE.test(branchTask)) { add(branchTask, { sha, date, via: 'merge commit' }); hadTask = true; }
-    }
-    // A subject may carry a full task ID: a squash titled with its task, or a merge titled with its pull
-    // request (review 5). A "Merge branch 'x' into 'y'" subject is read only for the branches it brought
-    // in, never for an ID in its "into …" part (review 4).
-    if (!brought.length && !/^Merge (?:remote-tracking branch|branch(?:es)?|commit|tag)s? '/.test(subject) && !/^Revert\b/i.test(subject) && !ownRecord(subject)) {
-      for (const t of subject.match(TASK_IN_TEXT) || []) { add(t, { sha, date, via: 'task ID in the subject' }); hadTask = true; }
-    }
+    const found = tasksOfCommit({ parents, subject, trailers }, { ownRecord: ownRecord(subject) });
+    for (const { task, via } of found) add(task, { sha, date, via, subject });
+    const hadTask = found.length > 0;
     if (hadTask || ownRecord(subject)) continue;
     for (const id of subject.match(STORY_IN_TEXT) || []) possible.push({ sha, story: id, via: 'story ID in the subject' });
     const tag = subject.match(SHORT_TAG);
@@ -319,7 +335,10 @@ export function shipDrift(root, { platform = true, epics = null, runner, env = p
         // known, else from the merge commit (a task merged with no PR).
         const evSha = shaOf(ev.sha);
         const prNo = Number.isInteger(ev.pr) ? ev.pr : null;
-        const engineer = `record the ship with \`yad build ship ${s.story} --task ${t} --repo ${repoName} ${prNo ? `--pr ${prNo}` : evSha ? `--merge-commit ${evSha.slice(0, 12)}` : '--pr <n>'}\``;
+        const viaPr = prNo || prOfSubject(ev.subject || '');
+        const base = `yad build ship ${s.story} --task ${t} --repo ${repoName}`;
+        const engineer = viaPr ? `record the ship with \`${base} --pr ${viaPr}\``
+          : `record the ship with \`${base} --pr <n>\` (the PR/MR that merged it)${evSha ? `, or \`${base} --merge-commit ${evSha.slice(0, 12)}\` if it merged with no PR/MR` : ''}`;
         let fix = engineer;
         if (!recorded.length && !suggested && s.sameFile && asArg(repoName) === repoName) {
           fix = `if ${s.story} predates ledger tracking: yad checkpoint --retro-ship ${s.epic}/${s.story} --repo ${repoName} --task ${t}${evSha ? ` --merge-commit ${evSha.slice(0, 12)}` : ''} (the story's status must be in-build or shipped first); otherwise ${engineer}`;

@@ -24,6 +24,7 @@ import { readShips, readTrustRuns, writeShip, writeTrustRun, updateTrustRun } fr
 import { setBuildStatus, readStoryStatus } from './artifact-status.mjs';
 import { readPr, mapApprovers, detectPlatform, cliFor, platformReady } from './platform.mjs';
 import { repoPathFromGitUrl } from './protection.mjs';
+import { readCommit, tasksOfCommit, prOfSubject } from './ship-drift.mjs';
 import { recordActor } from './skip.mjs';
 import { sealedEpic } from './thread.mjs';
 
@@ -114,26 +115,36 @@ export function planStep(buildState, { story, repo, step, to, reason = null, by 
   }
   const active = activeStep(lane);
   if (isPassed(target)) {
+    // `done --task T02` on a step T01 closed is not "already done": T02 has not been through it.
+    if (to === 'done' && task && target.closed?.task && target.closed.task !== task) {
+      throw err(CODE, `${step} was closed for ${target.closed.task}, not ${task}`, `reopen it for ${task} first: yad build step ${story} --repo ${repo} implement in_progress --task ${task}`);
+    }
     if (to === 'done') return { buildState: bs, already: true };
     // The next task reopens the per-task steps — once the lane has walked them all for the task before
     // (it is at the review step) and the review is not closed. Each close stays in `runs`, by task.
-    const reopen = PER_TASK.has(step) && task && active?.id === REVIEW_STEP && stepStatus(active) !== 'blocked';
+    // The next task starts at implement: reopening checks alone would leave the task no implement run.
+    const first = [...PER_TASK][0];
+    const reopen = step === first && task && active?.id === REVIEW_STEP && stepStatus(active) !== 'blocked';
     if (!reopen) {
-      throw err(CODE, `${step} is already done in ${story} / ${repo}`, PER_TASK.has(step)
-        ? `the next task reopens it once the lane is at ${REVIEW_STEP}: yad build step ${story} --repo ${repo} ${step} ${to} --task <T>`
-        : 'a closed step is not reopened');
+      const hint = !PER_TASK.has(step) ? 'a closed step is not reopened'
+        : active?.id === REVIEW_STEP && stepStatus(active) === 'blocked' ? `clear the halt on ${REVIEW_STEP} first`
+          : `the next task reopens ${first} once the lane is at ${REVIEW_STEP}: yad build step ${story} --repo ${repo} ${first} ${to} --task <T>`;
+      throw err(CODE, `${step} is already done in ${story} / ${repo}`, hint);
     }
     const at = LANE.indexOf(step);
     const keep = (s) => {
       const n = { ...s };
-      if (n.closed) n.runs = [...(Array.isArray(n.runs) ? n.runs : []).filter((r) => r?.run !== n.closed.run || r?.task !== n.closed.task), n.closed];
+      if (n.closed) {
+        const prior = Array.isArray(n.runs) ? n.runs : [];
+        n.runs = [...(n.closed.run ? prior.filter((r) => r?.run !== n.closed.run) : prior), n.closed];
+      }
       delete n.closed;
       delete n.record;
       return n;
     };
     const steps = lane.steps.map((s) => {
       if (s?.id === step) {
-        const n = { ...keep(s), status: to };
+        const n = { ...keep(s), status: to, task };
         if (to === 'blocked') {
           if (reason == null || reason === true || !String(reason).trim()) throw err(CODE, 'a halt needs a reason', `yad build step ${story} --repo ${repo} ${step} blocked --task ${task} --reason "<what a person must resolve>"`);
           n.record = { reason: String(reason).trim(), by, date };
@@ -141,7 +152,7 @@ export function planStep(buildState, { story, repo, step, to, reason = null, by 
         return n;
       }
       // The per-task steps after it are owed again for this task.
-      if (PER_TASK.has(s?.id) && LANE.indexOf(s.id) > at && isPassed(s)) return { ...keep(s), status: 'todo' };
+      if (PER_TASK.has(s?.id) && LANE.indexOf(s.id) > at && isPassed(s)) return { ...keep(s), status: 'todo', task };
       return s;
     });
     return { buildState: { ...bs, repos: { ...bs.repos, [repo]: { ...lane, currentStep: step, steps } } }, already: false, reopened: task };
@@ -153,13 +164,19 @@ export function planStep(buildState, { story, repo, step, to, reason = null, by 
   if (via === 'auto' && to === 'done' && !(target.advance === 'auto' || target.automation === 'machine_advance')) {
     throw err(CODE, `${step} is dialled human in ${story} / ${repo}, so it is not closed --via auto`, `\`yad dial ${storyEpic(story)} ${story} --repo ${repo} ${step} --to auto\` sets the dial first`);
   }
+  // A step reopened for a task closes for that task: `--task` defaults to it, and another is refused.
+  if (task && target.task && task !== target.task) throw err(CODE, `${step} is open for ${target.task}, not ${task}`, `--task ${target.task}`);
+  const forTask = task || target.task || null;
   const next = { ...target, status: to };
   delete next.record;
   if (to === 'blocked') {
     if (reason == null || reason === true || !String(reason).trim()) throw err(CODE, 'a halt needs a reason', `yad build step ${story} --repo ${repo} ${step} blocked --reason "<what a person must resolve>"`);
     next.record = { reason: String(reason).trim(), by, date };
   }
-  if (to === 'done') next.closed = { by, date, via, ...(run ? { run } : {}), ...(task ? { task } : {}) };
+  if (to === 'done') {
+    next.closed = { by, date, via, ...(run ? { run } : {}), ...(forTask ? { task: forTask } : {}) };
+    delete next.task;
+  }
   const steps = lane.steps.map((s) => (s?.id === step ? next : s));
   let currentStep;
   if (to === 'done') {
@@ -301,7 +318,8 @@ export async function buildStep(root, { story, repo, step, to, reason, via = 'hu
   const ctx = storyContext(root, story);
   // A run named must be a run of this step in this lane: the closing record points at the evidence.
   if (runUid && runUid !== true) {
-    const known = readTrustRuns(ctx.epicDir).some((r) => r.uid === runUid && r.story === story && r.repo === repo && r.step === step);
+    const known = readTrustRuns(ctx.epicDir).some((r) => r.uid === runUid && r.story === story && r.repo === repo && r.step === step
+      && !(r.task && task && task !== true && r.task !== task));
     if (!known) throw err(CODE, `no trust run ${runUid} for ${story} / ${repo} / ${step}`, `\`yad build trust ${story} --repo ${repo} ${step} --verdict …\` prints the uid of the run it records`);
   }
   const { buildState, already, reopened } = planStep(ctx.buildState, {
@@ -427,9 +445,15 @@ function shipWithoutPr(where, { story, task, repo, mergeCommit, today }) {
   if (!run('git', ['merge-base', '--is-ancestor', sha, `refs/remotes/origin/${branch}`], { cwd }).ok) {
     throw err(CODE, `${mergeCommit} is not on ${repo}'s ${branch}`, 'a ship is recorded once the work is merged into the default branch');
   }
-  const message = run('git', ['log', '-1', '--format=%B', sha], { cwd }).stdout;
-  if (!message.toLowerCase().includes(`${story}-${task}`.toLowerCase())) {
-    throw err(CODE, `${mergeCommit} does not name ${story}-${task}`, 'the commit (its Task: trailer, or the merged branch in a merge commit) must name the task it ships');
+  // What the commit is evidence of, by the rules `yad reconcile check` reads every commit with: a `Task:`
+  // trailer, a task branch a merge brought in, or the full id in the subject — never a revert, never a
+  // mention in the body. A commit that merged a PR/MR is recorded from that PR, with its approvers.
+  const rec = readCommit(cwd, sha);
+  if (!rec) throw err(CODE, `${mergeCommit} could not be read in ${repo}`, 'check the SHA');
+  const viaPr = prOfSubject(rec.subject);
+  if (viaPr) throw err(CODE, `${mergeCommit} merged PR #${viaPr}`, `record it from that PR, with its approvers: yad build ship ${story} --task ${task} --repo ${repo} --pr ${viaPr}`);
+  if (!tasksOfCommit(rec).some((x) => x.task === `${story}-${task}`)) {
+    throw err(CODE, `${mergeCommit} does not name ${story}-${task}`, 'the commit must name the task it ships: its Task: trailer, the task branch a merge commit brought in, or the full id in its subject');
   }
   return {
     story, task, repo, branch: null, pr: 'none', mergeCommit: sha, gates: [],
@@ -461,7 +485,7 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
   const byHand = (mergeCommit && mergeCommit !== true) || approvers.length;
   // A task merged with no PR/MR (the user's decision, 2026-10-20): the commit is the evidence, so it must be
   // on the default branch and name the task. Nobody approved a PR, so there are no approvers.
-  if (readable && (!pr || pr === true) && mergeCommit && mergeCommit !== true && !approvers.length) {
+  if (where.checkout && (!pr || pr === true) && mergeCommit && mergeCommit !== true && !approvers.length) {
     ship = shipWithoutPr(where, { story, task, repo, mergeCommit, today });
   } else if (readable && byHand) throw err(CODE, `the ship is read from PR #${pr || '?'} on ${where.platform}`, '--merge-commit and --approver are for a repo whose platform cannot be read; drop them');
   const usable = readable;

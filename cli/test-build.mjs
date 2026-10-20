@@ -69,13 +69,22 @@ function workspace({ tasks = '# Tasks\n\n- [ ] T01 — create the order\n- [ ] T
   git(api, 'remote', 'add', 'origin', path.join(W, 'api.git'));
   git(api, 'push', '-q', '-u', 'origin', 'main');
   git(api, 'remote', 'set-head', 'origin', 'main');
-  return { W, P, dir, api };
+  // A merged commit per task, each naming its task with a Task: trailer, on origin/main.
+  const sha = {};
+  for (const t of ['T01', 'T02']) {
+    write(api, { [`src/${t}.js`]: `${t}\n` });
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', `feat: ${t}\n\nTask: EP-l-S01-${t}`);
+    sha[t] = git(api, 'rev-parse', 'HEAD');
+  }
+  git(api, 'push', '-q', 'origin', 'main');
+  return { W, P, dir, api, sha };
 }
 const read = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
 const status = (dir) => (fs.readFileSync(path.join(dir, 'stories/EP-l-S01.md'), 'utf8').match(/^status:\s*(\S+)/m) || [])[1];
 
 test('yad build: start → step → trust → ship → done, and every reader agrees the story shipped (#346)', () => {
-  const { W, P, dir } = workspace();
+  const { W, P, dir, sha } = workspace();
   try {
     let r = yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
     assert.equal(r.code, 0, r.out);
@@ -109,7 +118,7 @@ test('yad build: start → step → trust → ship → done, and every reader ag
     r = yad(P, 'build', 'done', 'EP-l-S01');
     assert.equal(r.code, 1, r.out);
     assert.match(r.out, /no ship yet for: api\/T02/);
-    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T02', '--repo', 'api', '--merge-commit', 'b'.repeat(40));
+    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T02', '--repo', 'api', '--merge-commit', sha.T02);
     assert.equal(r.code, 0, r.out);
     r = yad(P, 'build', 'done', 'EP-l-S01');
     assert.equal(r.code, 0, r.out);
@@ -245,12 +254,12 @@ test('parseTaskIds and planDone: task lines in their usual forms; a retro ship c
 });
 
 test('yad build done: a repo the story owes with no lane is refused, so yad next and the status never disagree', () => {
-  const { W, P, dir } = workspace({ tasks: '- T01 one\n' });
+  const { W, P, dir, sha } = workspace({ tasks: '- T01 one\n' });
   try {
     // Shipped by hand in api, with no lane: done would set shipped while yad next still reads it in Build.
     let r = yad(P, 'skip', 'EP-l', 'EP-l-S01', '--repo', 'web', '--reason', 'no UI change');
     assert.equal(r.code, 0, r.out);
-    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'd'.repeat(40));
+    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01);
     assert.equal(r.code, 0, r.out);
     r = yad(P, 'build', 'done', 'EP-l-S01');
     assert.equal(r.code, 1, r.out);
@@ -271,7 +280,7 @@ const setStory = (dir, fm, name = 'EP-l-S01.md') => {
 };
 
 test('yad build done: the status line moves from any Shape value, and a value it cannot place is refused before anything is written (#346 review 1)', () => {
-  const { W, P, dir } = workspace({ tasks: '- T01 one\n' });
+  const { W, P, dir, sha } = workspace({ tasks: '- T01 one\n' });
   try {
     // A file named other than its id is refused: yad tidy and the seal read a story by its file name.
     setStory(dir, 'id: EP-l-S01\nepic: EP-l\nstatus: draft\nrepos: [api, web]', 'EP-l-S01-checkout.md');
@@ -283,7 +292,7 @@ test('yad build done: the status line moves from any Shape value, and a value it
     yad(P, 'skip', 'EP-l', 'EP-l-S01', '--repo', 'web', '--reason', 'no UI change');
     yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
     walk(P);
-    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'e'.repeat(40));
+    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01);
     assert.equal(r.code, 0, r.out);
     r = yad(P, 'build', 'done', 'EP-l-S01');
     assert.equal(r.code, 0, r.out);
@@ -305,7 +314,7 @@ test('yad build done: the status line moves from any Shape value, and a value it
 });
 
 test('yad build done: no repo owed, a stray lane, a blocked review step, a failed fetch — each refused (#346 review 1)', () => {
-  const { W, P, dir, api } = workspace({ tasks: '- T01 one\n' });
+  const { W, P, dir, api, sha } = workspace({ tasks: '- T01 one\n' });
   try {
     setStory(dir, 'id: EP-l-S01\nepic: EP-l\nstatus: approved\nrepos: []');
     let r = yad(P, 'build', 'done', 'EP-l-S01');
@@ -313,7 +322,7 @@ test('yad build done: no repo owed, a stray lane, a blocked review step, a faile
     setStory(dir, 'id: EP-l-S01\nepic: EP-l\nstatus: approved\nrepos: [api]');
     yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
     walk(P);
-    yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'f'.repeat(40));
+    yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01);
     const file = path.join(dir, '.sdlc/build-state/EP-l-S01.json');
     const bs = JSON.parse(fs.readFileSync(file, 'utf8'));
     fs.writeFileSync(file, JSON.stringify({ ...bs, repos: { ...bs.repos, Api: { currentStep: 'spec', steps: [{ id: 'spec', status: 'todo' }] } } }));
@@ -360,12 +369,12 @@ test('yad build ship: a repo not checked out is never read through the Product; 
 });
 
 test('yad build done: a shipped status written another way is rewritten; two status lines or two files are refused; the epic must be in Build (#346 review 2)', () => {
-  const { W, P, dir } = workspace({ tasks: '- T01 one\n' });
+  const { W, P, dir, sha } = workspace({ tasks: '- T01 one\n' });
   try {
     yad(P, 'skip', 'EP-l', 'EP-l-S01', '--repo', 'web', '--reason', 'no UI change');
     yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
     walk(P);
-    yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'e'.repeat(40));
+    yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01);
     setStory(dir, 'id: EP-l-S01\nepic: EP-l\nstatus: approved\nstatus: approved\nrepos: [api, web]');
     let r = yad(P, 'build', 'done', 'EP-l-S01');
     assert.match(r.out, /which a Build write cannot move on/);
@@ -399,10 +408,10 @@ test('tasksInBranch: the task a branch names, under folders and in any case, nev
 });
 
 test('yad build done: a lane with no steps is half-seeded, not shipped; a clone is matched to its registered URL by path, never printed (#346 review 3)', () => {
-  const { W, P, dir, api } = workspace({ tasks: '- T01 one\n' });
+  const { W, P, dir, api, sha } = workspace({ tasks: '- T01 one\n' });
   try {
     yad(P, 'skip', 'EP-l', 'EP-l-S01', '--repo', 'web', '--reason', 'no UI change');
-    yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'e'.repeat(40));
+    yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01);
     const file = path.join(dir, '.sdlc/build-state/EP-l-S01.json');
     const bs = JSON.parse(fs.readFileSync(file, 'utf8'));
     fs.writeFileSync(file, JSON.stringify({ ...bs, repos: { ...bs.repos, api: { currentStep: 'spec', steps: [] } } }));
@@ -437,12 +446,12 @@ test('yad build ship: an epic slug that reads like a task still matches its own 
 });
 
 test('yad build done: a status write that fails puts the lanes back; another build-state file claiming the story is refused (#346 review 4)', { skip: (process.getuid && process.getuid() === 0) && 'root writes read-only files' }, () => {
-  const { W, P, dir } = workspace({ tasks: '- T01 one\n' });
+  const { W, P, dir, sha } = workspace({ tasks: '- T01 one\n' });
   try {
     yad(P, 'skip', 'EP-l', 'EP-l-S01', '--repo', 'web', '--reason', 'no UI change');
     yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
     walk(P);
-    yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'e'.repeat(40));
+    yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01);
     const file = path.join(dir, '.sdlc/build-state/EP-l-S01.json');
     fs.writeFileSync(path.join(dir, '.sdlc/build-state/copy.json'), JSON.stringify({ story: 'EP-l-S01', repos: {} }));
     let r = yad(P, 'build', 'done', 'EP-l-S01');
@@ -511,4 +520,62 @@ test('yad build ship: a task merged with no PR is recorded from its commit on th
     // Hand-given approvers are still refused where the platform can be read.
     await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T02', repo: 'api', mergeCommit: sha, approvers: ['bob'], today: '2026-10-20', runner }), /the ship is read from PR/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build ship with no PR: the commit names the task by the reconcile rules — not a revert, a longer id, or a PR merge (#346 review 5)', () => {
+  const { W, P, dir, api } = workspace();
+  try {
+    const commit = (msg) => {
+      write(api, { [`src/${Math.random().toString(36).slice(2)}.js`]: 'x\n' });
+      git(api, 'add', '-A');
+      git(api, 'commit', '-q', '-m', msg);
+      git(api, 'push', '-q', 'origin', 'main');
+      return git(api, 'rev-parse', 'HEAD');
+    };
+    const ship = (task, sha) => yad(P, 'build', 'ship', 'EP-l-S01', '--task', task, '--repo', 'api', '--merge-commit', sha);
+    let r = ship('T1', commit('feat: ten\n\nTask: EP-l-S01-T10'));
+    assert.match(r.out, /does not name EP-l-S01-T1/, 'T1 is not T10');
+    r = ship('T03', commit('Revert "feat: three EP-l-S01-T03"'));
+    assert.match(r.out, /does not name EP-l-S01-T03/, 'a revert is not evidence');
+    r = ship('T03', commit('docs: notes\n\nfollow-up to EP-l-S01-T03'));
+    assert.match(r.out, /does not name EP-l-S01-T03/, 'a mention in the body is not evidence');
+    r = ship('T03', commit('Merge pull request #42 from org/feat/EP-l-S01-T03-x'));
+    assert.match(r.out, /merged PR #42/);
+    assert.match(r.out, /--pr 42/);
+    r = ship('T03', commit('feat: EP-l-S01-T03 squashed'));
+    assert.equal(r.code, 0, r.out);
+    // No platform at all: the same check, and pr none.
+    assert.equal(read(path.join(dir, '.sdlc/build-log/EP-l-S01-T03-api.json')).pr, 'none');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build step: done --task for another task is refused; only implement reopens; closes without --run keep their history (#346 review 5)', () => {
+  const { W, P, dir } = workspace();
+  try {
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    for (const step of ['spec', 'tasks']) yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', step, 'done');
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'done', '--task', 'T01');
+    let r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'done', '--task', 'T02');
+    assert.match(r.out, /implement was closed for T01, not T02/);
+    yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'checks', 'done');
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'checks', 'in_progress', '--task', 'T02');
+    assert.match(r.out, /the next task reopens implement once the lane is at engineer-review/);
+    // Walked by hand, with no --run: every task's close is kept.
+    for (const t of ['T02', 'T03']) {
+      yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'in_progress', '--task', t);
+      r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'implement', 'done');
+      assert.equal(r.code, 0, r.out);
+      yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'checks', 'done');
+    }
+    const impl = read(path.join(dir, '.sdlc/build-state/EP-l-S01.json')).repos.api.steps.find((s) => s.id === 'implement');
+    assert.deepEqual([impl.closed.task, ...impl.runs.map((x) => x.task)], ['T03', 'T01', 'T02'], 'the task defaults to the one the step was reopened for');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('prOfSubject: the PR a merge or squash subject names (#346 review 5)', async () => {
+  const { prOfSubject } = await import('./ship-drift.mjs');
+  assert.equal(prOfSubject('Merge pull request #42 from org/feat/x'), 42);
+  assert.equal(prOfSubject('feat: orders (#17)'), 17);
+  assert.equal(prOfSubject('feat: orders #17 later'), null);
+  assert.equal(prOfSubject(''), null);
 });
