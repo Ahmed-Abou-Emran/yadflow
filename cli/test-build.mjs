@@ -216,11 +216,11 @@ test('yad build trust: signals are checked per step, and --uid finalizes the ver
 
 test('yad build ship: reads the merged PR, refuses an unmerged one or another task\'s branch', async () => {
   const { buildShip } = await import('./build.mjs');
-  const { W, P, dir } = workspace();
+  const { W, P, dir, sha } = workspace();
   try {
     write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
     const view = (over = {}) => ({
-      state: 'MERGED', mergedAt: '2026-10-18T10:00:00Z', mergeCommit: { oid: 'c'.repeat(40) }, headRefName: 'feat/EP-l-S01-T01-orders',
+      state: 'MERGED', mergedAt: '2026-10-18T10:00:00Z', mergeCommit: { oid: sha.T01 }, headRefName: 'feat/EP-l-S01-T01-orders',
       url: 'https://github.com/o/api/pull/7', body: '## Summary\nx\n\nRisk level: medium\n<!-- yad:trailer -->\n',
       statusCheckRollup: [{ name: 'spec-link', conclusion: 'SUCCESS' }, { name: 'build-test-lint', conclusion: 'SUCCESS' }, { name: 'flaky', conclusion: 'FAILURE' }], ...over,
     });
@@ -232,7 +232,7 @@ test('yad build ship: reads the merged PR, refuses an unmerged one or another ta
     const ship = read(path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json'));
     assert.deepEqual(
       [ship.branch, ship.pr, ship.mergeCommit, ship.gates, ship.risk, ship.companion.trailer, ship.shippedAt, ship.engineer_review],
-      ['feat/EP-l-S01-T01-orders', 'https://github.com/o/api/pull/7', 'c'.repeat(40), ['build-test-lint', 'spec-link'], 'medium', true, '2026-10-18', [{ approver: 'bob', engagement: 'none' }]],
+      ['feat/EP-l-S01-T01-orders', 'https://github.com/o/api/pull/7', sha.T01, ['build-test-lint', 'spec-link'], 'medium', true, '2026-10-18', [{ approver: 'bob', engagement: 'none' }]],
     );
     answer = view({ state: 'OPEN', headRefName: 'feat/EP-l-S01-T02-x' });
     await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T02', repo: 'api', pr: '8', today: '2026-10-19', runner, prReader }), /PR #8 in api is not merged/);
@@ -346,7 +346,7 @@ test('yad build done: no repo owed, a stray lane, a blocked review step, a faile
 
 test('yad build ship: a repo not checked out is never read through the Product; --pr is a number; the stories review must have passed; the branch match ignores case and prefixes (#346 review 1)', async () => {
   const { buildShip } = await import('./build.mjs');
-  const { W, P, dir } = workspace();
+  const { W, P, dir, sha } = workspace();
   try {
     write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../nowhere', platform: 'github' }, { name: 'web', path: '../web' }] }) });
     let r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--pr', '7');
@@ -356,7 +356,7 @@ test('yad build ship: a repo not checked out is never read through the Product; 
     r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', 'not-a-sha');
     assert.match(r.out, /--merge-commit must be a commit SHA/);
     write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
-    const answer = { state: 'MERGED', mergedAt: '2026-10-18T10:00:00Z', mergeCommit: { oid: 'c'.repeat(40) }, headRefName: 'amn/feat/ep-l-s01-t01-orders', url: 'u', body: '', statusCheckRollup: [] };
+    const answer = { state: 'MERGED', mergedAt: '2026-10-18T10:00:00Z', mergeCommit: { oid: sha.T01 }, headRefName: 'amn/feat/ep-l-s01-t01-orders', url: 'u', body: '', statusCheckRollup: [] };
     const runner = (cmd, args) => (cmd === 'gh' && args[0] === 'pr' ? { ok: true, stdout: JSON.stringify(answer), stderr: '' } : { ok: false, stdout: '', stderr: 'x' });
     const res = await buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', pr: '7', today: '2026-10-19', runner, prReader: () => ({ ok: true, reviews: [] }) });
     assert.equal(res.changed, true, 'a lower-case branch under a folder still names the task');
@@ -434,11 +434,11 @@ test('yad build ship: an epic slug that reads like a task still matches its own 
   const { tasksInBranch } = await import('./build.mjs');
   assert.deepEqual(tasksInBranch('feat/EP-aws-s3-t2-backup-S01-T01-x'), ['ep-aws-s3-t2'], 'the general scan alone would refuse it');
   // The exact id is matched first, so a branch whose slug after the task reads like another task passes too.
-  const { W, P } = workspace();
+  const { W, P, sha } = workspace();
   try {
     const { buildShip } = await import('./build.mjs');
     write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
-    const answer = { state: 'MERGED', mergedAt: '2026-10-18T10:00:00Z', mergeCommit: { oid: 'c'.repeat(40) }, headRefName: 'feat/EP-l-S01-T01-s3-t2-x', url: 'u', body: '', statusCheckRollup: [] };
+    const answer = { state: 'MERGED', mergedAt: '2026-10-18T10:00:00Z', mergeCommit: { oid: sha.T01 }, headRefName: 'feat/EP-l-S01-T01-s3-t2-x', url: 'u', body: '', statusCheckRollup: [] };
     const runner = (cmd, args) => (cmd === 'gh' && args[0] === 'pr' ? { ok: true, stdout: JSON.stringify(answer), stderr: '' } : { ok: false, stdout: '', stderr: 'x' });
     const r = await buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', pr: '7', today: '2026-10-20', runner, prReader: () => ({ ok: true, reviews: [] }) });
     assert.equal(r.changed, true);
@@ -635,5 +635,56 @@ test('yad build step: the same close sent again is "already done", and no second
     assert.equal(fs.readdirSync(path.join(dir, '.sdlc/trust-log')).length, 1);
     r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'done', '--task', 'T01');
     assert.match(r.out, /--task does not apply to spec/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build: the PR path checks what merged; a by-hand ship keeps the commit date; --via auto obeys the kill switch and a rejected run (#346 final review)', async () => {
+  const { buildShip } = await import('./build.mjs');
+  const { W, P, api, sha } = workspace();
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
+    // Merged into another branch: not on main.
+    git(api, 'checkout', '-q', '-b', 'release/1.x');
+    write(api, { 'src/rel.js': 'x\n' });
+    git(api, 'add', '-A');
+    git(api, 'commit', '-q', '-m', 'feat: release fix\n\nTask: EP-l-S01-T01');
+    const off = git(api, 'rev-parse', 'HEAD');
+    git(api, 'push', '-q', 'origin', 'release/1.x');
+    git(api, 'checkout', '-q', 'main');
+    let mergeOid = off;
+    let branch = 'feat/EP-l-S01-T01-x';
+    const runner = (cmd, args) => (cmd === 'gh' && args[0] === 'pr'
+      ? { ok: true, stdout: JSON.stringify({ state: 'MERGED', mergedAt: '2026-10-18T10:00:00Z', mergeCommit: { oid: mergeOid }, headRefName: branch, url: 'u', body: '', statusCheckRollup: [] }), stderr: '' }
+      : { ok: false, stdout: '', stderr: 'x' });
+    const prReader = () => ({ ok: true, reviews: [] });
+    await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', pr: '7', today: '2026-10-20', runner, prReader }), /is not on api's main/);
+    // A branch naming no task, a merge commit naming another: refused.
+    mergeOid = sha.T02;
+    branch = 'hotfix-login';
+    await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', pr: '8', today: '2026-10-20', runner, prReader }), /names EP-l-S01-T02, not EP-l-S01-T01/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build: a by-hand ship records the commit date; --via auto needs the dial in force and a run not rejected (#346 final review)', () => {
+  const { W, P, dir, api, sha } = workspace();
+  try {
+    const when = git(api, 'log', '-1', '--format=%cs', sha.T01);
+    let r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01, '--approver', 'bob');
+    assert.equal(r.code, 0, r.out);
+    assert.equal(read(path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json')).shippedAt, when);
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    r = yad(P, 'dial', 'EP-l', 'EP-l-S01', '--repo', 'api', 'spec', '--to', 'auto');
+    assert.equal(r.code, 0, r.out);
+    r = yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', 'spec', '--verdict', 'rejected', '--json');
+    const bad = json(r).uid;
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'done', '--via', 'auto', '--run', bad);
+    assert.match(r.out, /is rejected, so spec does not advance on its own/);
+    r = yad(P, 'kill', '--reason', 'a bad week');
+    assert.equal(r.code, 0, r.out);
+    r = yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', 'spec', '--verdict', 'approved-unchanged', '--json');
+    const good = json(r).uid;
+    assert.equal(read(path.join(dir, `.sdlc/trust-log/EP-l-S01-api-spec-${good}.json`)).advance, 'human', 'the dial in force under the kill switch');
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'done', '--via', 'auto', '--run', good);
+    assert.match(r.out, /the kill switch is on/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });

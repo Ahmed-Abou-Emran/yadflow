@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { ok, info, hand, warn, run, readJSON, readJSONStrict, writeJSON, isPlainObject, exists } from './lib.mjs';
-import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, nextAction } from './epic-state.mjs';
+import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, nextAction, loadAutomation, effectiveAdvance } from './epic-state.mjs';
 import { DEFAULT_LIFECYCLE, laneOrder, laneAuthorSteps } from './lifecycle.mjs';
 import { epicFiles, PROJECT_FILES } from './manifest.mjs';
 import { err } from './errors.mjs';
@@ -103,7 +103,7 @@ const activeStep = (lane) => {
 // PURE: move one step of a lane. Only the lane's active step moves, so a lane is never walked out of order.
 // `done` writes the closing record (E18) and moves `currentStep` on; `blocked` needs a reason, written as
 // the step's record. The review step is closed by `build done`, which checks every task shipped first.
-export function planStep(buildState, { story, repo, step, to, reason = null, by = null, date = null, via = 'human', run = null, task = null }) {
+export function planStep(buildState, { story, repo, step, to, reason = null, by = null, date = null, via = 'human', run = null, task = null, automation = null }) {
   if (task != null && !TASK_RE.test(String(task))) throw err(CODE, `--task must be a task id such as T02 (got '${task}')`, '--task T02');
   if (!STEP_MOVES.includes(to)) throw err(CODE, `'${to}' is not a step state this sets`, `one of: ${STEP_MOVES.join(', ')}`);
   const bs = lanes(buildState, story);
@@ -162,8 +162,11 @@ export function planStep(buildState, { story, repo, step, to, reason = null, by 
     throw err(CODE, `${story} / ${repo} is at ${active.id}, not ${step}`, `move ${active.id} first — the lane is walked in order`);
   }
   if (!['auto', 'human'].includes(via)) throw err(CODE, `--via must be auto or human (got '${via}')`, '--via human, unless the orchestrator advanced it on its own');
-  if (via === 'auto' && to === 'done' && !(target.advance === 'auto' || target.automation === 'machine_advance')) {
-    throw err(CODE, `${step} is dialled human in ${story} / ${repo}, so it is not closed --via auto`, `\`yad dial ${storyEpic(story)} ${story} --repo ${repo} ${step} --to auto\` sets the dial first`);
+  // The dial IN FORCE — the lane's own, held at human while the kill switch is on — not the lane's word alone.
+  if (via === 'auto' && to === 'done' && effectiveAdvance(target, automation).advance !== 'auto') {
+    const why = effectiveAdvance(target, automation).why;
+    throw err(CODE, `${step} is not advancing on its own in ${story} / ${repo}${why === 'kill' ? ' (the kill switch is on)' : ''}, so it is not closed --via auto`,
+      why === 'kill' ? '`yad unkill` turns the kill switch off' : `\`yad dial ${storyEpic(story)} ${story} --repo ${repo} ${step} --to auto\` sets the dial first`);
   }
   // A step reopened for a task closes for that task: `--task` defaults to it, and another is refused.
   if (task && target.task && task !== target.task) throw err(CODE, `${step} is open for ${target.task}, not ${task}`, `--task ${target.task}`);
@@ -189,7 +192,7 @@ export function planStep(buildState, { story, repo, step, to, reason = null, by 
 }
 
 // PURE: a trust entry, checked. `signals` is { name: value } from `--signal name=value`.
-export function trustEntry({ story, repo, step, verdict, signals = {}, ranBy = 'human', note = null, date = null, lane = null, uid, task = null }) {
+export function trustEntry({ story, repo, step, verdict, signals = {}, ranBy = 'human', note = null, date = null, lane = null, uid, task = null, automation = null }) {
   if (task != null && !TASK_RE.test(String(task))) throw err(CODE, `--task must be a task id such as T02 (got '${task}')`, '--task T02');
   if (!AUTHOR.has(step)) throw err(CODE, `'${step}' has no trust entry`, `trust is recorded for: ${[...AUTHOR].join(', ')}`);
   if (!VERDICTS.includes(verdict)) throw err(CODE, `'${verdict}' is not a verdict`, `one of: ${VERDICTS.join(', ')}`);
@@ -208,7 +211,8 @@ export function trustEntry({ story, repo, step, verdict, signals = {}, ranBy = '
     }
   }
   const st = lane?.steps?.find((s) => s?.id === step);
-  const advance = st?.advance === 'auto' || st?.automation === 'machine_advance' ? 'auto' : 'human';
+  // The dial in force at run time: the lane's own, held at human while the kill switch is on.
+  const advance = st ? effectiveAdvance(st, automation).advance : 'human';
   return {
     story, repo, step, uid,
     automation: advance === 'auto' ? 'machine_advance' : 'human_approve', advance,
@@ -331,8 +335,13 @@ export async function buildStep(root, { story, repo, step, to, reason, via = 'hu
       && !(r.task && forTask && r.task !== forTask));
     if (!known) throw err(CODE, `no trust run ${runUid} for ${story} / ${repo} / ${step}`, `\`yad build trust ${story} --repo ${repo} ${step} --verdict …\` prints the uid of the run it records`);
   }
+  if (runUid && runUid !== true && to === 'done' && via === 'auto') {
+    const r = readTrustRuns(ctx.epicDir).find((x) => x.uid === runUid && x.story === story && x.repo === repo && x.step === step);
+    if (r?.verdict === 'rejected') throw err(CODE, `trust run ${runUid} is rejected, so ${step} does not advance on its own`, `halt instead: yad build step ${story} --repo ${repo} ${step} blocked --reason "<why>"`);
+  }
   const { buildState, already, reopened } = planStep(ctx.buildState, {
     story, repo, step, to, reason, by: recordActor(root), date: today, via, run: runUid === true ? null : runUid, task: task === true ? null : task,
+    automation: loadAutomation(root),
   });
   if (already) {
     ok(`${step} is already done in ${story} / ${repo} — nothing changed`);
@@ -366,7 +375,7 @@ export async function buildTrust(root, { story, repo, step, verdict, signals = {
   }
   const bs = lanes(ctx.buildState, story);
   const lane = liveLane(bs, story, repo);
-  const entry = trustEntry({ story, repo, step, verdict, signals, ranBy, note, date: today, lane, uid: randomBytes(4).toString('hex'), task: task === true ? null : task });
+  const entry = trustEntry({ story, repo, step, verdict, signals, ranBy, note, date: today, lane, uid: randomBytes(4).toString('hex'), task: task === true ? null : task, automation: loadAutomation(root) });
   const res = writeTrustRun(ctx.epicDir, entry);
   if (!res.written) throw err(CODE, `a trust run named ${path.basename(res.file)} is already there`, 'run it again: a new uid is drawn each time');
   ok(`trust run ${entry.uid} recorded: ${story} / ${repo} / ${step} — ${verdict}`);
@@ -563,8 +572,10 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     }
     if (got.checksRead === false) warn(`could not read the checks of PR #${pr} — gates is left empty`);
     if (!pull.ok) warn(`could not read the approvals of PR #${pr} (${pull.reason}) — engineer_review is left empty; \`yad review reconcile\` fills it later`);
+    // What merged must be on the default branch, and may not name another task — the same check as by hand.
+    const c = checkCommit(where, { story, task, repo, mergeCommit: got.mergeCommit, strict: false, fetch });
     ship = {
-      story, task, repo, branch: got.branch, pr: got.url || `#${pr}`, mergeCommit: got.mergeCommit, gates: got.checks,
+      story, task, repo, branch: got.branch, pr: got.url || `#${pr}`, mergeCommit: c.sha, gates: got.checks,
       ai_review: null, engineer_review: engineerReview,
       companion: { trailer: /<!--\s*yad:trailer\s*-->/.test(got.body), cards: false, chat: false },
       risk: riskFromBody(got.body), shippedAt: (got.mergedAt || '').slice(0, 10) || today,
@@ -582,7 +593,7 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     ship = {
       story, task, repo, branch: null, pr: pr && pr !== true ? `#${pr}` : 'local', mergeCommit: c ? c.sha : mergeCommit, gates: [],
       ai_review: null, engineer_review: approvers.map((a) => ({ approver: a, engagement: 'none' })),
-      companion: { trailer: false, cards: false, chat: false }, risk: null, shippedAt: today,
+      companion: { trailer: false, cards: false, chat: false }, risk: null, shippedAt: (c && c.date) || today,
     };
   }
   const res = writeShip(ctx.epicDir, ship);
