@@ -255,7 +255,8 @@ ${c.bold('Build helpers')}
   yad build ship <story> --task <T> --repo <r> --pr <n>
                                        Record a ship from the MERGED PR/MR (merge commit, checks,
                                        approvers); not \`yad ship\`, which commits and opens the PR.
-                                       Merged with no PR/MR: --merge-commit <sha> (no --pr).
+                                       Merged with no PR/MR: --merge-commit <sha> (no --pr) — the
+                                       platform is asked which PR merged it. [--no-fetch]
                                        No platform to read: --merge-commit <sha> [--approver <login>]…
   yad build done <story> [--no-fetch]  Every task shipped: status shipped, review step closed
   yad run checks [--title <text>] [--body <file>] [--base <ref>] [--no-build] [--no-fetch]
@@ -935,7 +936,7 @@ async function main() {
       if (action === 'start') result = await commands.buildStart(o.dir, { story, repo: o.repo, today });
       else if (action === 'step') result = await commands.buildStep(o.dir, { story, repo: o.repo, step: a3, to: a4, reason: o.reason, via: o.via || 'human', run: o.run || null, task: o.task || null, today });
       else if (action === 'trust') result = await commands.buildTrust(o.dir, { story, repo: o.repo, step: a3, verdict: o.verdict, signals, ranBy: o['ran-by'] || 'human', note: o.note || null, uid: o.uid || null, task: o.task || null, today });
-      else if (action === 'ship') result = await commands.buildShip(o.dir, { story, task: o.task, repo: o.repo, pr: o.pr, mergeCommit: o['merge-commit'] || null, approvers: o.approver || [], today });
+      else if (action === 'ship') result = await commands.buildShip(o.dir, { story, task: o.task, repo: o.repo, pr: o.pr, mergeCommit: o['merge-commit'] || null, approvers: o.approver || [], today, fetch: !o.noFetch });
       else result = await commands.buildDone(o.dir, { story, today, fetch: !o.noFetch });
       break;
     }

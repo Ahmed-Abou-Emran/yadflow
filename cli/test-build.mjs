@@ -508,11 +508,11 @@ test('yad build ship: a task merged with no PR is recorded from its commit on th
     git(api, 'add', '-A');
     git(api, 'commit', '-q', '-m', 'feat: x\n\nTask: EP-l-S01-T01');
     const sha = git(api, 'rev-parse', 'HEAD');
-    const runner = () => ({ ok: false, stdout: '', stderr: 'no PR is read' });
+    const runner = (cmd, args) => (cmd === 'gh' && args[0] === 'api' ? { ok: true, stdout: '[]', stderr: '' } : { ok: false, stdout: '', stderr: 'no PR is read' });
     // Not pushed yet: not on the default branch.
     await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', mergeCommit: sha, today: '2026-10-20', runner }), /is not on api's main/);
     git(api, 'push', '-q', 'origin', 'main');
-    await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T02', repo: 'api', mergeCommit: sha, today: '2026-10-20', runner }), /does not name EP-l-S01-T02/);
+    await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T02', repo: 'api', mergeCommit: sha, today: '2026-10-20', runner }), /names EP-l-S01-T01, not EP-l-S01-T02/);
     const r = await buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', mergeCommit: sha.slice(0, 12), today: '2026-10-20', runner });
     assert.equal(r.changed, true);
     const ship = read(path.join(dir, '.sdlc/build-log/EP-l-S01-T01-api.json'));
@@ -522,8 +522,45 @@ test('yad build ship: a task merged with no PR is recorded from its commit on th
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 
-test('yad build ship with no PR: the commit names the task by the reconcile rules — not a revert, a longer id, or a PR merge (#346 review 5)', () => {
+test('yad build ship with no PR, where the platform can be read: the commit names the task, and the platform says no PR merged it (#346 review 7)', async () => {
+  const { buildShip } = await import('./build.mjs');
   const { W, P, dir, api } = workspace();
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
+    const commit = (msg) => {
+      write(api, { [`src/${Math.random().toString(36).slice(2)}.js`]: 'x\n' });
+      git(api, 'add', '-A');
+      git(api, 'commit', '-q', '-m', msg);
+      git(api, 'push', '-q', 'origin', 'main');
+      return git(api, 'rev-parse', 'HEAD');
+    };
+    let pulls = '[]';
+    let fails = false;
+    const runner = (cmd, args) => (cmd === 'gh' && args[0] === 'api' && /\/pulls$/.test(args[1])
+      ? (fails ? { ok: false, stdout: '', stderr: 'HTTP 401' } : { ok: true, stdout: pulls, stderr: '' })
+      : { ok: false, stdout: '', stderr: 'x' });
+    const ship = (task, sha) => buildShip(P, { story: 'EP-l-S01', task, repo: 'api', mergeCommit: sha, today: '2026-10-20', runner });
+    await assert.rejects(() => ship('T1', commit('feat: ten\n\nTask: EP-l-S01-T10')), /names EP-l-S01-T10, not EP-l-S01-T1/);
+    await assert.rejects(() => ship('T03', commit('Revert "feat: three EP-l-S01-T03"')), /does not name EP-l-S01-T03/);
+    await assert.rejects(() => ship('T03', commit('docs: notes\n\nfollow-up to EP-l-S01-T03')), /does not name EP-l-S01-T03/);
+    // The platform says a PR merged it: refused, naming that PR so its approvers are kept.
+    const squashed = commit('feat: EP-l-S01-T03 orders (#5)');
+    pulls = JSON.stringify([{ number: 5, merged_at: '2026-10-19T10:00:00Z' }]);
+    await assert.rejects(() => ship('T03', squashed), /merged by PR\/MR #5/);
+    // The platform cannot answer: refused, never a guess.
+    fails = true;
+    await assert.rejects(() => ship('T03', squashed), /could not ask github whether a PR\/MR merged/);
+    // "(#346)" cites an issue and the platform knows no PR: recorded with no PR.
+    fails = false;
+    pulls = '[]';
+    const r = await ship('T04', commit('feat: EP-l-S01-T04 orders (#346)'));
+    assert.equal(r.changed, true);
+    assert.equal(read(path.join(dir, '.sdlc/build-log/EP-l-S01-T04-api.json')).pr, 'none');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build ship by hand, where the platform cannot be read: the person vouches, but not for another task or another PR (#346 review 7)', () => {
+  const { W, P, api } = workspace();
   try {
     const commit = (msg) => {
       write(api, { [`src/${Math.random().toString(36).slice(2)}.js`]: 'x\n' });
@@ -532,36 +569,13 @@ test('yad build ship with no PR: the commit names the task by the reconcile rule
       git(api, 'push', '-q', 'origin', 'main');
       return git(api, 'rev-parse', 'HEAD');
     };
-    const ship = (task, sha) => yad(P, 'build', 'ship', 'EP-l-S01', '--task', task, '--repo', 'api', '--merge-commit', sha);
-    let r = ship('T1', commit('feat: ten\n\nTask: EP-l-S01-T10'));
-    assert.match(r.out, /does not name EP-l-S01-T1/, 'T1 is not T10');
-    r = ship('T03', commit('Revert "feat: three EP-l-S01-T03"'));
-    assert.match(r.out, /does not name EP-l-S01-T03/, 'a revert is not evidence');
-    r = ship('T03', commit('docs: notes\n\nfollow-up to EP-l-S01-T03'));
-    assert.match(r.out, /does not name EP-l-S01-T03/, 'a mention in the body is not evidence');
-    r = ship('T03', commit('Merge pull request #42 from org/feat/EP-l-S01-T03-x'));
-    assert.match(r.out, /merged PR\/MR #42/);
-    assert.match(r.out, /--pr 42/);
-    // GitLab's merge commit names its MR in the body.
-    git(api, 'checkout', '-q', '-b', 'feat/EP-l-S01-T03-x');
-    write(api, { 'src/t03.js': 'x\n' });
-    git(api, 'add', '-A');
-    git(api, 'commit', '-q', '-m', 'feat: three');
-    git(api, 'checkout', '-q', 'main');
-    git(api, 'merge', '-q', '--no-ff', '-m', "Merge branch 'feat/EP-l-S01-T03-x' into 'main'\n\nSee merge request team/api!12", 'feat/EP-l-S01-T03-x');
-    git(api, 'push', '-q', 'origin', 'main');
-    r = ship('T03', git(api, 'rev-parse', 'HEAD'));
-    assert.match(r.out, /merged PR\/MR #12/);
-    // A subject ending (#346) may cite an issue: with no platform to confirm it, it is no PR.
-    r = ship('T04', commit('feat: EP-l-S01-T04 orders (#346)'));
+    let r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T03', '--repo', 'api', '--merge-commit', commit('feat: ten\n\nTask: EP-l-S01-T10'));
+    assert.match(r.out, /names EP-l-S01-T10, not EP-l-S01-T03/);
+    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T03', '--repo', 'api', '--pr', '7', '--merge-commit', commit('Merge pull request #9 from org/feat/x'), '--approver', 'bob');
+    assert.match(r.out, /merged PR\/MR #9, not #7/);
+    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T03', '--repo', 'api', '--pr', '5', '--merge-commit', commit('feat: list orders (#5)'), '--approver', 'bob');
     assert.equal(r.code, 0, r.out);
-    // By hand, with an approver: still checked as evidence of the task.
-    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T05', '--repo', 'api', '--merge-commit', commit('docs: unrelated'), '--approver', 'bob');
-    assert.match(r.out, /does not name EP-l-S01-T05/);
-    r = ship('T03', commit('feat: EP-l-S01-T03 squashed'));
-    assert.equal(r.code, 0, r.out);
-    // No platform at all: the same check, and pr none.
-    assert.equal(read(path.join(dir, '.sdlc/build-log/EP-l-S01-T03-api.json')).pr, 'none');
+    assert.match(r.out, /names no task — recorded as you say it ships EP-l-S01-T03/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 
@@ -605,4 +619,21 @@ test('prOfCommit: certain for a GitHub or GitLab merge, only a maybe for a squas
   assert.deepEqual(prOfCommit("Merge branch 'feat/x' into 'main'", 'See merge request team/api!12'), { pr: 12, certain: true });
   assert.deepEqual(prOfCommit('feat: orders (#17)'), { pr: 17, certain: false });
   assert.deepEqual(prOfCommit('feat: orders #17 later'), { pr: null, certain: false });
+});
+
+test('yad build step: the same close sent again is "already done", and no second trust run is asked for (#346 review 7)', () => {
+  const { W, P, dir } = workspace();
+  try {
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    const r0 = yad(P, 'build', 'trust', 'EP-l-S01', '--repo', 'api', 'spec', '--verdict', 'approved-unchanged', '--json');
+    const uid = json(r0).uid;
+    let r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'done', '--run', uid);
+    assert.equal(r.code, 0, r.out);
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'done', '--run', uid);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /spec is already done in EP-l-S01 \/ api — nothing changed/);
+    assert.equal(fs.readdirSync(path.join(dir, '.sdlc/trust-log')).length, 1);
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'done', '--task', 'T01');
+    assert.match(r.out, /--task does not apply to spec/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });

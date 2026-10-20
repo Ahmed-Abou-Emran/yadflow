@@ -138,7 +138,8 @@ engineer-review rule is satisfied (Step 2). Then:
   `epics/<epic>/.sdlc/build-log/<story>-<task>-<repo>.json` (shape: `references/ship-and-record.md`). A
   repo whose platform cannot be read records it by hand: `--merge-commit <sha> --approver <login>`. A
   task merged with no PR/MR: `--merge-commit <sha>` and no `--pr` (the commit must be on the default
-  branch and name the task in its `Task:` trailer or subject — not a revert). It moves the story to `in-build`. Never write the shard by hand.
+  branch and name the task in its `Task:` trailer or subject; the platform is asked whether a PR merged it,
+  and a PR that did is named instead). It moves the story to `in-build`. Never write the shard by hand.
 - **Update the story state** — when **every** task in each repo's `specs/<story>/tasks.md` has a ship,
   run `yad build done <story>`: it checks that, closes the `engineer-review` step in each lane, and sets
   the story `status: shipped`, so `yad next`, the epic seal and `yad tidy` all read it shipped. It needs

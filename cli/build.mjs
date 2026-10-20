@@ -117,6 +117,7 @@ export function planStep(buildState, { story, repo, step, to, reason = null, by 
   if (isPassed(target)) {
     // `done --task T02` on a step T01 closed is not "already done": T02 has not been through it.
     if (to === 'done' && task && target.closed?.task !== task) {
+      if (!PER_TASK.has(step)) throw err(CODE, `--task does not apply to ${step}`, `${step} is walked once per story, not per task`);
       throw err(CODE, `${step} was closed ${target.closed?.task ? `for ${target.closed.task}` : 'for no task'}, not ${task}`, `reopen it for ${task} first: yad build step ${story} --repo ${repo} implement in_progress --task ${task}`);
     }
     if (to === 'done') return { buildState: bs, already: true };
@@ -323,7 +324,9 @@ export async function buildStep(root, { story, repo, step, to, reason, via = 'hu
     const st = Array.isArray(lane?.steps) ? lane.steps.find((x) => x?.id === step) : null;
     const forTask = (task && task !== true ? task : null) || st?.task || null;
     const used = [st?.closed?.run, ...(Array.isArray(st?.runs) ? st.runs.map((x) => x?.run) : [])].filter(Boolean);
-    if (used.includes(runUid)) throw err(CODE, `trust run ${runUid} already closed ${step} in ${story} / ${repo}`, 'each close names its own run: record this one with `yad build trust`');
+    // The same close sent again (an orchestrator resuming) is "already done", not a second close.
+    const same = st && isPassed(st) && st.closed?.run === runUid && (!forTask || st.closed?.task === forTask);
+    if (!same && used.includes(runUid)) throw err(CODE, `trust run ${runUid} already closed ${step} in ${story} / ${repo}`, 'each close names its own run: record this one with `yad build trust`');
     const known = readTrustRuns(ctx.epicDir).some((r) => r.uid === runUid && r.story === story && r.repo === repo && r.step === step
       && !(r.task && forTask && r.task !== forTask));
     if (!known) throw err(CODE, `no trust run ${runUid} for ${story} / ${repo} / ${step}`, `\`yad build trust ${story} --repo ${repo} ${step} --verdict …\` prints the uid of the run it records`);
@@ -438,21 +441,25 @@ export function tasksInBranch(branch) {
   return [...String(branch || '').matchAll(/(?:^|[/_])(ep-[a-z0-9-]+?-s\d+-t\d+)(?=$|[-_/])/gi)].map((m) => m[1].toLowerCase());
 }
 
-// A commit in the repo's own checkout, checked as evidence of a task: it exists, it is on the default
-// branch (origin's, fetched first; the local one when there is no origin), and it names the task by the
-// rules `yad reconcile check` reads every commit with — a `Task:` trailer, a task branch a merge brought in,
-// or the full id in the subject; never a revert, never a mention in the body.
-function checkCommit(where, { story, task, repo, mergeCommit }) {
+// A commit in the repo's own checkout: it exists and is on the default branch (origin's, fetched first
+// unless --no-fetch; the local one when there is no origin). `strict` (a ship read with the platform's help)
+// also asks that it names the task, by the rules `yad reconcile check` reads every commit with — a `Task:`
+// trailer, a task branch a merge brought in, or the full id in the subject. By hand, where the platform
+// cannot be read, the person vouches for it: it may not name a DIFFERENT task, and naming none is a warning.
+function checkCommit(where, { story, task, repo, mergeCommit, strict = true, fetch = true }) {
   const cwd = where.checkout;
   const hasOrigin = run('git', ['remote', 'get-url', 'origin'], { cwd }).ok;
   const head = run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { cwd }).stdout;
   const branch = where.defaultBranch || (head.startsWith('origin/') ? head.slice(7) : 'main');
   let ref = `refs/heads/${branch}`;
   if (hasOrigin) {
-    if (!run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd }).ok) {
-      throw err(CODE, `could not fetch ${branch} in ${repo} to check the commit`, 'check the network and your login, then run this again');
+    if (fetch && !run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd }).ok) {
+      throw err(CODE, `could not fetch ${branch} in ${repo} to check the commit`, 'check the network and your login, or pass --no-fetch to check against the last fetched copy');
     }
     ref = `refs/remotes/origin/${branch}`;
+  }
+  if (!run('git', ['rev-parse', '--verify', '--quiet', ref], { cwd }).ok) {
+    throw err(CODE, `${repo} has no ${hasOrigin ? `origin/${branch}` : `branch ${branch}`} to check the commit against`, `set default_branch for ${repo} in .sdlc/repos.json`);
   }
   const sha = run('git', ['rev-parse', '--verify', '--quiet', `${mergeCommit}^{commit}`], { cwd }).stdout;
   if (!sha) throw err(CODE, `${mergeCommit} is not a commit in ${repo}`, 'fetch it, or check the SHA');
@@ -461,26 +468,41 @@ function checkCommit(where, { story, task, repo, mergeCommit }) {
   }
   const rec = readCommit(cwd, sha);
   if (!rec) throw err(CODE, `${mergeCommit} could not be read in ${repo}`, 'check the SHA');
-  if (!tasksOfCommit(rec).some((x) => x.task === `${story}-${task}`)) {
-    throw err(CODE, `${mergeCommit} does not name ${story}-${task}`, 'the commit must name the task it ships: its Task: trailer, the task branch a merge commit brought in, or the full id in its subject');
+  const named = tasksOfCommit(rec).map((x) => x.task);
+  const want = `${story}-${task}`;
+  if (!named.includes(want)) {
+    if (strict || named.length) {
+      throw err(CODE, named.length ? `${mergeCommit} names ${named.join(', ')}, not ${want}` : `${mergeCommit} does not name ${want}`,
+        'the commit must name the task it ships: its Task: trailer, the task branch a merge commit brought in, or the full id in its subject');
+    }
+    warn(`${mergeCommit} names no task — recorded as you say it ships ${want}`);
   }
   const body = run('git', ['log', '-1', '--format=%b', sha], { cwd }).stdout;
   return { sha, rec, body, date: run('git', ['log', '-1', '--format=%cs', sha], { cwd }).stdout };
 }
 
-// The ship of a task merged with no PR/MR. A commit that merged one is refused, so the ship keeps that PR's
-// approvers: GitHub's "Merge pull request #N from …" and GitLab's "See merge request …!N" are certain; a
-// squash subject ending "(#N)" may name an issue instead, so it is refused only when the platform confirms
-// PR #N merged as this very commit.
-function shipWithoutPr(where, { story, task, repo, mergeCommit, today, readable, runner }) {
-  const c = checkCommit(where, { story, task, repo, mergeCommit });
-  const certain = prOfCommit(c.rec.subject, c.body);
-  let viaPr = certain.certain ? certain.pr : null;
-  if (!viaPr && certain.pr && readable) {
-    const got = readMergedPr(where.platform, certain.pr, { cwd: where.checkout, runner });
-    if (got.ok && got.merged && got.mergeCommit === c.sha) viaPr = certain.pr;
+// Which PRs/MRs merged a commit, asked of the platform — the only reliable answer (the user's decision,
+// 2026-10-20): a squash subject ending "(#N)" may cite an issue, and a GitLab merge names its MR only in
+// the body. Returns { ok, prs: [numbers] } or { ok: false, reason }.
+export function prsForCommit(platform, sha, { cwd, runner = run } = {}) {
+  if (platform === 'gitlab') {
+    const r = runner('glab', ['api', `projects/:id/repository/commits/${sha}/merge_requests`], { cwd });
+    if (!r.ok) return { ok: false, reason: r.stderr || 'glab api failed' };
+    try { return { ok: true, prs: (JSON.parse(r.stdout) || []).filter((m) => m?.state === 'merged').map((m) => Number(m.iid)).filter(Boolean) }; } catch { return { ok: false, reason: 'unreadable glab answer' }; }
   }
-  if (viaPr) throw err(CODE, `${mergeCommit} merged PR/MR #${viaPr}`, `record it from that PR/MR, with its approvers: yad build ship ${story} --task ${task} --repo ${repo} --pr ${viaPr}`);
+  const r = runner('gh', ['api', `repos/{owner}/{repo}/commits/${sha}/pulls`], { cwd });
+  if (!r.ok) return { ok: false, reason: r.stderr || 'gh api failed' };
+  try { return { ok: true, prs: (JSON.parse(r.stdout) || []).filter((p) => p?.merged_at).map((p) => Number(p.number)).filter(Boolean) }; } catch { return { ok: false, reason: 'unreadable gh answer' }; }
+}
+
+// The ship of a task merged with no PR/MR, where the platform can be read: the commit names the task, and
+// the platform says no PR merged it. A PR that did is named (so the ship keeps its approvers); a platform
+// that cannot answer is a refusal, never a guess.
+function shipWithoutPr(where, { story, task, repo, mergeCommit, today, runner, fetch }) {
+  const c = checkCommit(where, { story, task, repo, mergeCommit, strict: true, fetch });
+  const asked = prsForCommit(where.platform, c.sha, { cwd: where.checkout, runner });
+  if (!asked.ok) throw err(CODE, `could not ask ${where.platform} whether a PR/MR merged ${mergeCommit}: ${asked.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, or pass --pr <n> if one did`);
+  if (asked.prs.length) throw err(CODE, `${mergeCommit} was merged by PR/MR #${asked.prs[0]}`, `record it from that PR/MR, with its approvers: yad build ship ${story} --task ${task} --repo ${repo} --pr ${asked.prs[0]}`);
   return {
     story, task, repo, branch: null, pr: 'none', mergeCommit: c.sha, gates: [],
     ai_review: null, engineer_review: [], companion: { trailer: false, cards: false, chat: false },
@@ -490,7 +512,7 @@ function shipWithoutPr(where, { story, task, repo, mergeCommit, today, readable,
 
 const riskFromBody = (body) => (String(body).match(/^\s*Risk level:\s*(low|medium|high)\b/im) || [])[1]?.toLowerCase() || null;
 
-export async function buildShip(root, { story, task, repo, pr, mergeCommit = null, approvers = [], today, runner = run, prReader = readPr } = {}) {
+export async function buildShip(root, { story, task, repo, pr, mergeCommit = null, approvers = [], today, fetch = true, runner = run, prReader = readPr } = {}) {
   repoArg(repo, `yad build ship ${story || '<story>'} --task <T01> --repo <name> --pr <n>`);
   if (!TASK_RE.test(String(task || ''))) throw err(CODE, `--task must be a task id such as T01 (got '${task ?? ''}')`, `yad build ship ${story} --task T01 --repo ${repo} --pr <n>`);
   if (pr && pr !== true && !/^[1-9]\d*$/.test(String(pr))) throw err(CODE, `--pr must be the PR/MR number (got '${pr}')`, 'the number, not a URL or a branch');
@@ -511,8 +533,8 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
   const byHand = (mergeCommit && mergeCommit !== true) || approvers.length;
   // A task merged with no PR/MR (the user's decision, 2026-10-20): the commit is the evidence, so it must be
   // on the default branch and name the task. Nobody approved a PR, so there are no approvers.
-  if (where.checkout && (!pr || pr === true) && mergeCommit && mergeCommit !== true && !approvers.length) {
-    ship = shipWithoutPr(where, { story, task, repo, mergeCommit, today, readable, runner });
+  if (readable && (!pr || pr === true) && mergeCommit && mergeCommit !== true && !approvers.length) {
+    ship = shipWithoutPr(where, { story, task, repo, mergeCommit, today, runner, fetch });
   } else if (readable && byHand) throw err(CODE, `the ship is read from PR #${pr || '?'} on ${where.platform}`, '--merge-commit and --approver are for a repo whose platform cannot be read; drop them');
   const usable = readable;
   if (where.platform && !where.checkout && !byHand) {
@@ -553,7 +575,10 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
       throw err(CODE, where.platform ? `${cliFor(where.platform)} is not available to read the PR` : `${repo} has no platform to read the PR from`, '--merge-commit <sha> (and --approver <login> for each approver) records it by hand');
     }
     // In the repo's checkout the commit is checked as evidence too; only with no checkout is it taken as given.
-    const c = where.checkout ? checkCommit(where, { story, task, repo, mergeCommit }) : null;
+    const c = where.checkout ? checkCommit(where, { story, task, repo, mergeCommit, strict: false, fetch }) : null;
+    // A commit whose own merge subject names a PR is that PR's: a different --pr is refused.
+    const said = c ? prOfCommit(c.rec.subject, c.body) : null;
+    if (said?.certain && pr && pr !== true && Number(pr) !== said.pr) throw err(CODE, `${mergeCommit} merged PR/MR #${said.pr}, not #${pr}`, `--pr ${said.pr}`);
     ship = {
       story, task, repo, branch: null, pr: pr && pr !== true ? `#${pr}` : 'local', mergeCommit: c ? c.sha : mergeCommit, gates: [],
       ai_review: null, engineer_review: approvers.map((a) => ({ approver: a, engagement: 'none' })),
