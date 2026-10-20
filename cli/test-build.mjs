@@ -1033,8 +1033,15 @@ test('follow-ups: a fix/<story>-<task>-followup branch never competes with the t
     };
     const prReader = () => ({ ok: true, reviews: [] });
     const base = { story: 'EP-l-S01', task: 'T01', repo: 'api', today: '2026-10-20', runner, prReader };
+    // Before the ship, an open follow-up does not compete with the task's own merged PR, by search or by number;
+    // and it is never recorded as the task's ship (review 2).
+    views[9] = followUpPr;
     let r = await buildMerged(P, base);
     assert.deepEqual([r.state, r.pr], ['merged', 7]);
+    await assert.rejects(() => buildMerged(P, { ...base, pr: '9' }), /a follow-up branch, while EP-l-S01-T01's own PR\/MR is another/);
+    views[9] = { ...followUpPr, state: 'MERGED', mergeCommit: { oid: sha.T02 } };
+    await assert.rejects(() => buildShip(P, { ...base, pr: '9' }), /a follow-up branch of EP-l-S01-T01/);
+    delete views[9];
     await assert.rejects(() => buildMerged(P, { ...base, followUp: true }), /has no ship in api yet, so it has no follow-up/);
     await assert.rejects(() => buildShip(P, { ...base, pr: '9', followUp: true }), /has no ship in api yet/);
     r = await buildMerged(P, { ...base, ship: true });

@@ -89,7 +89,8 @@ or by `yad build merged … --follow-up --ship`, which asks the platform about t
 order they merged. The ship itself, `yad build done`, tidy and the epic seal are unchanged. Once the task has shipped,
 `yad build merged` answers `shipped` for it, so a follow-up never competes with the task's own PR/MR, and
 `yad build ship` refuses a follow-up PR as the task's ship. Before the task ships, a branch named like a
-follow-up (`…-T03-followup-reminders`) is just the task's own branch. A follow-up is opened by a person:
+follow-up is the task's own only when no plain-named PR/MR for the task is open or merged — a task may be
+about follow-ups (`…-T03-followup-reminders`). A follow-up is opened by a person:
 `yad open-pr --via auto` refuses a task that has shipped.
 
 This is the Build analogue of Shape's `approvals.json` — files only, no hidden state, so a

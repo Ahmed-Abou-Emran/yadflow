@@ -601,11 +601,10 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
     const carries = branchTask(got.branch, story, task);
     if (carries === 'other') throw err(CODE, `PR #${pr} is from ${got.branch}, which names another task than ${story}-${task}`, 'check --task and --pr');
     if (carries === 'none') warn(`PR #${pr} is from ${got.branch || '(no branch)'}, which names no task — check it is the PR for ${story}-${task}`);
-    // A follow-up branch is never the task's own ship, and a follow-up should come from one. The name counts
-    // only once the task has shipped: before that, `…-T03-followup-reminders` is just the task's own branch.
+    // A follow-up branch is never the task's own ship, and a follow-up should come from one. The name is the
+    // task's own only when nothing else can be (`ownPrs`): before the ship, with no plain-named PR for the task.
     const follows = isFollowUpBranch(got.branch, story, task);
-    const shipped = followUp || readShips(ctx.epicDir).some((s) => s.story === story && s.task === task && s.repo === repo);
-    if (follows && !followUp && shipped) throw err(CODE, `PR #${pr} is from ${got.branch}, a follow-up branch of ${story}-${task}`, `add it to the task's ship: yad build ship ${story} --task ${task} --repo ${repo} --pr ${pr} --follow-up`);
+    if (follows && !followUp && !followUpIsOwn(ctx, where, { story, task, repo, runner })) throw err(CODE, `PR #${pr} is from ${got.branch}, a follow-up branch of ${story}-${task}`, `add it to the task's ship: yad build ship ${story} --task ${task} --repo ${repo} --pr ${pr} --follow-up`);
     if (followUp && !follows) warn(`PR #${pr} is from ${got.branch || '(no branch)'}, not a follow-up branch (fix/${story}-${task}-followup-<words>) — check it is a follow-up of ${story}-${task}`);
     const pull = prReader(where.platform, pr, { cwd: where.checkout, runner });
     const seen = new Set();
@@ -654,6 +653,23 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
 
 // Add a follow-up's merge to the task's ship, where the ship lives (its shard, or the folded log). The same
 // PR/MR or merge commit twice is refused; the story's status is left as it is.
+// The PRs/MRs that can be the task's OWN (issue #350): those not named as follow-ups, and — only when there
+// is none of those that is not closed — the follow-up-named ones, as a task may simply be about follow-ups
+// (`…-T03-followup-reminders`). One rule for `build merged` and `build ship`.
+export function ownPrs(prs) {
+  const plain = prs.filter((x) => !x.followUp);
+  return plain.some((x) => x.state !== 'closed') ? plain : prs;
+}
+
+// May a follow-up-named PR be the task's own ship? Not once the task has shipped, and not while a plain-named
+// PR for it is open or merged. A listing that fails is a refusal, never a guess.
+function followUpIsOwn(ctx, where, { story, task, repo, runner }) {
+  if (readShips(ctx.epicDir).some((s) => s.story === story && s.task === task && s.repo === repo)) return false;
+  const found = findTaskPrs(where.platform, { story, task }, { cwd: where.checkout, runner });
+  if (!found.ok) throw err(CODE, `could not list the PRs/MRs of ${repo} to see whether this follow-up branch is ${story}-${task}'s own: ${found.reason}`, 'log in, then run this again');
+  return ownPrs(found.prs).some((x) => x.followUp);
+}
+
 // Two commit ids for the same commit: a ship recorded by hand may hold the short or upper-case form.
 const sameSha = (a, b) => {
   const x = String(a || '').toLowerCase();
@@ -709,7 +725,8 @@ export function findTaskPrs(platform, { story, task }, { cwd, runner = run } = {
 //
 // `--follow-up` (issue #350) asks the same of the task's FOLLOW-UP PRs/MRs instead — branches named
 // `fix/<story>-<task>-followup-<words>` — after the task has shipped; `--ship` adds the merge to the ship's
-// `followUps`. Without it, follow-up branches are left out, so they never compete with the task's own PR.
+// `followUps`. Without it, a shipped task is answered `shipped`, and before the ship a follow-up-named PR is
+// the task's own only when no plain-named one is open or merged (`ownPrs`).
 export async function buildMerged(root, { story, task, repo, pr = null, ship = false, followUp = false, today, fetch = true, runner = run, prReader = readPr } = {}) {
   const { ctx, where } = shipContext(root, { story, task, repo, pr, verb: 'merged' });
   const id = `${story}-${task}`;
@@ -757,8 +774,8 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
     if (!found.ok) throw err(CODE, `could not list the PRs/MRs of ${repo}: ${found.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, or pass --pr <n>`);
     // The task's own PRs, or (--follow-up) its follow-up PRs not yet recorded. A PR closed without a merge
     // never competes with a later one for the same task.
-    // Before the task ships (the only time this runs without --follow-up) a follow-up name means nothing.
-    const mine = found.prs.filter((x) => (followUp ? x.followUp && !recorded.has(String(x.number)) : true));
+    // Without --follow-up the task has not shipped (a shipped task was answered above): its own PRs (`ownPrs`).
+    const mine = followUp ? found.prs.filter((x) => x.followUp && !recorded.has(String(x.number))) : ownPrs(found.prs);
     const live = mine.filter((x) => x.state !== 'closed');
     if (live.length > 1) throw err(CODE, `more than one ${followUp ? 'follow-up ' : ''}PR/MR carries ${id}: ${live.map((x) => `#${x.number} (${x.state})`).join(', ')}`, `name the one to ask about: yad build merged ${story} --task ${task} --repo ${repo}${followUp ? ' --follow-up' : ''} --pr <n>`);
     // A closed follow-up owes nothing — the task has shipped — so it is `none`, not `closed`.
@@ -782,6 +799,12 @@ export async function buildMerged(root, { story, task, repo, pr = null, ship = f
   const carries = branchTask(got.branch, story, task);
   if (carries === 'other') throw err(CODE, `PR/MR #${n} is from ${got.branch}, which names another task than ${id}`, 'check --task and --pr');
   const follows = isFollowUpBranch(got.branch, story, task);
+  // A follow-up-named PR asked about by number is the task's own only by the same rule as the search.
+  if (follows && !followUp && pr && pr !== true) {
+    const found = findTaskPrs(where.platform, { story, task }, { cwd: where.checkout, runner });
+    if (!found.ok) throw err(CODE, `could not list the PRs/MRs of ${repo}: ${found.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, then run this again`);
+    if (!ownPrs(found.prs).some((x) => x.followUp)) throw err(CODE, `PR/MR #${n} is from ${got.branch}, a follow-up branch, while ${id}'s own PR/MR is another`, `ask about the task's own: yad build merged ${story} --task ${task} --repo ${repo}`);
+  }
   const state = got.state || (got.merged ? 'merged' : null);
   if (followUp && !follows && carries !== 'none' && !(ship && state === 'merged')) warn(`PR/MR #${n} is from ${got.branch}, not a follow-up branch (fix/${id}-followup-<words>) — check it is a follow-up of ${id}`);
   // Once, here — unless --ship hands a merged PR to `build ship`, which gives this warning itself.
