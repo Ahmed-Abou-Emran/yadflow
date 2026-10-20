@@ -455,7 +455,8 @@ From a `ready-for-build` story, do this **inside each code repo the story is tag
 5. **Engineer review + merge** — `yad-engineer-review` → AI review (advisory) → **engineer approval (a
    human)** → merge. `yad build ship <story> --task <T> --repo <r> --pr <n>` records the ship in the build
    ledger from the merged PR and moves the story to `in-build` (`yad build merged … --ship` asks the
-   platform whether the PR merged and records it, so the agent need not wait to be told); once every task
+   platform whether the PR merged and records it, so the agent need not wait to be told; a later fix from
+   `fix/<story>-<task>-followup-<words>` is added to the task's ship with `--follow-up`); once every task
    has shipped,
    `yad build done <story>` moves it to `shipped`.
    That ledger is **shard-then-fold**: the ship lands as its own file under `.sdlc/build-log/` so two people
