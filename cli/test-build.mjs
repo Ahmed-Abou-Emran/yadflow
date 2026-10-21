@@ -1312,9 +1312,11 @@ test('yad build sync: records every merged task with no ship through yad build s
     write(P, { 'epics/EP-l/.sdlc/build-state/EP-l-S01.json': JSON.stringify({ story: 'EP-l-S01', repos: { api: { status: 'skipped', record: { reason: 'x' } } } }) });
     r = await buildSync(P, { today: '2026-10-21', runner, prReader });
     assert.match(r.left[0].why, /EP-l-S01 \/ api is skipped/);
-    fs.writeFileSync(bsFile, '{ not json');
-    r = await buildSync(P, { today: '2026-10-21', runner, prReader });
-    assert.doesNotMatch(r.left[0].why, /predate tracking/);
+    for (const bad of ['{ not json', '[]', '{"repos": []}']) {
+      fs.writeFileSync(bsFile, bad);
+      r = await buildSync(P, { today: '2026-10-21', runner, prReader });
+      assert.doesNotMatch(r.left[0].why, /predate tracking/, bad);
+    }
     fs.rmSync(bsFile);
     yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
     // A dry run writes nothing and says what it would run — the build done too (review 1).

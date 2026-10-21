@@ -1189,7 +1189,10 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
 function laneIn(root, story, repo) {
   let bs;
   try { bs = readJSONStrict(path.join(epicFiles(epicRoot(root, storyEpic(story))).buildStateDir, `${story}.json`), null); } catch { return true; }
-  const lane = isPlainObject(bs?.repos) ? bs.repos[repo] : null;
+  if (bs == null) return false;
+  // A file of the wrong shape is `yad build ship`'s to refuse, by its own cause.
+  if (!isPlainObject(bs) || ('repos' in bs && !isPlainObject(bs.repos))) return true;
+  const lane = isPlainObject(bs.repos) ? bs.repos[repo] : null;
   return isPlainObject(lane) && (Array.isArray(lane.steps) || lane.status === 'skipped');
 }
 
