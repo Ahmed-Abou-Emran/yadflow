@@ -269,6 +269,11 @@ ${c.bold('Build helpers')}
                                        its branch): shipped | merged | open | closed | none. One
                                        check, nothing waits; --ship records the ship once merged.
                                        --follow-up asks about the task's follow-up PRs instead
+  yad build sync [<epic>] [--dry-run] [--no-fetch]
+                                       Record every ship the code repos already show (what yad
+                                       reconcile check finds merged with no ship), through yad build
+                                       ship, then yad build done for each story now fully shipped;
+                                       what it cannot record is listed with the command to run
   yad build done <story> [--no-fetch]  Every task shipped: status shipped, review step closed
   yad run checks [--title <text>] [--body <file>] [--base <ref>] [--no-build] [--no-fetch]
                                        Run every PR/MR gate here before you push, as CI would: this
@@ -525,7 +530,7 @@ const ACTIONS = {
   toolbox: { known: ['list', 'check', 'add', 'remove'], default: 'list' },
   member: { known: ['add', 'list', 'remove'], default: 'list' },
   run: { known: ['checks'] },
-  build: { known: ['start', 'step', 'trust', 'ship', 'merged', 'done'] },
+  build: { known: ['start', 'step', 'trust', 'ship', 'merged', 'done', 'sync'] },
 };
 // E80 — how each command finds its folder. A PRODUCT command works on the Product; a REPO command works
 // on the code repo it runs in and reads the Product beside it. The rest take their folder as given:
@@ -544,7 +549,7 @@ function writesProduct(cmd, o) {
   const action = o._[1];
   if (cmd === 'update' || cmd === 'kill' || cmd === 'unkill') return true;
   // `build merged` only asks the platform, unless --ship records what it found.
-  if (cmd === 'build') return action !== 'merged' || !!o.ship;
+  if (cmd === 'build') return action === 'sync' ? !o.dryRun : action !== 'merged' || !!o.ship;
   if (cmd === 'check') return !!o.fix;
   if (cmd === 'epic' || cmd === 'foundation') return action === 'new';
   if (cmd === 'skill') return action === 'bind' || action === 'unbind';
@@ -943,6 +948,12 @@ async function main() {
       const [, action, story, a3, a4] = o._;
       const known = ACTIONS.build.known;
       if (!known.includes(action)) { refuse(`unknown build action: ${action ?? '(none)'} (${known.join('|')})`, '`yad build start <story> --repo <name>` begins a story\'s lane'); break; }
+      // `sync` takes an optional epic, not a story.
+      if (action === 'sync') {
+        if (noProduct()) break;
+        result = await commands.buildSync(o.dir, { epic: story || null, dryRun: !!o.dryRun, today, fetch: !o.noFetch });
+        break;
+      }
       if (!story) { refuse(`usage: yad build ${action} <story> …`, 'the story id, such as EP-checkout-S01'); break; }
       if (noProduct()) break;
       // Every --signal is name=value.

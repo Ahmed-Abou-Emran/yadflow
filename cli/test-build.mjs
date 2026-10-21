@@ -1286,3 +1286,51 @@ test('yad open-pr on a grouped branch: the body lists every task; --via auto che
     await assert.rejects(open, /carries tasks of another story: EP-l-S02-T01/);
   } finally { process.exitCode = prev; fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('yad build sync: records every merged task with no ship through yad build ship, then build done; lists what it cannot (#365)', async () => {
+  const { buildSync } = await import('./build.mjs');
+  const { W, P, dir, sha } = workspace();
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github', default_branch: 'main' }, { name: 'web', path: '../web' }] }) });
+    const asked = [];
+    const runner = (cmd, args) => {
+      asked.push(args.join(' '));
+      // T01 merged with no PR; T02's merge commit was merged by PR #9.
+      if (cmd === 'gh' && args[0] === 'api' && args[1] === `repos/{owner}/{repo}/commits/${sha.T01}/pulls`) return { ok: true, stdout: '[]', stderr: '' };
+      if (cmd === 'gh' && args[0] === 'api' && args[1] === `repos/{owner}/{repo}/commits/${sha.T02}/pulls`) return { ok: true, stdout: JSON.stringify([{ number: 9, merged_at: '2026-10-20T10:00:00Z' }]), stderr: '' };
+      if (cmd === 'gh' && args[1] === 'view' && args[2] === '9') return { ok: true, stdout: JSON.stringify({ state: 'MERGED', mergedAt: '2026-10-20T10:00:00Z', mergeCommit: { oid: sha.T02 }, headRefName: 'feat/EP-l-S01-T02-list', url: 'https://github.com/o/api/pull/9', body: '', statusCheckRollup: [] }), stderr: '' };
+      return { ok: false, stdout: '', stderr: 'x' };
+    };
+    const prReader = () => ({ ok: true, reviews: [{ login: 'bob', state: 'APPROVED', body: '' }] });
+    // A dry run writes nothing and says what it would run.
+    let r = await buildSync(P, { dryRun: true, today: '2026-10-21', runner, prReader });
+    assert.deepEqual(r.planned.filter((p) => p.task).map((p) => p.task).sort(), ['T01', 'T02']);
+    assert.equal(fs.existsSync(path.join(dir, '.sdlc/build-log')), false);
+    // The run: T01 from its commit (no PR merged it), T02 from PR #9, which the platform names for its commit.
+    r = await buildSync(P, { today: '2026-10-21', runner, prReader });
+    assert.deepEqual(r.recorded.map((x) => [x.task, x.pr]).sort(), [['T01', 'none'], ['T02', 'https://github.com/o/api/pull/9']]);
+    assert.deepEqual(read(path.join(dir, '.sdlc/build-log/EP-l-S01-T02-api.json')).engineer_review, [{ approver: 'bob', engagement: 'none' }]);
+    assert.equal(status(dir), 'in-build');
+    // build done ran for the story, and its refusal (web is not cloned) is listed, not fatal.
+    assert.equal(r.notDone[0].story, 'EP-l-S01');
+    assert.equal(r.changed, true);
+    // Asked again: nothing left to record.
+    r = await buildSync(P, { today: '2026-10-21', runner, prReader });
+    assert.deepEqual([r.recorded.length, r.left.length], [0, 0]);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build sync: where the platform cannot be read, nothing is recorded on nobody\'s word (#365)', async () => {
+  const { buildSync } = await import('./build.mjs');
+  const { W, P, dir } = workspace();
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', default_branch: 'main' }, { name: 'web', path: '../web' }] }) });
+    const r = await buildSync(P, { today: '2026-10-21' });
+    assert.equal(r.recorded.length, 0);
+    assert.deepEqual(r.left.map((x) => x.task).sort(), ['T01', 'T02']);
+    assert.match(r.left[0].why, /api has no platform to read the PR\/MR that merged/);
+    assert.match(r.left[0].fix, /a person records it/);
+    assert.equal(fs.existsSync(path.join(dir, '.sdlc/build-log')), false);
+    await assert.rejects(() => buildSync(P, { epic: 'nope' }), /'nope' is not an epic id/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});

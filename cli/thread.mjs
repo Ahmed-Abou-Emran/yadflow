@@ -227,6 +227,8 @@ export async function runReconcile(root, { action = 'check', thread = null, runn
       // Never an all-clear over what was not read, or read in part (review 2): each such repo, ledger or
       // registry is counted as unknown, and the closing line says so too.
       unknown = drift.repos.filter((r) => !r.read || r.partial).length + drift.unreadEpics.length + drift.uncompared.length + (drift.registry ? 1 : 0);
+      // The merged tasks it can record on its own: `yad build sync` (#365) runs `yad build ship` for each.
+      if (drift.findings.some((f) => f.kind === 'merged-no-ship')) hand('`yad build sync` records these through `yad build ship`, and sets each story shipped once every task is — what it cannot record, it lists');
       if (!counted && !unknown) ok('every merged task has a ship record');
       else if (!counted) info(`no merged task without a ship record in what was read — ${unknown} repo(s), ledger(s), stories or registry not read in full, so merged work there is unknown`);
     }
