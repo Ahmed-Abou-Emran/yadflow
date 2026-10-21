@@ -92,7 +92,12 @@ yad_package_manager_spec() {
     let text, pkg;
     // npm strips a UTF-8 byte-order mark before parsing (Windows editors often write one); do the same
     // so a manifest npm itself installs from is not rejected here.
-    try { text = fs.readFileSync("package.json", "utf8").replace(/^\uFEFF/, ""); pkg = JSON.parse(text); }
+    try { text = fs.readFileSync("package.json", "utf8").replace(/^\uFEFF/, ""); }
+    catch (error) {
+      process.stderr.write(`FAIL [package-manager]: package.json could not be read (${String(error.code ?? error.message).replace(new RegExp(`${UNSAFE.source}+`, "g"), " ")}) — let the CI user read the file.\n`);
+      process.exit(1);
+    }
+    try { pkg = JSON.parse(text); }
     catch (error) {
       // The parser message can quote bytes of the file: control characters and line separators become
       // spaces and it is cut short, so a crafted package.json cannot start a second line in the CI log.
@@ -105,7 +110,7 @@ yad_package_manager_spec() {
       const reason = error.message.replace(place, "").replace(/ in JSON$/, "")
         .replace(new RegExp(`${UNSAFE.source}+`, "g"), " ").trim().slice(0, 200);
       let where = "";
-      if (position && text !== undefined) {
+      if (position) {
         // JSON allows CRLF, LF and a bare CR between values; an editor counts each as a new line.
         const lines = text.slice(0, Number(position[1])).split(/\r\n|\r|\n/);
         const line = lines.length;
