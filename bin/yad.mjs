@@ -950,6 +950,7 @@ async function main() {
       if (!known.includes(action)) { refuse(`unknown build action: ${action ?? '(none)'} (${known.join('|')})`, '`yad build start <story> --repo <name>` begins a story\'s lane'); break; }
       // `sync` takes an optional epic, not a story.
       if (action === 'sync') {
+        if (a3 !== undefined) { refuse(`yad build sync takes one epic at most (got ${o._.slice(2).join(' ')})`, 'yad build sync [<epic>]'); break; }
         if (noProduct()) break;
         result = await commands.buildSync(o.dir, { epic: story || null, dryRun: !!o.dryRun, today, fetch: !o.noFetch });
         break;

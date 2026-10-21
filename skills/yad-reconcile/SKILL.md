@@ -50,7 +50,8 @@ Run `yad reconcile check` (optionally `--thread EP-<genesis>`). For each thread 
     `yad build ship <story> --task <T> --repo <r> --pr <n>`. **`yad build sync [<epic>]` (#365) records them all
     at once**: each through `yad build ship` — from the PR/MR that merged it, or from its merge commit where the
     platform confirms no PR/MR did — then `yad build done` for each story now fully shipped; what it cannot
-    record (no platform to read, a refusal) it lists with the command to run. `--dry-run` only says what it
+    record (no platform to read, a refusal, a story with no Build lane there — it may predate tracking) it lists
+    with the command to run. `--dry-run` only says what it
     would run. A retroactive ship covers only the tasks merged up to it (by its merge commit or date);
   - a story whose every repo holds merged work or a ship, but whose `status:` is not `shipped` — a hint,
     not counted: if no task is left, run `yad build done <story>` — when it refuses (no lane yet, a repo

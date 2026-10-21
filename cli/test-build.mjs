@@ -1302,9 +1302,16 @@ test('yad build sync: records every merged task with no ship through yad build s
       return { ok: false, stdout: '', stderr: 'x' };
     };
     const prReader = () => ({ ok: true, reviews: [{ login: 'bob', state: 'APPROVED', body: '' }] });
-    // A dry run writes nothing and says what it would run.
-    let r = await buildSync(P, { dryRun: true, today: '2026-10-21', runner, prReader });
+    // No Build lane: the story may predate tracking, so a person decides (review 1).
+    let r = await buildSync(P, { today: '2026-10-21', runner, prReader });
+    assert.deepEqual([r.recorded.length, r.left.length], [0, 2]);
+    assert.match(r.left[0].why, /has no Build lane in api — it may predate tracking/);
+    assert.match(r.left[0].fix, /--retro-ship/);
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    // A dry run writes nothing and says what it would run — the build done too (review 1).
+    r = await buildSync(P, { dryRun: true, today: '2026-10-21', runner, prReader });
     assert.deepEqual(r.planned.filter((p) => p.task).map((p) => p.task).sort(), ['T01', 'T02']);
+    assert.ok(r.planned.some((p) => p.command === 'yad build done EP-l-S01'));
     assert.equal(fs.existsSync(path.join(dir, '.sdlc/build-log')), false);
     // The run: T01 from its commit (no PR merged it), T02 from PR #9, which the platform names for its commit.
     r = await buildSync(P, { today: '2026-10-21', runner, prReader });
@@ -1325,6 +1332,7 @@ test('yad build sync: where the platform cannot be read, nothing is recorded on 
   const { W, P, dir } = workspace();
   try {
     write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', default_branch: 'main' }, { name: 'web', path: '../web' }] }) });
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
     const r = await buildSync(P, { today: '2026-10-21' });
     assert.equal(r.recorded.length, 0);
     assert.deepEqual(r.left.map((x) => x.task).sort(), ['T01', 'T02']);
@@ -1332,5 +1340,24 @@ test('yad build sync: where the platform cannot be read, nothing is recorded on 
     assert.match(r.left[0].fix, /a person records it/);
     assert.equal(fs.existsSync(path.join(dir, '.sdlc/build-log')), false);
     await assert.rejects(() => buildSync(P, { epic: 'nope' }), /'nope' is not an epic id/);
+    await assert.rejects(() => buildSync(P, { epic: 'EP-typo' }), /no epic EP-typo in this Product/);
+    assert.match(yad(P, 'build', 'sync', 'EP-l', 'EP-x').out, /takes one epic at most/);
+    // A repo not read is unknown, never an all-clear (review 1).
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../gone', default_branch: 'main' }, { name: 'web', path: '../web' }] }) });
+    const u = await buildSync(P, { today: '2026-10-21' });
+    assert.equal(u.recorded.length + u.left.length, 0);
+    assert.ok(u.unread.some((x) => x.repo === 'api'));
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build ship from a commit more than one merged PR holds: refused, naming them, never the first (#365 review 1)', async () => {
+  const { buildShip } = await import('./build.mjs');
+  const { W, P, sha } = workspace();
+  try {
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', platform: 'github' }, { name: 'web', path: '../web' }] }) });
+    const runner = (cmd, args) => (cmd === 'gh' && args[0] === 'api' && /\/pulls$/.test(args[1])
+      ? { ok: true, stdout: JSON.stringify([{ number: 4, merged_at: 'x' }, { number: 8, merged_at: 'y' }]), stderr: '' }
+      : { ok: false, stdout: '', stderr: 'x' });
+    await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', mergeCommit: sha.T01, today: '2026-10-21', runner }), /is in more than one merged PR\/MR: #4, #8/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
