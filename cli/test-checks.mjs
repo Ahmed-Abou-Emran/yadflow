@@ -4579,6 +4579,8 @@ test('pr-title gate: product rejects an artifact change (epics/**) on a non-revi
   const r = runGate(PR_TITLE, T, ['--profile', 'product', '--head', 'chore/sneak', '--changed', artifact, 'chore: sneak in an artifact']);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /Shape artifacts/);
+  // It says how to fix it (#385): the branch to move the change to, the command, or drop it.
+  assert.match(r.out, / — move those changes to a review\/<epic>\/<artifact> branch \(review\/EP-foundation\/foundation for foundation\/\) and run yad open-pr from it, which pushes the branch and opens the review PR; or drop them from this PR\.$/m);
   // non-review head touching only tooling paths => still a tooling PR, code title passes
   assert.equal(runGate(PR_TITLE, T, ['--profile', 'product', '--head', 'chore/sneak', '--changed', tooling, 'chore: rewire the Product gates']).code, 0);
   // the legitimate path: a review/EP-* head carries the artifact change and wants the review title
@@ -4656,6 +4658,8 @@ test('pr-template gate: product rejects an artifact change (epics/**) on a non-r
   const r = runGate(PR_TEMPLATE, T, ['--profile', 'product', '--head', 'chore/sneak', '--changed', artifact, CODE_TPL]);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /Shape artifacts/);
+  // The same fix as pr-title (#385).
+  assert.match(r.out, /FAIL \[pr-template\]: .* — move those changes to a review\/<epic>\/<artifact> branch .* run yad open-pr from it, .*; or drop them from this PR\.$/m);
   // non-review head touching only tooling paths => code task template passes
   assert.equal(runGate(PR_TEMPLATE, T, ['--profile', 'product', '--head', 'chore/sneak', '--changed', tooling, CODE_TPL]).code, 0);
   // the legitimate path: a review/EP-* head still requires the artifact-review template

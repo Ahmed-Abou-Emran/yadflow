@@ -363,7 +363,9 @@ from the event payload):
     pass — it has no EP artifact to review.
   - **Anti-bypass guard.** The branch name alone is not trusted: a non-review head that actually
     changes Shape artifacts (any path under `epics/**` or `foundation/**`) **FAILS** — those changes must go through
-    a `review/EP-*` PR and the artifact-review workflow. CI passes the PR's changed paths via
+    a `review/EP-*` PR and the artifact-review workflow. The message says how: move them to a
+    `review/<epic>/<artifact>` branch (`review/EP-foundation/foundation` for the Foundation) and run
+    `yad open-pr` from it, or drop them from the PR. CI passes the PR's changed paths via
     `--changed <file>` (computed from the diff against the base ref); without that list (a direct
     by-hand caller) the guard is inert and the branch split alone applies. A step owner file
     (`epics/<epic>/.sdlc/owners/<step>.json`, `foundation/.sdlc/owners/…`, written by `yad assign`,
@@ -387,7 +389,7 @@ catches a free-form description that bypassed it:
     `## Impact & Risk`, `## Checklist`, filled `Risk level:`).
   - **Anti-bypass guard** (same as pr-title): a non-review head that changes Shape artifacts
     (`epics/**` or `foundation/**`, detected from the CI-supplied `--changed <file>` list) **FAILS** — artifact changes
-    must go through a `review/EP-*` PR. Step owner files alone do not count (E47).
+    must go through a `review/EP-*` PR, and the message says how, as in pr-title. Step owner files alone do not count (E47).
 
 **GitLab truncates the description this gate reads.** `$CI_MERGE_REQUEST_DESCRIPTION` stops at **2700
 characters**, so a long but perfectly valid MR can lose a required section *before the gate sees it* —

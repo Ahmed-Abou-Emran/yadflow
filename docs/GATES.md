@@ -495,7 +495,7 @@ is the same).
 |---|---|
 | `'<title>' is not '<type>(<scope>)?!?: <description>' …` / `must not end with a period.` | Edit the title. The check runs again when the title changes. |
 | `'<title>' is not a Product review title 'review: <artifact> (EP-<slug>)'.` | Edit the title to that shape. |
-| `head '<branch>' changes Shape artifacts (epics/** or foundation/**) but is not a review/EP-* branch …` | Move the `epics/` or `foundation/` changes to a review pull request (`yad gate open <epic> <artifact>` opens one), or drop them from this one. |
+| `head '<branch>' changes Shape artifacts (epics/** or foundation/**) but is not a review/EP-* branch …` | Move the `epics/` or `foundation/` changes to a `review/<epic>/<artifact>` branch (`review/EP-foundation/foundation` for the Foundation) and run `yad open-pr` from it: it pushes the branch and opens the review pull request. Or drop those changes from this one. The message says both. |
 | `empty title …` / `unknown --profile …` | A wiring problem in the CI job. |
 
 ## pr-template
