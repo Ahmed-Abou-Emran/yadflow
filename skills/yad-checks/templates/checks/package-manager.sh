@@ -85,6 +85,10 @@ yad_package_manager_spec() {
   # shellcheck disable=SC2016
   node --input-type=module -e '
     import fs from "node:fs";
+    // Characters that must never reach the CI log as they are: control characters (an ESC starts a
+    // terminal colour code), line and paragraph separators, text-direction marks (U+202E shows the
+    // rest of the line backwards) and zero-width characters. The same list as cli/detect.mjs UNSAFE.
+    const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
     let text, pkg;
     // npm strips a UTF-8 byte-order mark before parsing (Windows editors often write one); do the same
     // so a manifest npm itself installs from is not rejected here.
@@ -99,7 +103,7 @@ yad_package_manager_spec() {
       const place = / at position (\d+)(?: \(line \d+ column \d+\))?$/;
       const position = place.exec(error.message);
       const reason = error.message.replace(place, "").replace(/ in JSON$/, "")
-        .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim().slice(0, 200);
+        .replace(new RegExp(`${UNSAFE.source}+`, "g"), " ").trim().slice(0, 200);
       let where = "";
       if (position && text !== undefined) {
         // JSON allows CRLF, LF and a bare CR between values; an editor counts each as a new line.
@@ -123,10 +127,8 @@ yad_package_manager_spec() {
       process.stderr.write("FAIL [package-manager]: packageManager holds a line break — remove it, so the value is one line like pnpm@9.15.0.\n");
       process.exit(1);
     }
-    // The value is printed in later messages; a control character, line separator, zero-width or
-    // text-direction character in it would reach the CI log as it is (an ESC starts a terminal colour
-    // code, U+202E shows the rest of the line backwards).
-    if (pkg.packageManager && /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/.test(pkg.packageManager)) {
+    // The value is printed in later messages, so an UNSAFE character in it is refused.
+    if (pkg.packageManager && UNSAFE.test(pkg.packageManager)) {
       process.stderr.write("FAIL [package-manager]: packageManager holds an invisible or control character — remove it, so the value is plain text like pnpm@9.15.0.\n");
       process.exit(1);
     }

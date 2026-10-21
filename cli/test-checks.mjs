@@ -4222,7 +4222,14 @@ for (const [label, body, reason] of [
   });
 }
 
-for (const [label, ch] of [['an ESC', '\u001b'], ['a line separator', '\u2028'], ['a right-to-left override', '\u202e'], ['a zero-width space', '\u200b']]) {
+// Both ends of every range of the gate's UNSAFE list.
+for (const [label, ch] of [
+  ['an ESC', '\u001b'], ['a C1 control', '\u0085'], ['an Arabic letter mark', '\u061c'],
+  ['a zero-width space', '\u200b'], ['a right-to-left mark', '\u200f'], ['a line separator', '\u2028'],
+  ['a left-to-right embedding', '\u202a'], ['a right-to-left override', '\u202e'], ['a word joiner', '\u2060'],
+  ['an invisible plus', '\u2064'], ['a left-to-right isolate', '\u2066'], ['a pop directional isolate', '\u2069'],
+  ['a zero-width no-break space', '\ufeff'],
+]) {
   test(`install-deps: ${label} in packageManager is named, and never reaches the log`, () => {
     const { T, commandLog, env } = packageFixture({ packageManager: `yarn@1${ch}[2K`, lockfile: 'package-lock.json' });
     const r = spawnSync('bash', [INSTALL_DEPS], { cwd: T, env: { ...GIT_ENV, ...env }, encoding: 'utf8' });
@@ -4240,12 +4247,12 @@ test('install-deps: a parser message that quotes the file cannot start a new lin
   const r = runGate(INSTALL_DEPS, T, [], env);
   assert.notEqual(r.code, 0);
   // Node quotes about ten characters after the bad token, so each separator must sit inside them.
-  for (const quoted of ['{"a":x\n::error::p', '{"a":x\u2028::error::p']) {
+  for (const quoted of ['{"a":x\n::error::p', '{"a":x\u2028::error::p', '{"a":x\u202e::error::p']) {
     fs.writeFileSync(path.join(T, 'package.json'), quoted);
     const q = runGate(INSTALL_DEPS, T, [], env);
     // One line from FAIL to the fix: the separator became a space.
     assert.match(q.out, /FAIL \[package-manager\]: package\.json is not valid JSON \(Unexpected token 'x', "\{"a":x ::error::p[^\n]*\) — fix package\.json/);
-    assert.ok(!q.out.includes('\u2028'), 'no line separator reaches the log');
+    assert.ok(!q.out.includes('\u2028') && !q.out.includes('\u202e'), 'no separator or direction mark reaches the log');
   }
   assert.match(r.out, /package\.json is not valid JSON \(Unexpected token.*\) — fix package\.json; the parser message says what it found\./);
   assert.ok(!['\r', '\u001b', '\u2028'].some((c) => r.out.includes(c)), `no control character reaches the log\n${JSON.stringify(r.out)}`);
