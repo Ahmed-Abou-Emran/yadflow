@@ -123,10 +123,11 @@ yad_package_manager_spec() {
       process.stderr.write("FAIL [package-manager]: packageManager holds a line break — remove it, so the value is one line like pnpm@9.15.0.\n");
       process.exit(1);
     }
-    // The value is printed in later messages; a control character or line separator in it would
-    // reach the CI log as it is (an ESC starts a terminal colour code).
-    if (pkg.packageManager && /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(pkg.packageManager)) {
-      process.stderr.write("FAIL [package-manager]: packageManager holds a control character — remove it, so the value is plain text like pnpm@9.15.0.\n");
+    // The value is printed in later messages; a control character, line separator, zero-width or
+    // text-direction character in it would reach the CI log as it is (an ESC starts a terminal colour
+    // code, U+202E shows the rest of the line backwards).
+    if (pkg.packageManager && /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/.test(pkg.packageManager)) {
+      process.stderr.write("FAIL [package-manager]: packageManager holds an invisible or control character — remove it, so the value is plain text like pnpm@9.15.0.\n");
       process.exit(1);
     }
     process.stdout.write(pkg.packageManager || "");

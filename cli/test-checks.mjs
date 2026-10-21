@@ -4222,15 +4222,17 @@ for (const [label, body, reason] of [
   });
 }
 
-test('install-deps: an ESC in packageManager is named, and never reaches the log', () => {
-  const { T, commandLog, env } = packageFixture({ packageManager: 'yarn@1\u001b[2K', lockfile: 'package-lock.json' });
-  const r = spawnSync('bash', [INSTALL_DEPS], { cwd: T, env: { ...GIT_ENV, ...env }, encoding: 'utf8' });
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /FAIL \[package-manager\]: packageManager holds a control character — remove it, so the value is plain text like pnpm@9\.15\.0\./);
-  assert.ok(!(r.stdout + r.stderr).includes('\u001b'), 'no ESC reaches the log');
-  assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
-  fs.rmSync(T, { recursive: true, force: true });
-});
+for (const [label, ch] of [['an ESC', '\u001b'], ['a line separator', '\u2028'], ['a right-to-left override', '\u202e'], ['a zero-width space', '\u200b']]) {
+  test(`install-deps: ${label} in packageManager is named, and never reaches the log`, () => {
+    const { T, commandLog, env } = packageFixture({ packageManager: `yarn@1${ch}[2K`, lockfile: 'package-lock.json' });
+    const r = spawnSync('bash', [INSTALL_DEPS], { cwd: T, env: { ...GIT_ENV, ...env }, encoding: 'utf8' });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /FAIL \[package-manager\]: packageManager holds an invisible or control character — remove it, so the value is plain text like pnpm@9\.15\.0\./);
+    assert.ok(!(r.stdout + r.stderr).includes(ch), 'the character never reaches the log');
+    assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+}
 
 test('install-deps: a parser message that quotes the file cannot start a new line in the log', () => {
   const { T, commandLog, env } = packageFixture({ lockfile: 'package-lock.json' });
