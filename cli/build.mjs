@@ -1183,13 +1183,14 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
   return { story, shipped: true, changed: changedLanes > 0 || !!moved.changed, lanesClosed: changedLanes };
 }
 
-// Does `story` have a Build lane in `repo` — the lanes `yad build start` and `yad-run` write?
+// Does `story` have a Build lane in `repo` — the lanes `yad build start` and `yad-run` write? A skipped lane
+// and a build-state that does not parse count as there: `yad build ship` refuses each with its own cause
+// and fix (unskip; repair the file), which a person reads in the list — never "may predate tracking".
 function laneIn(root, story, repo) {
-  try {
-    const bs = readJSONStrict(path.join(epicFiles(epicRoot(root, storyEpic(story))).buildStateDir, `${story}.json`), null);
-    const lane = isPlainObject(bs?.repos) ? bs.repos[repo] : null;
-    return isPlainObject(lane) && Array.isArray(lane.steps);
-  } catch { return false; }
+  let bs;
+  try { bs = readJSONStrict(path.join(epicFiles(epicRoot(root, storyEpic(story))).buildStateDir, `${story}.json`), null); } catch { return true; }
+  const lane = isPlainObject(bs?.repos) ? bs.repos[repo] : null;
+  return isPlainObject(lane) && (Array.isArray(lane.steps) || lane.status === 'skipped');
 }
 
 // `yad build sync [<epic>]` (issue #365) — record the ships the code repos already show, so nobody has to
