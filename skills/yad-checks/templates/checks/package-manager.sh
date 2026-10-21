@@ -92,17 +92,21 @@ yad_package_manager_spec() {
     catch (error) {
       // The parser message can quote bytes of the file: control characters and line separators become
       // spaces and it is cut short, so a crafted package.json cannot start a second line in the CI log.
-      const position = /in JSON at position (\d+)/.exec(error.message);
-      const reason = error.message.replace(/ in JSON at position \d+.*$/s, "")
+      // Node words the place as "… in JSON at position N" or "… after JSON at position N"; Node 22+
+      // adds its own "(line X column Y)", which is dropped so every Node line prints the same text.
+      const position = / at position (\d+)/.exec(error.message);
+      const reason = error.message.replace(/(?: in JSON)? at position \d+.*$/s, "")
         .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim().slice(0, 200);
       let where = "";
       if (position && text !== undefined) {
         const before = text.slice(0, Number(position[1]));
         const line = before.split("\n").length;
-        const column = before.length - before.lastIndexOf("\n");
+        // Counted in characters, not UTF-16 units, so an emoji is one column, as in an editor.
+        const column = [...before.slice(before.lastIndexOf("\n") + 1)].length + 1;
         where = ` at line ${line}, column ${column}`;
       }
-      process.stderr.write(`FAIL [package-manager]: package.json is not valid JSON${where} (${reason}) — fix package.json at the place the parser names.\n`);
+      const fix = where ? "fix package.json at that place" : "fix package.json; the parser message says what it found";
+      process.stderr.write(`FAIL [package-manager]: package.json is not valid JSON${where} (${reason}) — ${fix}.\n`);
       process.exit(1);
     }
     if (pkg === null || typeof pkg !== "object" || Array.isArray(pkg)) {
