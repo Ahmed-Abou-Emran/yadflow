@@ -4246,14 +4246,16 @@ for (const [label, ch] of [
 // chmod cannot hide a file from root, and Windows has no mode bits.
 test('install-deps: a package.json that cannot be read says so, not "not valid JSON"', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
   const { T, commandLog, env } = packageFixture({ lockfile: 'package-lock.json' });
-  fs.chmodSync(path.join(T, 'package.json'), 0o000);
-  const r = runGate(INSTALL_DEPS, T, [], env);
-  assert.notEqual(r.code, 0);
-  assert.match(r.out, /FAIL \[package-manager\]: package\.json could not be read \(EACCES\) — let the CI user read the file\./);
-  assert.doesNotMatch(r.out, /not valid JSON/);
-  assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
-  fs.chmodSync(path.join(T, 'package.json'), 0o644);
-  fs.rmSync(T, { recursive: true, force: true });
+  try {
+    fs.chmodSync(path.join(T, 'package.json'), 0o000);
+    const r = runGate(INSTALL_DEPS, T, [], env);
+    assert.notEqual(r.code, 0);
+    assert.match(r.out, /FAIL \[package-manager\]: package\.json could not be read \(EACCES\) — let the CI user read the file\./);
+    assert.doesNotMatch(r.out, /not valid JSON/);
+    assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
+  } finally {
+    fs.rmSync(T, { recursive: true, force: true });
+  }
 });
 
 test('install-deps: a parser message that quotes the file cannot start a new line in the log', () => {
