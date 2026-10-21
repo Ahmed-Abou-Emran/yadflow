@@ -94,15 +94,19 @@ yad_package_manager_spec() {
       // spaces and it is cut short, so a crafted package.json cannot start a second line in the CI log.
       // Node words the place as "… in JSON at position N" or "… after JSON at position N"; Node 22+
       // adds its own "(line X column Y)", which is dropped so every Node line prints the same text.
-      const position = / at position (\d+)/.exec(error.message);
-      const reason = error.message.replace(/(?: in JSON)? at position \d+.*$/s, "")
+      // Read only at the end of the message: an "Unexpected token" message quotes the file, and the
+      // file could hold the words "at position".
+      const place = / at position (\d+)(?: \(line \d+ column \d+\))?$/;
+      const position = place.exec(error.message);
+      const reason = error.message.replace(place, "").replace(/ in JSON$/, "")
         .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim().slice(0, 200);
       let where = "";
       if (position && text !== undefined) {
-        const before = text.slice(0, Number(position[1]));
-        const line = before.split("\n").length;
+        // JSON allows CRLF, LF and a bare CR between values; an editor counts each as a new line.
+        const lines = text.slice(0, Number(position[1])).split(/\r\n|\r|\n/);
+        const line = lines.length;
         // Counted in characters, not UTF-16 units, so an emoji is one column, as in an editor.
-        const column = [...before.slice(before.lastIndexOf("\n") + 1)].length + 1;
+        const column = [...lines[line - 1]].length + 1;
         where = ` at line ${line}, column ${column}`;
       }
       const fix = where ? "fix package.json at that place" : "fix package.json; the parser message says what it found";
@@ -117,6 +121,12 @@ yad_package_manager_spec() {
     }
     if (pkg.packageManager && /[\r\n]/.test(pkg.packageManager)) {
       process.stderr.write("FAIL [package-manager]: packageManager holds a line break — remove it, so the value is one line like pnpm@9.15.0.\n");
+      process.exit(1);
+    }
+    // The value is printed in later messages; a control character or line separator in it would
+    // reach the CI log as it is (an ESC starts a terminal colour code).
+    if (pkg.packageManager && /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(pkg.packageManager)) {
+      process.stderr.write("FAIL [package-manager]: packageManager holds a control character — remove it, so the value is plain text like pnpm@9.15.0.\n");
       process.exit(1);
     }
     process.stdout.write(pkg.packageManager || "");

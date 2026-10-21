@@ -4191,6 +4191,7 @@ for (const [label, body, place, reason] of [
   ['text after the closing brace', '{"name": "fixture"}\n\n\nx\n', 'line 4, column 1', 'Unexpected non-whitespace character after JSON'],
   ['a byte-order mark and CRLF line ends', '\uFEFF{\r\n  "a": 1,\r\n  }\r\n', 'line 3, column 3', 'Expected double-quoted property name'],
   ['a character outside the basic plane', '{"\u00e9\u{1F600}": 1 "b": 2}', 'line 1, column 10', "Expected ',' or '\\}' after property value"],
+  ['bare CR line ends', '{\r"a": 1\r"b": 2}', 'line 3, column 1', "Expected ',' or '\\}' after property value"],
 ]) {
   test(`install-deps: invalid JSON with ${label} is placed by line and column`, () => {
     const { T, commandLog, env } = packageFixture({ lockfile: 'package-lock.json' });
@@ -4204,12 +4205,29 @@ for (const [label, body, place, reason] of [
   });
 }
 
-test('install-deps: invalid JSON with no place says the parser message tells what it found', () => {
-  const { T, commandLog, env } = packageFixture({ lockfile: 'package-lock.json' });
-  fs.writeFileSync(path.join(T, 'package.json'), '{"name": ');
-  const r = runGate(INSTALL_DEPS, T, [], env);
-  assert.notEqual(r.code, 0);
-  assert.match(r.out, /package\.json is not valid JSON \(Unexpected end of JSON input\) — fix package\.json; the parser message says what it found\./);
+for (const [label, body, reason] of [
+  ['the file ends too early', '{"name": ', /Unexpected end of JSON input/],
+  ['the quoted file text says "at position"', 'x at position 99', /Unexpected token 'x', "x at posit/],
+]) {
+  test(`install-deps: invalid JSON with no place (${label}) says the parser message tells what it found`, () => {
+    const { T, commandLog, env } = packageFixture({ lockfile: 'package-lock.json' });
+    fs.writeFileSync(path.join(T, 'package.json'), body);
+    const r = runGate(INSTALL_DEPS, T, [], env);
+    assert.notEqual(r.code, 0);
+    assert.match(r.out, /package\.json is not valid JSON \(.*\) — fix package\.json; the parser message says what it found\./);
+    assert.match(r.out, reason);
+    assert.doesNotMatch(r.out, /at line \d+, column/, 'text in the file is never read as a place');
+    assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+}
+
+test('install-deps: an ESC in packageManager is named, and never reaches the log', () => {
+  const { T, commandLog, env } = packageFixture({ packageManager: 'yarn@1\u001b[2K', lockfile: 'package-lock.json' });
+  const r = spawnSync('bash', [INSTALL_DEPS], { cwd: T, env: { ...GIT_ENV, ...env }, encoding: 'utf8' });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /FAIL \[package-manager\]: packageManager holds a control character — remove it, so the value is plain text like pnpm@9\.15\.0\./);
+  assert.ok(!(r.stdout + r.stderr).includes('\u001b'), 'no ESC reaches the log');
   assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
   fs.rmSync(T, { recursive: true, force: true });
 });
@@ -4219,6 +4237,14 @@ test('install-deps: a parser message that quotes the file cannot start a new lin
   fs.writeFileSync(path.join(T, 'package.json'), '{"a":x\u001b\r::error::pwned\u2028}');
   const r = runGate(INSTALL_DEPS, T, [], env);
   assert.notEqual(r.code, 0);
+  // Node quotes about ten characters after the bad token, so each separator must sit inside them.
+  for (const quoted of ['{"a":x\n::error::p', '{"a":x\u2028::error::p']) {
+    fs.writeFileSync(path.join(T, 'package.json'), quoted);
+    const q = runGate(INSTALL_DEPS, T, [], env);
+    // One line from FAIL to the fix: the separator became a space.
+    assert.match(q.out, /FAIL \[package-manager\]: package\.json is not valid JSON \(Unexpected token 'x', "\{"a":x ::error::p[^\n]*\) — fix package\.json/);
+    assert.ok(!q.out.includes('\u2028'), 'no line separator reaches the log');
+  }
   assert.match(r.out, /package\.json is not valid JSON \(Unexpected token.*\) — fix package\.json; the parser message says what it found\./);
   assert.ok(!['\r', '\u001b', '\u2028'].some((c) => r.out.includes(c)), `no control character reaches the log\n${JSON.stringify(r.out)}`);
   assert.ok(!/\n::error::/.test(r.out), 'no workflow command at the start of a line');
