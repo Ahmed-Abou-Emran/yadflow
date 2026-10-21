@@ -85,11 +85,26 @@ yad_package_manager_spec() {
   # shellcheck disable=SC2016
   node --input-type=module -e '
     import fs from "node:fs";
-    let pkg;
+    let text, pkg;
     // npm strips a UTF-8 byte-order mark before parsing (Windows editors often write one); do the same
     // so a manifest npm itself installs from is not rejected here.
-    try { pkg = JSON.parse(fs.readFileSync("package.json", "utf8").replace(/^\uFEFF/, "")); }
-    catch { process.stderr.write("FAIL [package-manager]: package.json is not valid JSON.\n"); process.exit(1); }
+    try { text = fs.readFileSync("package.json", "utf8").replace(/^\uFEFF/, ""); pkg = JSON.parse(text); }
+    catch (error) {
+      // The parser message can quote bytes of the file: control characters and line separators become
+      // spaces and it is cut short, so a crafted package.json cannot start a second line in the CI log.
+      const position = /in JSON at position (\d+)/.exec(error.message);
+      const reason = error.message.replace(/ in JSON at position \d+.*$/s, "")
+        .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim().slice(0, 200);
+      let where = "";
+      if (position && text !== undefined) {
+        const before = text.slice(0, Number(position[1]));
+        const line = before.split("\n").length;
+        const column = before.length - before.lastIndexOf("\n");
+        where = ` at line ${line}, column ${column}`;
+      }
+      process.stderr.write(`FAIL [package-manager]: package.json is not valid JSON${where} (${reason}) — fix package.json at the place the parser names.\n`);
+      process.exit(1);
+    }
     if (pkg === null || typeof pkg !== "object" || Array.isArray(pkg)) {
       process.stderr.write("FAIL [package-manager]: package.json must be a JSON object.\n"); process.exit(1);
     }
@@ -97,7 +112,7 @@ yad_package_manager_spec() {
       process.stderr.write("FAIL [package-manager]: packageManager must be a string.\n"); process.exit(1);
     }
     if (pkg.packageManager && /[\r\n]/.test(pkg.packageManager)) {
-      process.stderr.write(`FAIL [package-manager]: packageManager ${JSON.stringify(pkg.packageManager)} must name an exact semantic version.\n`);
+      process.stderr.write("FAIL [package-manager]: packageManager holds a line break — remove it, so the value is one line like pnpm@9.15.0.\n");
       process.exit(1);
     }
     process.stdout.write(pkg.packageManager || "");

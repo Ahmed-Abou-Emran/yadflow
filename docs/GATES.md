@@ -652,8 +652,10 @@ with Node and installs the exact npm or pnpm version `packageManager` names.
 |---|---|
 | `package.json#packageManager is set but corepack is not on PATH (Node 25+ no longer bundles it) — …` | Set the `YAD_NODE_VERSION` CI variable to a 20, 22 or 24 line, or run `npm install -g corepack` in the job. |
 | `corepack could not activate <spec>. A Corepack older than 0.31 cannot verify packages signed after the 2025 npm registry key rotation — …` | Use a newer Node line (`YAD_NODE_VERSION` 20, 22 or 24) or `npm install -g corepack`. Otherwise check that the version exists and the registry can be reached. |
-| `packageManager "<x>" must name an exact semantic version …` | Use a value like `pnpm@9.15.0`, with no line break in it. |
-| `package.json is missing.` / `package.json is not valid JSON.` / `package.json must be a JSON object.` / `packageManager must be a string.` | Fix `package.json`. |
+| `packageManager "<x>" must name an exact semantic version …` | Use a value like `pnpm@9.15.0`. |
+| `packageManager holds a line break — …` | Remove the line break, so the value is one line like `pnpm@9.15.0`. |
+| `package.json is not valid JSON at line <L>, column <C> (<parser message>) — …` | Fix `package.json` at that line and column. The parser message says what it found there. When the parser gives no place, the line has no line and column, and the parser message quotes the text near the error. |
+| `package.json is missing.` / `package.json must be a JSON object.` / `packageManager must be a string.` | Fix `package.json`. |
 | `unsupported packageManager '<x>' (supported: npm, pnpm).` | Use npm or pnpm. With an npm lockfile present, yarn and bun fall back to npm with a warning. |
 
 ## Commit trailers the gates read

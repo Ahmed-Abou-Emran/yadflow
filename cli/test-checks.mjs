@@ -4177,6 +4177,40 @@ for (const [label, body] of [['null', 'null'], ['an array', '[]'], ['a string', 
   });
 }
 
+// #383: the parser's own message, with the line and column, says what to fix in package.json.
+test('install-deps: invalid JSON names the line, the column and the parser message', () => {
+  const { T, commandLog, env } = packageFixture({ lockfile: 'package-lock.json' });
+  fs.writeFileSync(path.join(T, 'package.json'), '{\n  "name": "fixture",\n  "version": "0.0.0"\n  "scripts": {}\n}\n');
+  const r = runGate(INSTALL_DEPS, T, [], env);
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /FAIL \[package-manager\]: package\.json is not valid JSON at line 4, column 3 \(Expected ',' or '\}' after property value\) — fix package\.json at the place the parser names\./);
+  assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+test('install-deps: a parser message that quotes the file cannot start a new line in the log', () => {
+  const { T, commandLog, env } = packageFixture({ lockfile: 'package-lock.json' });
+  fs.writeFileSync(path.join(T, 'package.json'), '{"a":x\u001b\r::error::pwned\u2028}');
+  const r = runGate(INSTALL_DEPS, T, [], env);
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /package\.json is not valid JSON \(Unexpected token.*\) — fix package\.json/);
+  assert.ok(!/[\r\u001b\u2028]/.test(r.out), `no control character reaches the log\n${JSON.stringify(r.out)}`);
+  assert.ok(!/\n::error::/.test(r.out), 'no workflow command at the start of a line');
+  assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
+  fs.rmSync(T, { recursive: true, force: true });
+});
+
+for (const [label, value] of [['a carriage return', 'pnpm@9.15.0\r'], ['a line feed', 'pnpm@9.15.0\nx']]) {
+  test(`install-deps: ${label} in packageManager is named as a line break`, () => {
+    const { T, commandLog, env } = packageFixture({ packageManager: value, lockfile: 'pnpm-lock.yaml' });
+    const r = runGate(INSTALL_DEPS, T, [], env);
+    assert.notEqual(r.code, 0);
+    assert.match(r.out, /FAIL \[package-manager\]: packageManager holds a line break — remove it, so the value is one line like pnpm@9\.15\.0\./);
+    assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+}
+
 test('build-test-lint gate: the worker cap survives a byte-order mark on package.json', () => {
   const T = scaffoldRepo();
   const bin = path.join(T, 'bin');
