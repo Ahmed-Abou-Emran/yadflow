@@ -85,11 +85,43 @@ yad_package_manager_spec() {
   # shellcheck disable=SC2016
   node --input-type=module -e '
     import fs from "node:fs";
-    let pkg;
+    // Characters that must never reach the CI log as they are: control characters (an ESC starts a
+    // terminal colour code), line and paragraph separators, text-direction marks (U+202E shows the
+    // rest of the line backwards) and zero-width characters. The same list as cli/detect.mjs UNSAFE.
+    const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
+    let text, pkg;
     // npm strips a UTF-8 byte-order mark before parsing (Windows editors often write one); do the same
     // so a manifest npm itself installs from is not rejected here.
-    try { pkg = JSON.parse(fs.readFileSync("package.json", "utf8").replace(/^\uFEFF/, "")); }
-    catch { process.stderr.write("FAIL [package-manager]: package.json is not valid JSON.\n"); process.exit(1); }
+    try { text = fs.readFileSync("package.json", "utf8").replace(/^\uFEFF/, ""); }
+    catch (error) {
+      process.stderr.write(`FAIL [package-manager]: package.json could not be read (${String(error.code ?? error.message).replace(new RegExp(`${UNSAFE.source}+`, "g"), " ")}) — let the CI user read the file.\n`);
+      process.exit(1);
+    }
+    try { pkg = JSON.parse(text); }
+    catch (error) {
+      // The parser message can quote bytes of the file: control characters and line separators become
+      // spaces and it is cut short, so a crafted package.json cannot start a second line in the CI log.
+      // Node words the place as "… in JSON at position N" or "… after JSON at position N"; Node 22+
+      // adds its own "(line X column Y)", which is dropped so every Node line prints the same text.
+      // Read only at the end of the message: an "Unexpected token" message quotes the file, and the
+      // file could hold the words "at position".
+      const place = / at position (\d+)(?: \(line \d+ column \d+\))?$/;
+      const position = place.exec(error.message);
+      const reason = error.message.replace(place, "").replace(/ in JSON$/, "")
+        .replace(new RegExp(`${UNSAFE.source}+`, "g"), " ").trim().slice(0, 200);
+      let where = "";
+      if (position) {
+        // JSON allows CRLF, LF and a bare CR between values; an editor counts each as a new line.
+        const lines = text.slice(0, Number(position[1])).split(/\r\n|\r|\n/);
+        const line = lines.length;
+        // Counted in characters, not UTF-16 units, so an emoji is one column, as in an editor.
+        const column = [...lines[line - 1]].length + 1;
+        where = ` at line ${line}, column ${column}`;
+      }
+      const fix = where ? "fix package.json at that place" : "fix package.json; the parser message says what it found";
+      process.stderr.write(`FAIL [package-manager]: package.json is not valid JSON${where} (${reason}) — ${fix}.\n`);
+      process.exit(1);
+    }
     if (pkg === null || typeof pkg !== "object" || Array.isArray(pkg)) {
       process.stderr.write("FAIL [package-manager]: package.json must be a JSON object.\n"); process.exit(1);
     }
@@ -97,7 +129,12 @@ yad_package_manager_spec() {
       process.stderr.write("FAIL [package-manager]: packageManager must be a string.\n"); process.exit(1);
     }
     if (pkg.packageManager && /[\r\n]/.test(pkg.packageManager)) {
-      process.stderr.write(`FAIL [package-manager]: packageManager ${JSON.stringify(pkg.packageManager)} must name an exact semantic version.\n`);
+      process.stderr.write("FAIL [package-manager]: packageManager holds a line break — remove it, so the value is one line like pnpm@9.15.0.\n");
+      process.exit(1);
+    }
+    // The value is printed in later messages, so an UNSAFE character in it is refused.
+    if (pkg.packageManager && UNSAFE.test(pkg.packageManager)) {
+      process.stderr.write("FAIL [package-manager]: packageManager holds an invisible or control character — remove it, so the value is plain text like pnpm@9.15.0.\n");
       process.exit(1);
     }
     process.stdout.write(pkg.packageManager || "");
