@@ -102,7 +102,7 @@ if [ "$PROFILE" = product ]; then
       # artifacts (epics/**), which must go through a review/EP-* PR. Without this guard a non-review
       # head could carry an artifact change past the Shape review with only a code title.
       if artifact_changed; then
-        echo "FAIL [pr-title]: head '${HEADREF}' changes Shape artifacts (epics/** or foundation/**) but is not a review/EP-* branch — move those changes to a review/<epic>/<artifact> branch (review/EP-foundation/foundation for foundation/) and run yad open-pr from it, which pushes the branch and opens the review PR; or drop them from this PR."
+        echo "FAIL [pr-title]: head '${HEADREF}' changes Shape artifacts (epics/** or foundation/**) but is not a review/EP-* branch — move those changes to a review/<epic>/<artifact> branch, like review/EP-<slug>/architecture (review/EP-foundation/foundation for foundation/), and run yad open-pr from it, which pushes the branch and opens the review PR; or drop them from this PR."
         exit 1
       fi
       # tooling only — fall through to the code convention.

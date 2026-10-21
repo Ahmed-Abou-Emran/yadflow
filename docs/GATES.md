@@ -495,7 +495,7 @@ is the same).
 |---|---|
 | `'<title>' is not '<type>(<scope>)?!?: <description>' …` / `must not end with a period.` | Edit the title. The check runs again when the title changes. |
 | `'<title>' is not a Product review title 'review: <artifact> (EP-<slug>)'.` | Edit the title to that shape. |
-| `head '<branch>' changes Shape artifacts (epics/** or foundation/**) but is not a review/EP-* branch …` | Move the `epics/` or `foundation/` changes to a `review/<epic>/<artifact>` branch (`review/EP-foundation/foundation` for the Foundation) and run `yad open-pr` from it: it pushes the branch and opens the review pull request. Or drop those changes from this one. The message says both. |
+| `head '<branch>' changes Shape artifacts (epics/** or foundation/**) but is not a review/EP-* branch …` | Move the `epics/` or `foundation/` changes to a `review/<epic>/<artifact>` branch (`review/EP-foundation/foundation` for the Foundation) and run `yad open-pr` from it: it pushes the branch and opens the review pull request. Or drop those changes from this one. The message says both. `<artifact>` is the artifact's name without `.md` (`architecture`, `stories-S01`), as the message's example shows. One review branch carries one artifact of one epic, so changes to two artifacts need two branches. Ledger files under `.sdlc/` count as Shape changes too; only step owner files (`.sdlc/owners/`) may come from any branch. |
 | `empty title …` / `unknown --profile …` | A wiring problem in the CI job. |
 
 ## pr-template
