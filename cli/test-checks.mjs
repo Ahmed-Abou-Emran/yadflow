@@ -6070,6 +6070,7 @@ test('pr-title / pr-template gates: a Foundation change on a non-review head is 
     const tpl = runGate(PR_TEMPLATE, T, ['--profile', 'product', '--head', 'chore/sneak', '--changed', changed, body]);
     assert.equal(tpl.code, 1, tpl.out);
     assert.match(tpl.out, /Shape artifacts/);
+    assert.match(tpl.out, / \(review\/EP-foundation\/foundation for foundation\/\), and run yad open-pr from it,/);
     // The legitimate path is unchanged: a review/EP-* head carries it.
     assert.equal(runGate(PR_TITLE, T, ['--profile', 'product', '--head', 'review/EP-foundation/foundation', '--changed', changed, 'review: foundation/ (EP-foundation)']).code, 0);
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
