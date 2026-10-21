@@ -4178,30 +4178,36 @@ for (const [label, body] of [['null', 'null'], ['an array', '[]'], ['a string', 
 
 // #383: the parser's own message, with the line and column, says what to fix in package.json.
 // Node 18 words parse errors differently ("Unexpected string") and gives a position where Node 20+
-// quotes the file instead ("Unexpected token 'x', "…" is not valid JSON"), so each test accepts both.
-const NODE_QUOTES_JSON = (() => { try { JSON.parse('{"a":x'); } catch (error) { return error.message.includes('"{"a":x'); } })();
+// quotes the file instead ("Unexpected token 'x', "…" is not valid JSON"), so each test picks the
+// wording of the node the gate runs: the first one on the gate's PATH, which may not be this one.
+const NODE_QUOTES_JSON = spawnSync('node', ['-e', 'try { JSON.parse(\'{"a":x\'); } catch (e) { process.stdout.write(String(e.message.includes(\'"{"a":x\'))); }'],
+  { env: GIT_ENV, encoding: 'utf8' }).stdout === 'true';
+// [Node 20+ wording, Node 18 wording] of one parse error.
+const parserSays = (newer, older) => (NODE_QUOTES_JSON ? newer : older);
+
 test('install-deps: invalid JSON names the line, the column and the parser message', () => {
   const { T, commandLog, env } = packageFixture({ lockfile: 'package-lock.json' });
   fs.writeFileSync(path.join(T, 'package.json'), '{\n  "name": "fixture",\n  "version": "0.0.0"\n  "scripts": {}\n}\n');
   const r = runGate(INSTALL_DEPS, T, [], env);
   assert.notEqual(r.code, 0);
-  assert.match(r.out, /FAIL \[package-manager\]: package\.json is not valid JSON at line 4, column 3 \((?:Expected ',' or '\}' after property value|Unexpected string)\) — fix package\.json at that place\./);
+  const reason = parserSays("Expected ',' or '\\}' after property value", 'Unexpected string');
+  assert.match(r.out, new RegExp(`FAIL \\[package-manager\\]: package\\.json is not valid JSON at line 4, column 3 \\(${reason}\\) — fix package\\.json at that place\\.`));
   assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
   fs.rmSync(T, { recursive: true, force: true });
 });
 
 for (const [label, body, place, reason] of [
-  ['text after the closing brace', '{"name": "fixture"}\n\n\nx\n', 'line 4, column 1', 'Unexpected non-whitespace character after JSON|Unexpected token x'],
-  ['a byte-order mark and CRLF line ends', '\uFEFF{\r\n  "a": 1,\r\n  }\r\n', 'line 3, column 3', 'Expected double-quoted property name|Unexpected token \\}'],
-  ['a character outside the basic plane', '{"\u00e9\u{1F600}": 1 "b": 2}', 'line 1, column 10', "Expected ',' or '\\}' after property value|Unexpected string"],
-  ['bare CR line ends', '{\r"a": 1\r"b": 2}', 'line 3, column 1', "Expected ',' or '\\}' after property value|Unexpected string"],
+  ['text after the closing brace', '{"name": "fixture"}\n\n\nx\n', 'line 4, column 1', parserSays('Unexpected non-whitespace character after JSON', 'Unexpected token x')],
+  ['a byte-order mark and CRLF line ends', '\uFEFF{\r\n  "a": 1,\r\n  }\r\n', 'line 3, column 3', parserSays('Expected double-quoted property name', 'Unexpected token \\}')],
+  ['a character outside the basic plane', '{"\u00e9\u{1F600}": 1 "b": 2}', 'line 1, column 10', parserSays("Expected ',' or '\\}' after property value", 'Unexpected string')],
+  ['bare CR line ends', '{\r"a": 1\r"b": 2}', 'line 3, column 1', parserSays("Expected ',' or '\\}' after property value", 'Unexpected string')],
 ]) {
   test(`install-deps: invalid JSON with ${label} is placed by line and column`, () => {
     const { T, commandLog, env } = packageFixture({ lockfile: 'package-lock.json' });
     fs.writeFileSync(path.join(T, 'package.json'), body);
     const r = runGate(INSTALL_DEPS, T, [], env);
     assert.notEqual(r.code, 0);
-    assert.match(r.out, new RegExp(`package\\.json is not valid JSON at ${place} \\((?:${reason})\\) — fix package\\.json at that place\\.`));
+    assert.match(r.out, new RegExp(`package\\.json is not valid JSON at ${place} \\(${reason}\\) — fix package\\.json at that place\\.`));
     assert.doesNotMatch(r.out, /position|line \d+ column/, 'the parser\'s own offset is not repeated');
     assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
     fs.rmSync(T, { recursive: true, force: true });
@@ -4284,7 +4290,9 @@ test('install-deps: a parser message that quotes the file cannot start a new lin
       : /FAIL \[package-manager\]: package\.json is not valid JSON at line 1, column 6 \(Unexpected token x\) — fix package\.json/);
     assert.ok(!q.out.includes('\u2028') && !q.out.includes('\u202e'), 'no separator or direction mark reaches the log');
   }
-  assert.match(r.out, /package\.json is not valid JSON(?: at line 1, column 6)? \(Unexpected token[^\n]*\) — fix package\.json/);
+  assert.match(r.out, NODE_QUOTES_JSON
+    ? /package\.json is not valid JSON \(Unexpected token[^\n]*\) — fix package\.json; the parser message says what it found\./
+    : /package\.json is not valid JSON at line 1, column 6 \(Unexpected token x\) — fix package\.json at that place\./);
   assert.ok(!['\r', '\u001b', '\u2028'].some((c) => r.out.includes(c)), `no control character reaches the log\n${JSON.stringify(r.out)}`);
   assert.ok(!/\n::error::/.test(r.out), 'no workflow command at the start of a line');
   assert.ok(!fs.existsSync(commandLog), 'no package-manager command ran');
