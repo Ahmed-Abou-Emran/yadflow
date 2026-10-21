@@ -17,7 +17,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { ok, info, hand, warn, run, readJSON, readJSONStrict, writeJSON, isPlainObject, exists } from './lib.mjs';
-import { epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, nextAction, loadAutomation, effectiveAdvance, effectiveAction } from './epic-state.mjs';
+import { epicIds, epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, nextAction, loadAutomation, effectiveAdvance, effectiveAction } from './epic-state.mjs';
 import { DEFAULT_LIFECYCLE, laneOrder, laneAuthorSteps } from './lifecycle.mjs';
 import { epicFiles, PROJECT_FILES } from './manifest.mjs';
 import { err } from './errors.mjs';
@@ -25,7 +25,7 @@ import { readShips, readTrustRuns, writeShip, shipBlocked, updateShip, writeTrus
 import { setBuildStatus, readStoryStatus } from './artifact-status.mjs';
 import { readPr, mapApprovers, detectPlatform, cliFor, platformReady, prNumberFromUrl } from './platform.mjs';
 import { repoPathFromGitUrl } from './protection.mjs';
-import { readCommit, tasksOfCommit, prOfCommit } from './ship-drift.mjs';
+import { readCommit, tasksOfCommit, prOfCommit, shipDrift } from './ship-drift.mjs';
 import { recordActor } from './skip.mjs';
 import { sealedEpic } from './thread.mjs';
 
@@ -541,6 +541,7 @@ function shipWithoutPr(where, { story, task, repo, mergeCommit, today, runner, f
   const c = checkCommit(where, { story, task, repo, mergeCommit, strict: true, fetch });
   const asked = prsForCommit(where.platform, c.sha, { cwd: where.checkout, runner });
   if (!asked.ok) throw err(CODE, `could not ask ${where.platform} whether a PR/MR merged ${mergeCommit}: ${asked.reason}`, `log in with \`${cliFor(where.platform)} auth login\`, or pass --pr <n> if one did`);
+  if (asked.prs.length > 1) throw err(CODE, `${mergeCommit} is in more than one merged PR/MR: ${asked.prs.map((x) => `#${x}`).join(', ')}`, `name the one that shipped ${story}-${task}: yad build ship ${story} --task ${task} --repo ${repo} --pr <n>`);
   if (asked.prs.length) throw err(CODE, `${mergeCommit} was merged by PR/MR #${asked.prs[0]}`, `record it from that PR/MR, with its approvers: yad build ship ${story} --task ${task} --repo ${repo} --pr ${asked.prs[0]}`);
   return {
     story, task, repo, branch: null, pr: 'none', mergeCommit: c.sha, gates: [],
@@ -574,7 +575,7 @@ function shipRefused(res, { story, task, repo }) {
   throw err(CODE, `${repo} shares a ship file name with ${res.repo || 'another repo'}`, 'repo names that differ only in punctuation cannot both ship this task');
 }
 
-export async function buildShip(root, { story, task, repo, pr, mergeCommit = null, approvers = [], followUp = false, today, fetch = true, runner = run, prReader = readPr } = {}) {
+export async function buildShip(root, { story, task, repo, pr, mergeCommit = null, approvers = [], followUp = false, byHand: byHandOk = true, today, fetch = true, runner = run, prReader = readPr } = {}) {
   if (mergeCommit && mergeCommit !== true && !/^[0-9a-f]{7,64}$/i.test(String(mergeCommit))) throw err(CODE, `--merge-commit must be a commit SHA (got '${mergeCommit}')`, 'the merge commit, 7 to 64 hex characters');
   const { ctx, where } = shipContext(root, { story, task, repo, pr, verb: 'ship' });
   let ship;
@@ -632,7 +633,8 @@ export async function buildShip(root, { story, task, repo, pr, mergeCommit = nul
       risk: riskFromBody(got.body), shippedAt: (got.mergedAt || '').slice(0, 10) || today,
     };
   } else {
-    // No platform to ask: the person says what merged.
+    // No platform to ask: the person says what merged — never `yad build sync`, where no person vouches.
+    if (!byHandOk) throw err(CODE, `${where.platform ? `${cliFor(where.platform)} cannot read` : `${repo} has no platform to read`} the PR/MR that merged ${story}-${task}`, 'a person records it: yad build ship … --merge-commit <sha> [--approver <login>]');
     if (!mergeCommit || mergeCommit === true) {
       throw err(CODE, where.platform ? `${cliFor(where.platform)} is not available to read the PR` : `${repo} has no platform to read the PR from`, '--merge-commit <sha> (and --approver <login> for each approver) records it by hand');
     }
@@ -1179,4 +1181,105 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
   if (sealedEpic(root, ctx.epic)) info(`${ctx.epic} is now sealed: every story shipped — new work there needs a change epic (yad-change)`);
   hand('commit with `yad checkpoint --push`');
   return { story, shipped: true, changed: changedLanes > 0 || !!moved.changed, lanesClosed: changedLanes };
+}
+
+// Does `story` have a Build lane in `repo` — the lanes `yad build start` and `yad-run` write? A skipped lane
+// and a build-state that does not parse count as there: `yad build ship` refuses each with its own cause
+// and fix (unskip; repair the file), which a person reads in the list — never "may predate tracking".
+function laneIn(root, story, repo) {
+  let bs;
+  try { bs = readJSONStrict(path.join(epicFiles(epicRoot(root, storyEpic(story))).buildStateDir, `${story}.json`), null); } catch { return true; }
+  if (bs == null) return false;
+  // A file of the wrong shape is `yad build ship`'s to refuse, by its own cause.
+  if (!isPlainObject(bs) || ('repos' in bs && !isPlainObject(bs.repos))) return true;
+  const lane = isPlainObject(bs.repos) ? bs.repos[repo] : null;
+  return isPlainObject(lane) && (Array.isArray(lane.steps) || lane.status === 'skipped');
+}
+
+// `yad build sync [<epic>]` (issue #365) — record the ships the code repos already show, so nobody has to
+// type each `yad build ship` after a merge. The user's decisions (2026-10-21):
+//   - a local command, run on the Product with the person's own gh/glab login; they commit the result with
+//     `yad checkpoint --push` (no CI job);
+//   - what it records is `yad reconcile check`'s list of tasks merged with no ship (`shipDrift`), each through
+//     `yad build ship` itself: from the PR/MR that merged it, or — merged with no PR/MR — from its merge
+//     commit where the platform confirms no PR/MR merged it;
+//   - then `yad build done` for each story whose every task now has a ship.
+// Nothing is guessed: a task it cannot record, a possible match, a story no file holds, a refusal from
+// `build ship` or `build done` — each is listed with what to do, and the rest go on.
+export async function buildSync(root, { epic = null, dryRun = false, today, fetch = true, runner = run, prReader = readPr, env = process.env } = {}) {
+  if (epic && !/^EP-[a-z0-9-]+$/.test(String(epic))) throw err(CODE, `'${epic}' is not an epic id`, 'expected EP-<slug>, such as EP-checkout');
+  if (epic && !epicIds(root).includes(epic)) throw err(CODE, `no epic ${epic} in this Product`, 'check the epic id: `yad next` lists the epics');
+  const drift = shipDrift(root, { epics: epic ? new Set([epic]) : null, ...(runner !== run ? { runner } : {}), env });
+  const recorded = [];
+  const planned = [];
+  const left = [];
+  const touched = new Set();
+  for (const f of drift.findings.filter((x) => x.kind === 'merged-no-ship')) {
+    const at = { story: f.story, task: f.task, repo: f.repo };
+    // Only a story yad tracks in Build there — a lane in that repo. One with no lane may predate tracking,
+    // where `yad checkpoint --retro-ship` is the record, and a normal ship would close that door: a person
+    // decides (the `fix` says both ways).
+    if (!laneIn(root, f.story, f.repo)) { left.push({ ...at, why: `${f.story} has no Build lane in ${f.repo} — it may predate tracking`, fix: f.fix }); continue; }
+    // The PR/MR that merged it: the platform's word when it has one; else the merge commit asks it.
+    const pr = Number.isInteger(f.pr) ? f.pr : null;
+    const how = pr ? { pr: String(pr) } : f.sha ? { mergeCommit: f.sha } : null;
+    if (!how) { left.push({ ...at, why: 'no PR/MR and no merge commit is known for it', fix: f.fix }); continue; }
+    const cmd = `yad build ship ${f.story} --task ${f.task} --repo ${f.repo} ${pr ? `--pr ${pr}` : `--merge-commit ${f.sha.slice(0, 12)}`}`;
+    if (dryRun) { planned.push({ ...at, ...how, command: cmd }); touched.add(f.story); continue; }
+    const ship = (h) => buildShip(root, { ...at, ...h, byHand: false, today, fetch, runner, prReader });
+    try {
+      let res;
+      try { res = await ship(how); } catch (e) {
+        // A merge commit the platform says a PR/MR merged: recorded from that PR/MR, with its approvers.
+        const by = !pr && String(e.message).match(/was merged by PR\/MR #(\d+)$/);
+        if (!by) throw e;
+        res = await ship({ pr: by[1] });
+      }
+      recorded.push({ ...at, pr: res.ship.pr, mergeCommit: res.ship.mergeCommit, file: res.file });
+      touched.add(f.story);
+    } catch (e) {
+      left.push({ ...at, why: e.message, fix: e.hint || f.fix, command: cmd });
+    }
+  }
+  // Stories every task of which now has a ship — and those `reconcile check` already sees as shipped in the
+  // code but not in their status — are set shipped by `build done`, which checks it all again.
+  const done = [];
+  const notDone = [];
+  const candidates = [...new Set([...touched, ...drift.findings.filter((x) => x.kind === 'looks-shipped').map((x) => x.story)])].sort();
+  for (const story of candidates) {
+    if (dryRun) { planned.push({ story, command: `yad build done ${story}` }); continue; }
+    try {
+      await buildDone(root, { story, today, fetch });
+      done.push(story);
+    } catch (e) {
+      notDone.push({ story, why: e.message, fix: e.hint || null });
+    }
+  }
+  // What a person checks: a match by a short tag, a task naming a story no file holds, a repo not read.
+  const forPerson = drift.findings.filter((x) => ['possible', 'no-story'].includes(x.kind));
+  // What was not read is unknown, never an all-clear: a repo not read in full, an epic whose ledger does not
+  // parse, a story that cannot be compared, a registry that cannot be read — as `yad reconcile check` says.
+  const unread = [
+    ...drift.repos.filter((r) => !r.read || r.partial),
+    ...drift.unreadEpics.map((e) => ({ epic: e, read: false, why: 'its build ledger could not be read (`yad doctor` says why)' })),
+    ...drift.uncompared.map((st) => ({ story: st, read: false, why: 'it names no repo while the Product registers more than one, or two story files claim its ID' })),
+    ...(drift.registry ? [{ registry: true, read: false, why: `.sdlc/repos.json could not be read in full — ${drift.registry}` }] : []),
+  ];
+
+  if (dryRun) for (const p of planned) info(`would run: ${p.command}`);
+  for (const r of recorded) ok(`recorded ${r.story} / ${r.task} in ${r.repo}`);
+  for (const d of done) ok(`${d} is shipped`);
+  for (const l of left) warn(`not recorded: ${l.story} / ${l.task} in ${l.repo} — ${l.why}${l.fix ? ` (${l.fix})` : ''}`);
+  for (const n of notDone) info(`${n.story} not set shipped yet — ${n.why}`);
+  for (const x of forPerson) warn(x.kind === 'possible' ? `${x.repo} ${String(x.sha || '').slice(0, 12)} may be ${x.stories.join(', ')} (${x.token}) — check it by hand` : `${x.repo} ${String(x.sha || '').slice(0, 12)} names ${x.task}, a story no file holds — check the trailer`);
+  for (const r of unread) warn(`${r.repo || r.epic || r.story || 'repos.json'}: ${r.read ? 'read in part' : 'not read'}${r.why ? ` — ${r.why}` : r.note ? ` — ${r.note}` : ''}`);
+  if (!dryRun && !recorded.length && !done.length && !left.length) {
+    if (unread.length) info(`nothing recorded in what was read — ${unread.length} repo(s), ledger(s), stories or registry not read in full, so merged work there is unknown`);
+    else ok('nothing to record — every merged task has a ship');
+  }
+  if (recorded.length || done.length) hand('commit with `yad checkpoint --push`');
+  return {
+    epic, dryRun, changed: recorded.length > 0 || done.length > 0,
+    recorded, done, ...(dryRun ? { planned } : {}), left, notDone, forPerson, unread,
+  };
 }
