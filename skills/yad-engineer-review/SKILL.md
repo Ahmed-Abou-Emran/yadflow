@@ -145,6 +145,9 @@ engineer-review rule is satisfied (Step 2). Then:
   keeping the task's `Task:` line. Ask about it with `yad build merged <story> --task <task> --repo <repo>
   --follow-up --ship`: the same states, and once merged its merge is added to the task's ship
   (`followUps`), never a second ship. Shape: `references/ship-and-record.md`.
+- **Catch up on merges (#365)** — `yad build sync [<epic>]` records every ship the code repos already show
+  (what `yad reconcile check` finds merged with no ship), through `yad build ship`, then `yad build done`
+  for each story now fully shipped; it lists what it cannot record. Commit with `yad checkpoint --push`.
 - **Record the ship** — `yad build ship <story> --task <task> --repo <repo> --pr <n>` (what `--ship` runs),
   once the PR/MR has merged. A grouped PR (#350) — several small tasks of one story — ships each task it
   carries from the same `--pr`; a task that is not the branch's is found with `--pr`, as its commits carry it. It reads the merge commit, the branch, the checks that passed, the approvers (with the
