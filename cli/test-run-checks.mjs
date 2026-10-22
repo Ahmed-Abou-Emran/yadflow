@@ -317,6 +317,17 @@ test('yad run checks: a record CI refuses says what to change, as product-checko
     r = onBase(JSON.stringify({ git_url: 'x', path: 'a"b' }));
     assert.equal(r.code, 1, r.out);
     assert.match(r.out, /names a path the gate cannot read \(it holds a quote or a backslash\) — .*\. Change path in it to a plain folder such as \.yad\/product, and merge that change first: the record is read from origin\/main$/m);
+    // A path written with a JSON escape: the gate reads the raw text, so it cannot read this one either.
+    r = onBase('{"git_url": "x", "path": ".yad\\/product"}');
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /names a path the gate cannot read/);
+    // A git_url written with an escape: the gate reads none and checks nothing out, so nothing fails here.
+    r = onBase('{"git_url": "https:\\/\\/host\\/org\\/p.git", "path": "../elsewhere"}');
+    assert.doesNotMatch(r.out, /FAIL \[product-checkout\]/, r.out);
+    assert.match(r.out, /names a git_url CI's product-checkout cannot read/);
+    // An empty file: said, never failed.
+    r = onBase('');
+    assert.doesNotMatch(r.out, /FAIL \[product-checkout\]/, r.out);
     // A path that is not a string: `yad check --fix` replaces it.
     r = onBase(JSON.stringify({ git_url: 'x', path: 5 }));
     assert.equal(r.code, 1, r.out);
@@ -338,6 +349,14 @@ test('yad run checks: a record CI refuses says what to change, as product-checko
     r = yad(backend, ['run', 'checks', '--no-build']);
     assert.equal(r.code, 1, r.out);
     assert.match(r.out, /'prod' holds files this repo tracks — .*Untrack them only if they do not belong in this repo \(git rm -r --cached -- 'prod', and add the folder to \.gitignore\), or change path in \.sdlc\/product-link\.json to an untracked folder such as \.yad\/product and merge that change first \(the record is read from origin\/main\)$/m);
+    // A quote in the path is written the shell's way in the command to paste, as the gate writes it.
+    git(backend, 'checkout', '-q', 'main');
+    commitAll(backend, 'chore: a quoted folder', { '.sdlc/product-link.json': JSON.stringify({ git_url: 'x', path: "it's" }), "it's/x.txt": 'x\n' });
+    git(backend, 'push', '-q', 'origin', 'main');
+    git(backend, 'checkout', '-q', 'feature');
+    git(backend, 'merge', '-q', '--no-edit', 'main');
+    r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.ok(r.out.includes("(git rm -r --cached -- 'it'\\''s', and add the folder to .gitignore)"), r.out);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 
