@@ -63,9 +63,10 @@ function shippedTemplate(script) {
   return null;
 }
 
-// The record path's checks, as product-checkout.sh makes them: relative, no `..`, no `.git` part.
+// The record path's checks, as product-checkout.sh makes them: relative, no `..`, no `.git` part. A quote
+// or a backslash is refused too: the gate reads such a value as no path at all.
 function safeRecordPath(p) {
-  if (typeof p !== 'string' || !p.trim() || path.isAbsolute(p) || p.includes('\\')) return null;
+  if (typeof p !== 'string' || !p.trim() || path.isAbsolute(p) || /["\\]/.test(p)) return null;
   const parts = p.split('/').filter((x) => x && x !== '.');
   if (!parts.length || parts.some((x) => x === '..' || x.toLowerCase() === '.git')) return null;
   return parts.join('/');
@@ -78,6 +79,9 @@ function readRecord(repoRoot, base) {
   if (!shown.ok) return { none: true };
   let record;
   try { record = JSON.parse(shown.stdout); } catch { record = null; }
+  // One that does not parse: the gate reads its fields one by one with sed, so CI may still clone, or
+  // fail. Said, never failed here.
+  if (record === null && shown.stdout.trim() !== 'null') return { nothing: `.sdlc/product-link.json on ${base} does not parse as JSON — CI reads its fields one by one and may still clone or fail; fix it and merge that change first. Nothing is written here` };
   // A record with no git_url: CI's product-checkout clones nothing and says so before it looks at the
   // path, so nothing is written here either — and nothing else in the record fails. A record that is
   // not a JSON object has none.
@@ -88,6 +92,7 @@ function readRecord(repoRoot, base) {
   if (!rel) {
     const ci = "CI's product-checkout fails it too when YAD_PRODUCT_TOKEN is set";
     if (typeof record.path !== 'string' || !record.path) return { fail: `.sdlc/product-link.json on ${base} names no path — ${ci}; run \`yad check --fix --push\` from the Product, on a machine that has this repo cloned and on its default branch; it writes path .yad/product to the record there. Or set path yourself and merge that change first` };
+    if (/["\\]/.test(record.path)) return { fail: `.sdlc/product-link.json on ${base} names a path the gate cannot read (it holds a quote or a backslash) — ${ci}. Change path in it to a plain folder such as .yad/product, and merge that change first: the record is read from ${base}` };
     return { fail: `.sdlc/product-link.json on ${base} says path ${JSON.stringify(record.path)}, which is not a folder inside this repo — ${ci}. Change path in it to one, such as .yad/product, and merge that change first: the record is read from ${base}, so changing it on this branch does not help` };
   }
   // No default_branch is deliberate (cli/plan.mjs writes null when it does not know): CI then clones the
@@ -106,7 +111,7 @@ function readRecord(repoRoot, base) {
     if (i < parts.length && !st.isDirectory()) return { fail: `'${parts.slice(0, i).join('/')}' is a file where the Product's folder goes — move it, or point path in .sdlc/product-link.json elsewhere` };
   }
   const tracked = git(repoRoot, ['ls-files', '-z', '--', rel]);
-  if (tracked.ok && tracked.stdout) return { fail: `'${rel}' holds files this repo tracks — the Product cannot be checked out there (CI refuses it too, when YAD_PRODUCT_TOKEN is set). Untrack them only if they do not belong in this repo (git rm -r --cached -- '${rel}', and add the folder to .gitignore), or change path in .sdlc/product-link.json to an untracked folder such as .yad/product and merge that change first (the record is read from ${base})` };
+  if (tracked.ok && tracked.stdout) return { fail: `'${rel}' holds files this repo tracks — the Product cannot be checked out there (CI refuses it too, when YAD_PRODUCT_TOKEN is set). Untrack them only if they do not belong in this repo (git rm -r --cached -- '${rel.replaceAll("'", "'\\''")}', and add the folder to .gitignore), or change path in .sdlc/product-link.json to an untracked folder such as .yad/product and merge that change first (the record is read from ${base})` };
   return { rel, branch, record };
 }
 

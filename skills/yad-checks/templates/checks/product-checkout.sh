@@ -121,6 +121,18 @@ case "/${dest}/" in
 esac
 # A path of only spaces names no folder either (yad run checks refuses it too).
 case "$dest" in *[![:space:]]*) ;; *) _bad=true ;; esac
+# As yad run checks reads it: a path of only `.` parts (`./`) is the repo itself, and a `.git` part in any
+# case is the git folder on a disk that ignores case.
+_lc="$(printf '%s' "$dest" | tr '[:upper:]' '[:lower:]')"
+case "/${_lc}/" in */.git/*) _bad=true ;; esac
+_named=false
+_r="$dest"
+while [ -n "$_r" ]; do
+  _q="${_r%%/*}"
+  [ "$_q" = "$_r" ] && _r="" || _r="${_r#*/}"
+  case "$_q" in ""|.) ;; *) _named=true ;; esac
+done
+[ "$_named" = true ] || _bad=true
 if [ "$_bad" = true ]; then
   # The record is read from the base, so a fix on the PR's branch does not count until it merges. A
   # missing path is one `yad check --fix --push` writes; a path that is set is kept by it, so a person
@@ -153,7 +165,9 @@ while [ -n "$_rest" ]; do
 done
 # Tracked first (review 2): a tracked folder is also "already there", and read that way it passed.
 if [ -n "$(git ls-files -- "$dest" 2>/dev/null | head -1)" ]; then
-  echo "FAIL [product-checkout]: '${dest}' holds files this repo tracks — the Product cannot be checked out there. Untrack them only if they do not belong in this repo (git rm -r --cached -- '${dest}', and add the folder to .gitignore), or change path in ${rec} to an untracked folder such as .yad/product and merge that change first (the record is read from ${BASE})."
+  # The command is printed for a person to paste, so a quote in the path is written the shell's way.
+  _qd="$(printf '%s' "$dest" | sed "s/'/'\\\\''/g")"
+  echo "FAIL [product-checkout]: '${dest}' holds files this repo tracks — the Product cannot be checked out there. Untrack them only if they do not belong in this repo (git rm -r --cached -- '${_qd}', and add the folder to .gitignore), or change path in ${rec} to an untracked folder such as .yad/product and merge that change first (the record is read from ${BASE})."
   exit 1
 fi
 if [ -e "$dest" ]; then

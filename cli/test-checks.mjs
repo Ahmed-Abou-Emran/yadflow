@@ -2316,7 +2316,7 @@ test('product-checkout: the record is read from the base, never as the PR leaves
 
 test('product-checkout: a path outside the repo, a tracked folder, or a failed clone FAILs (E120)', () => {
   const src = productSource();
-  for (const p of ['../escape', '/tmp/abs', '.', '', 'a/../../b', '.git/x', '   ']) {
+  for (const p of ['../escape', '/tmp/abs', '.', '', 'a/../../b', '.git/x', '   ', './', './.', 'a/.git', '.GIT/x']) {
     const { T, base } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}`, p) });
     const r = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
     assert.equal(r.code, 1, `${p}:\n${r.out}`);
@@ -2346,6 +2346,14 @@ test('product-checkout: a path outside the repo, a tracked folder, or a failed c
     const tracked = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
     assert.equal(tracked.code, 1, `${onDisk}:\n${tracked.out}`);
     assert.match(tracked.out, /'prod' holds files this repo tracks — the Product cannot be checked out there\. Untrack them only if they do not belong in this repo \(git rm -r --cached -- 'prod', and add the folder to \.gitignore\), or change path in \.sdlc\/product-link\.json to an untracked folder such as \.yad\/product and merge that change first \(the record is read from \S+\)\.$/m);
+    fs.rmSync(T, { recursive: true, force: true });
+  }
+  // A quote in a tracked path is written the shell's way in the command to paste.
+  {
+    const { T, base } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}`, "it's"), "it's/x.txt": 'tracked\n' });
+    const q = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
+    assert.equal(q.code, 1, q.out);
+    assert.ok(q.out.includes("(git rm -r --cached -- 'it'\\''s', and add the folder to .gitignore)"), q.out);
     fs.rmSync(T, { recursive: true, force: true });
   }
   // A plain http url: the token is not sent over it.

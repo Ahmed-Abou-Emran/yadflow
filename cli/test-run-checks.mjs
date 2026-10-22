@@ -310,6 +310,21 @@ test('yad run checks: a record CI refuses says what to change, as product-checko
     r = onBase(JSON.stringify({ git_url: 'x' }));
     assert.equal(r.code, 1, r.out);
     assert.match(r.out, /names no path — .*; run `yad check --fix --push` from the Product, on a machine that has this repo cloned and on its default branch; it writes path \.yad\/product to the record there\. Or set path yourself and merge that change first$/m);
+    // Set but not a folder (only spaces), and set but unreadable by the gate (a quote): change it.
+    r = onBase(JSON.stringify({ git_url: 'x', path: '   ' }));
+    assert.equal(r.code, 1, r.out);
+    assert.ok(r.out.includes('says path "   ", which is not a folder inside this repo'), r.out);
+    r = onBase(JSON.stringify({ git_url: 'x', path: 'a"b' }));
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /names a path the gate cannot read \(it holds a quote or a backslash\) — .*\. Change path in it to a plain folder such as \.yad\/product, and merge that change first: the record is read from origin\/main$/m);
+    // A path that is not a string: `yad check --fix` replaces it.
+    r = onBase(JSON.stringify({ git_url: 'x', path: 5 }));
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /names no path — /);
+    // A record that does not parse: said, never failed here, since CI may still read its fields.
+    r = onBase('{"git_url": "x", "path": ".yad/product"');
+    assert.doesNotMatch(r.out, /FAIL \[product-checkout\]/, r.out);
+    assert.match(r.out, /does not parse as JSON — CI reads its fields one by one and may still clone or fail; fix it and merge that change first/);
     // No git_url: CI clones nothing and says so before it reads the path, so neither fails here.
     r = onBase(JSON.stringify({ path: '../elsewhere' }));
     assert.doesNotMatch(r.out, /FAIL \[product-checkout\]/, r.out);
