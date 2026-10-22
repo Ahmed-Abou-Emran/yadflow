@@ -332,6 +332,14 @@ test('yad run checks: a record CI refuses says what to change, as product-checko
       assert.doesNotMatch(r.out, /FAIL \[product-checkout\]/, r.out);
       assert.match(r.out, /names no git_url, so CI checks no Product out/);
     }
+    // A path that is not ASCII comes back as written, and a no-break space is not a space to the gate.
+    r = onBase(JSON.stringify({ git_url: 'x', path: '../café' }));
+    assert.ok(r.out.includes('says path "../café"'), r.out);
+    r = onBase(JSON.stringify({ git_url: 'x', path: '\u00a0' }));
+    assert.doesNotMatch(r.out, /says path/, r.out);
+    // A NUL byte in the value: the gate reads past it, and this does not crash on it.
+    r = onBase('{"git_url": "x", "path": "../a\u0000b"}');
+    assert.match(r.out, /says path "\.\.\/ab"/);
     // A nested key: the gate reads the last "path" in the text, wherever it sits, and so does this.
     r = onBase('{"git_url": "x", "path": ".yad/product", "meta": {"path": "../n"}}');
     assert.equal(r.code, 1, r.out);

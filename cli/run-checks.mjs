@@ -66,7 +66,8 @@ function shippedTemplate(script) {
 // The record path's checks, as product-checkout.sh makes them: relative, no `..`, no `.git` part. A quote
 // or a backslash is refused too: the gate reads such a value as no path at all.
 function safeRecordPath(p) {
-  if (typeof p !== 'string' || !p.trim() || path.isAbsolute(p) || /["\\]/.test(p)) return null;
+  // Only ASCII spaces count as space, as the gate's [[:space:]] does under LC_ALL=C (trim() takes NBSP too).
+  if (typeof p !== 'string' || !/[^ \t\n\v\f\r]/.test(p) || path.isAbsolute(p) || /["\\]/.test(p)) return null;
   const parts = p.split('/').filter((x) => x && x !== '.');
   if (!parts.length || parts.some((x) => x === '..' || x.toLowerCase() === '.git')) return null;
   return parts.join('/');
@@ -82,8 +83,10 @@ function recordFields(repoRoot, base) {
   if (shown.status !== 0) return null;
   const flat = shown.stdout.replace(/[\r\n]/g, '');
   const field = (key) => flat.match(new RegExp(`^.*"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"([^"\\\\]*)"`, 's'))?.[1] ?? '';
-  const isSet = (key) => new RegExp(`"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"[^"]`).test(flat);
-  return { field: (key) => Buffer.from(field(key), 'latin1').toString('utf8'), isSet };
+  // A NUL byte: sed reads past it, so the value loses it after the match; bash's $(…) drops it before
+  // the `isSet` test.
+  const isSet = (key) => new RegExp(`"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"[^"]`).test(flat.replace(/\0/g, ''));
+  return { field: (key) => Buffer.from(field(key).replace(/\0/g, ''), 'latin1').toString('utf8'), isSet };
 }
 
 // Read the record on the base and decide where the Product goes. Returns { rel, branch, record, fail? }
