@@ -2329,13 +2329,13 @@ test('product-checkout: a path outside the repo, a tracked folder, or a failed c
     }
     fs.rmSync(T, { recursive: true, force: true });
   }
-  // A path the gate cannot read (a quote or a backslash in it) is set, so `yad check --fix` keeps it: the
+  // A path the gate cannot read (an escape, a quote or a backslash in it) is set, so `yad check --fix` keeps it: the
   // fix is to change it, never to run --fix again.
-  for (const p of ['a\\b', 'a"b']) {
-    const { T, base } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}`, p) });
+  for (const p of [JSON.stringify('a\\b'), JSON.stringify('a"b'), '".yad\\/product"', '"caf\\u00e9"']) {
+    const { T, base } = renameRepo({ '.sdlc/product-link.json': `{"git_url": "file://${src}", "path": ${p}}\n` });
     const r = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
     assert.equal(r.code, 1, `${p}:\n${r.out}`);
-    assert.match(r.out, /names a path this check cannot read \(it holds a quote or a backslash\) — change path in \.sdlc\/product-link\.json to a plain folder such as \.yad\/product, and merge that change first: this check reads the record from \S+\.$/m, `${p}:\n${r.out}`);
+    assert.match(r.out, /names a path this check cannot read \(it is written with a JSON escape, a quote or a backslash\) — change path in \.sdlc\/product-link\.json to a plain folder such as \.yad\/product, and merge that change first: this check reads the record from \S+\.$/m, `${p}:\n${r.out}`);
     assert.doesNotMatch(r.out, /--fix/, p);
     fs.rmSync(T, { recursive: true, force: true });
   }
@@ -2346,6 +2346,15 @@ test('product-checkout: a path outside the repo, a tracked folder, or a failed c
     const tracked = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
     assert.equal(tracked.code, 1, `${onDisk}:\n${tracked.out}`);
     assert.match(tracked.out, /'prod' holds files this repo tracks — the Product cannot be checked out there\. Untrack them only if they do not belong in this repo \(git rm -r --cached -- 'prod', and add the folder to \.gitignore\), or change path in \.sdlc\/product-link\.json to an untracked folder such as \.yad\/product and merge that change first \(the record is read from \S+\)\.$/m);
+    fs.rmSync(T, { recursive: true, force: true });
+  }
+  // A git_url written with an escape: the gate reads none, so it checks nothing out and says how to fix it.
+  {
+    const { T, base } = renameRepo({ '.sdlc/product-link.json': '{"git_url": "https:\\/\\/example.com\\/org\\/p.git", "path": ".yad/product"}\n' });
+    const e = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
+    assert.equal(e.code, 0, e.out);
+    assert.match(e.out, /names a git_url this check cannot read \(it is written with a JSON escape, a quote or a backslash\) — the Product is not checked out\.\n {2}Write git_url in \.sdlc\/product-link\.json without escapes, and merge that change first\./);
+    assert.ok(!fs.existsSync(path.join(T, '.yad/product')), e.out);
     fs.rmSync(T, { recursive: true, force: true });
   }
   // A quote in a tracked path is written the shell's way in the command to paste.

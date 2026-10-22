@@ -77,35 +77,33 @@ function safeRecordPath(p) {
 function readRecord(repoRoot, base) {
   const shown = git(repoRoot, ['show', `${base}:.sdlc/product-link.json`]);
   if (!shown.ok) return { none: true };
-  let record;
-  try { record = JSON.parse(shown.stdout); } catch { record = null; }
-  // One that does not parse: the gate reads its fields one by one with sed, so CI may still clone, or
-  // fail. Said, never failed here.
-  if (record === null && shown.stdout.trim() !== 'null') return { nothing: `.sdlc/product-link.json on ${base} does not parse as JSON — CI reads its fields one by one and may still clone or fail; fix it and merge that change first. Nothing is written here` };
-  // A field as the gate's `field` reads it: the raw text, newlines dropped, the last `"key": "value"` whose
-  // value holds no quote and no backslash. A value written with a JSON escape (`\/`, `\t`, `\u00e9`) reads
-  // as empty there, so it is compared with the decoded one before anything else.
+  // Every field is read as the gate's `field` reads it, never parsed as JSON: the raw text with newlines
+  // dropped, the last `"key": "value"` whose value holds no quote and no backslash. So a value written with
+  // a JSON escape (`\/`, `\t`, `\u00e9`) reads as empty here as it does in CI, and a record that does not
+  // parse, a nested key or a duplicate one reads the same in both. (`s`: `.` also takes U+2028/U+2029.)
   const flat = shown.stdout.replace(/[\r\n]/g, '');
-  const gateRead = (key) => flat.match(new RegExp(`^.*"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"([^"\\\\]*)"`))?.[1] ?? '';
-  // A record with no git_url: CI's product-checkout clones nothing and says so before it looks at the
-  // path, so nothing is written here either — and nothing else in the record fails. A record that is
-  // not a JSON object has none.
-  if (typeof record?.git_url !== 'string' || !record.git_url) return { nothing: `.sdlc/product-link.json on ${base} names no git_url, so CI checks no Product out — nothing is written here either` };
-  if (gateRead('git_url') !== record.git_url) return { nothing: `.sdlc/product-link.json on ${base} names a git_url CI's product-checkout cannot read (it is written with a JSON escape, a quote or a backslash), so CI checks no Product out — write it plainly with \`yad check --fix --push\` from the Product. Nothing is written here` };
-  // A set path the gate reads differently (an escape, a quote, a backslash) fails there as "cannot read".
-  const pathUnread = typeof record.path === 'string' && record.path !== '' && gateRead('path') !== record.path;
-  const rel = pathUnread ? null : safeRecordPath(record.path);
-  // `yad check --fix` writes a missing path and keeps one that is set (even one of only spaces), so the
-  // fix named differs by case. It reaches only the repos cloned on that machine, on their default branch.
+  const field = (key) => flat.match(new RegExp(`^.*"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"([^"\\\\]*)"`, 's'))?.[1] ?? '';
+  // A key set to a string the gate cannot read: the gate's own `"key": "<one character>` test.
+  const isSet = (key) => new RegExp(`"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"[^"]`).test(flat);
+  const url = field('git_url');
+  const dest = field('path');
+  // No git_url it can read: CI's product-checkout clones nothing and says so before it looks at the path,
+  // so nothing is written here either, and nothing else in the record fails.
+  if (!url && isSet('git_url')) return { nothing: `.sdlc/product-link.json on ${base} names a git_url CI's product-checkout cannot read (it is written with a JSON escape, a quote or a backslash), so CI checks no Product out — write it in the record without escapes and merge that change first. Nothing is written here` };
+  if (!url) return { nothing: `.sdlc/product-link.json on ${base} names no git_url, so CI checks no Product out — nothing is written here either` };
+  const rel = safeRecordPath(dest);
+  // `yad check --fix` writes a missing path and keeps one that is set (even one of only spaces, or one
+  // written with an escape), so the fix named differs by case. It reaches only the repos cloned on that
+  // machine, on their default branch.
   if (!rel) {
     const ci = "CI's product-checkout fails it too when YAD_PRODUCT_TOKEN is set";
-    if (typeof record.path !== 'string' || !record.path) return { fail: `.sdlc/product-link.json on ${base} names no path — ${ci}; run \`yad check --fix --push\` from the Product, on a machine that has this repo cloned and on its default branch; it writes path .yad/product to the record there. Or set path yourself and merge that change first` };
-    if (pathUnread) return { fail: `.sdlc/product-link.json on ${base} names a path the gate cannot read (it holds a quote or a backslash) — ${ci}. Change path in it to a plain folder such as .yad/product, and merge that change first: the record is read from ${base}` };
-    return { fail: `.sdlc/product-link.json on ${base} says path ${JSON.stringify(record.path)}, which is not a folder inside this repo — ${ci}. Change path in it to one, such as .yad/product, and merge that change first: the record is read from ${base}, so changing it on this branch does not help` };
+    if (!dest && isSet('path')) return { fail: `.sdlc/product-link.json on ${base} names a path the gate cannot read (it is written with a JSON escape, a quote or a backslash) — ${ci}. Change path in it to a plain folder such as .yad/product, and merge that change first: the record is read from ${base}` };
+    if (!dest) return { fail: `.sdlc/product-link.json on ${base} names no path — ${ci}; run \`yad check --fix --push\` from the Product, on a machine that has this repo cloned and on its default branch; it writes path .yad/product to the record there. Or set path yourself and merge that change first` };
+    return { fail: `.sdlc/product-link.json on ${base} says path ${JSON.stringify(dest)}, which is not a folder inside this repo — ${ci}. Change path in it to one, such as .yad/product, and merge that change first: the record is read from ${base}, so changing it on this branch does not help` };
   }
   // No default_branch is deliberate (cli/plan.mjs writes null when it does not know): CI then clones the
   // remote's own default branch, so placeProduct asks the Product clone's origin/HEAD for it.
-  const raw = typeof record?.default_branch === 'string' && record.default_branch ? record.default_branch : null;
+  const raw = field('default_branch') || null;
   const branch = raw === null ? null : safeBranch(raw);
   if (raw !== null && !branch) return { fail: `.sdlc/product-link.json on ${base} names a default_branch git cannot use as a branch name — run \`yad check --fix --push\` from the Product to write it again` };
   // Nothing on the way may be a symlink, and nothing there may be tracked: CI's product-checkout refuses
@@ -120,7 +118,7 @@ function readRecord(repoRoot, base) {
   }
   const tracked = git(repoRoot, ['ls-files', '-z', '--', rel]);
   if (tracked.ok && tracked.stdout) return { fail: `'${rel}' holds files this repo tracks — the Product cannot be checked out there (CI refuses it too, when YAD_PRODUCT_TOKEN is set). Untrack them only if they do not belong in this repo (git rm -r --cached -- '${rel.replaceAll("'", "'\\''")}', and add the folder to .gitignore), or change path in .sdlc/product-link.json to an untracked folder such as .yad/product and merge that change first (the record is read from ${base})` };
-  return { rel, branch, record };
+  return { rel, branch, record: { git_url: url } };
 }
 
 // Remove a copy this run wrote: `dest` itself (it did not exist before), then each folder this run made on

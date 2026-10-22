@@ -108,6 +108,16 @@ if [ -z "${YAD_PRODUCT_TOKEN:-}" ]; then
   echo "  To check it out here, add a token that can read the Product as the YAD_PRODUCT_TOKEN secret (CI variable)."
   exit 0
 fi
+# The record read whole, for the two "set, but written so field cannot read it" tests below. Matched in
+# bash: grep -q under pipefail can end the pipe early.
+_raw="$(git show "${BASE}:${rec}" 2>/dev/null | tr -d '\n\r')" || _raw=""
+_set_url='"git_url"[[:space:]]*:[[:space:]]*"[^"]'
+if [ -z "$url" ] && [[ "$_raw" =~ $_set_url ]]; then
+  # yad check --fix compares the parsed value, so it never rewrites an escaped url that decodes right.
+  echo "note [product-checkout]: ${rec} on ${BASE} names a git_url this check cannot read (it is written with a JSON escape, a quote or a backslash) — the Product is not checked out."
+  echo "  Write git_url in ${rec} without escapes, and merge that change first."
+  exit 0
+fi
 if [ -z "$url" ]; then
   echo "note [product-checkout]: ${rec} on ${BASE} names no git_url — the Product is not checked out."
   echo "  Set the Product's git_url in its .sdlc/product.json (.sdlc/hub.json on a Product that has only that name; when both exist, then run \`yad migrate --apply --keep product\`), then run \`yad check --fix --push\` from the Product."
@@ -136,14 +146,13 @@ done
 if [ "$_bad" = true ]; then
   # The record is read from the base, so a fix on the PR's branch does not count until it merges. A
   # missing path is one `yad check --fix --push` writes; a path that is set is kept by it, so a person
-  # changes that one. `field` reads a value holding a quote or a backslash as empty: that path is set.
-  # The record is read whole and matched in bash: grep -q under pipefail can end the pipe early.
-  _raw="$(git show "${BASE}:${rec}" 2>/dev/null | tr -d '\n\r')" || _raw=""
+  # changes that one. `field` reads a value written with an escape, a quote or a backslash as empty:
+  # that path is set.
   _set_path='"path"[[:space:]]*:[[:space:]]*"[^"]'
   if [ -n "$dest" ]; then
     echo "FAIL [product-checkout]: ${rec} on ${BASE} says path '${dest}' — it must be a folder inside this repo. Change path in ${rec} to one, such as .yad/product, and merge that change first: this check reads the record from ${BASE}, so changing it in this PR does not help."
   elif [[ "$_raw" =~ $_set_path ]]; then
-    echo "FAIL [product-checkout]: ${rec} on ${BASE} names a path this check cannot read (it holds a quote or a backslash) — change path in ${rec} to a plain folder such as .yad/product, and merge that change first: this check reads the record from ${BASE}."
+    echo "FAIL [product-checkout]: ${rec} on ${BASE} names a path this check cannot read (it is written with a JSON escape, a quote or a backslash) — change path in ${rec} to a plain folder such as .yad/product, and merge that change first: this check reads the record from ${BASE}."
   else
     echo "FAIL [product-checkout]: ${rec} on ${BASE} names no path — run yad check --fix --push from the Product, on a machine that has this repo cloned and on its default branch; it writes path .yad/product to ${rec} there. Or set path yourself and merge that change first."
   fi
