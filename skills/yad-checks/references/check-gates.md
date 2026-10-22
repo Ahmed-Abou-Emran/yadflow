@@ -709,7 +709,7 @@ What it does in each case:
 
 | Case | Result |
 | --- | --- |
-| No record on the base, no `git_url` in the record, or no `YAD_PRODUCT_TOKEN` on a PR from a fork (a fork is never given secrets) or outside CI | A note; nothing is cloned, and the gates defer as before. |
+| No record on the base, no `git_url` in the record (or one written with a JSON escape, a quote or a backslash, which it cannot read: write it without escapes), or no `YAD_PRODUCT_TOKEN` on a PR from a fork (a fork is never given secrets) or outside CI | A note; nothing is cloned, and the gates defer as before. |
 | No `YAD_PRODUCT_TOKEN` on a PR/MR that is **not** from a fork, while the base record names the Product (#345) | A `WARNING [product-checkout]` line (and a `::warning` annotation on GitHub); nothing is cloned and the gates defer — the job does not fail. On GitHub the workflow passes `YAD_PR_FORK` (head repo ≠ this repo); on GitLab the pipeline is a fork's when it runs outside the MR's target project (`CI_PROJECT_ID` ≠ `CI_MERGE_REQUEST_PROJECT_ID`) — a fork's MR pipeline a maintainer runs in the target project gets its variables, and warns. A Dependabot PR is told to add the token as a Dependabot secret too. |
 | A token whose expiry the Product host reports within 30 days (#345) | A `WARNING` naming the date; the clone goes on. More than 30 days: a note with the date. |
 | The host rejects the token on its API (HTTP 401) | If the clone then fails: **FAIL**, saying the token has expired or been revoked. If the clone works: a `WARNING`. |

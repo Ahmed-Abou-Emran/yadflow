@@ -618,7 +618,7 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
   Product-reading gates skip their Product checks.
 - The record has no `git_url`, or the folder already exists: a note. So is a `git_url` written with a JSON
   escape (`\/`), a quote or a backslash, which this check cannot read: write it without escapes and merge
-  that first (`yad check --fix` keeps it, because it decodes to the same url).
+  that first (`yad check --fix` keeps it when it decodes to the Product's own url).
 - Problems reading the token's expiry date are notes or warnings. A warning also appears 30 days before
   the token expires.
 

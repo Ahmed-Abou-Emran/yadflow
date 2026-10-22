@@ -2355,6 +2355,10 @@ test('product-checkout: a path outside the repo, a tracked folder, or a failed c
     assert.equal(e.code, 0, e.out);
     assert.match(e.out, /names a git_url this check cannot read \(it is written with a JSON escape, a quote or a backslash\) — the Product is not checked out\.\n {2}Write git_url in \.sdlc\/product-link\.json without escapes, and merge that change first\./);
     assert.ok(!fs.existsSync(path.join(T, '.yad/product')), e.out);
+    // Without a token too: the url is the thing to fix first.
+    const n = runCheckout(T, [base], {});
+    assert.equal(n.code, 0, n.out);
+    assert.match(n.out, /names a git_url this check cannot read/);
     fs.rmSync(T, { recursive: true, force: true });
   }
   // A quote in a tracked path is written the shell's way in the command to paste.

@@ -72,19 +72,26 @@ function safeRecordPath(p) {
   return parts.join('/');
 }
 
+// The record on the base, read as product-checkout.sh's `field` reads it — never parsed as JSON: the raw
+// bytes (LC_ALL=C there, latin1 here) with CR and LF dropped, the last `"key": "value"` whose value holds no
+// quote and no backslash. So a value written with a JSON escape (`\/`, `\t`, `\u00e9`) reads as empty here
+// as it does in CI, and a record that does not parse, a nested key or a duplicate one reads the same in
+// both. `isSet` is the gate's own `"key": "<one character>` test. Null when the base has no record.
+function recordFields(repoRoot, base) {
+  const shown = spawnSync('git', ['show', `${base}:.sdlc/product-link.json`], { cwd: repoRoot, encoding: 'latin1' });
+  if (shown.status !== 0) return null;
+  const flat = shown.stdout.replace(/[\r\n]/g, '');
+  const field = (key) => flat.match(new RegExp(`^.*"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"([^"\\\\]*)"`, 's'))?.[1] ?? '';
+  const isSet = (key) => new RegExp(`"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"[^"]`).test(flat);
+  return { field: (key) => Buffer.from(field(key), 'latin1').toString('utf8'), isSet };
+}
+
 // Read the record on the base and decide where the Product goes. Returns { rel, branch, record, fail? }
 // or { none: note }.
 function readRecord(repoRoot, base) {
-  const shown = git(repoRoot, ['show', `${base}:.sdlc/product-link.json`]);
-  if (!shown.ok) return { none: true };
-  // Every field is read as the gate's `field` reads it, never parsed as JSON: the raw text with newlines
-  // dropped, the last `"key": "value"` whose value holds no quote and no backslash. So a value written with
-  // a JSON escape (`\/`, `\t`, `\u00e9`) reads as empty here as it does in CI, and a record that does not
-  // parse, a nested key or a duplicate one reads the same in both. (`s`: `.` also takes U+2028/U+2029.)
-  const flat = shown.stdout.replace(/[\r\n]/g, '');
-  const field = (key) => flat.match(new RegExp(`^.*"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"([^"\\\\]*)"`, 's'))?.[1] ?? '';
-  // A key set to a string the gate cannot read: the gate's own `"key": "<one character>` test.
-  const isSet = (key) => new RegExp(`"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"[^"]`).test(flat);
+  const fields = recordFields(repoRoot, base);
+  if (!fields) return { none: true };
+  const { field, isSet } = fields;
   const url = field('git_url');
   const dest = field('path');
   // No git_url it can read: CI's product-checkout clones nothing and says so before it looks at the path,
@@ -330,7 +337,8 @@ export async function runChecks(dir, opts = {}) {
   }
   // Uncommitted work, but not a Product copy at the record's path (one already there gets its own note when the Product gates run).
   let recRel = null;
-  try { recRel = safeRecordPath(JSON.parse(git(repoRoot, ['show', `${base}:.sdlc/product-link.json`]).stdout)?.path); } catch { /* none */ }
+  // Read as readRecord and the gate read it, so the same folder is skipped.
+  recRel = safeRecordPath(recordFields(repoRoot, base)?.field('path') ?? '');
   const st = spawnSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], { cwd: repoRoot, encoding: 'utf8' });
   // A rename or copy is two entries, `R  new` then the old name with no status: the old one is skipped.
   const entries = (st.stdout || '').split('\0');

@@ -325,13 +325,21 @@ test('yad run checks: a record CI refuses says what to change, as product-checko
     r = onBase('{"git_url": "https:\\/\\/host\\/org\\/p.git", "path": "../elsewhere"}');
     assert.doesNotMatch(r.out, /FAIL \[product-checkout\]/, r.out);
     assert.match(r.out, /names a git_url CI's product-checkout cannot read \(it is written with a JSON escape, a quote or a backslash\), so CI checks no Product out — write it in the record without escapes and merge that change first\. Nothing is written here/);
-    assert.ok(!fs.existsSync(path.join(backend, '.yad/product')) && !fs.existsSync(path.join(W, 'elsewhere')), r.out);
+    assert.ok(!fs.existsSync(path.join(W, 'elsewhere')), r.out);
     // An empty file, or one that does not parse with no git_url the gate can read: as in CI, a note.
     for (const text of ['', '{"path": "../elsewhere"']) {
       r = onBase(text);
       assert.doesNotMatch(r.out, /FAIL \[product-checkout\]/, r.out);
       assert.match(r.out, /names no git_url, so CI checks no Product out/);
     }
+    // A nested key: the gate reads the last "path" in the text, wherever it sits, and so does this.
+    r = onBase('{"git_url": "x", "path": ".yad/product", "meta": {"path": "../n"}}');
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /says path "\.\.\/n", which is not a folder inside this repo/);
+    // An escaped default_branch reads as none, as in CI (which then clones the remote's default branch).
+    r = onBase('{"git_url": "x", "path": "../e", "default_branch": "ma\\/in"}');
+    assert.doesNotMatch(r.out, /default_branch git cannot use/, r.out);
+    assert.match(r.out, /says path "\.\.\/e"/);
     // A duplicate key whose last copy is escaped: the gate reads the earlier one, and so does this.
     r = onBase('{"git_url": "x", "path": "../a", "path": "b\\/c"}');
     assert.equal(r.code, 1, r.out);

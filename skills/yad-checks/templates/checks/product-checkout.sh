@@ -86,6 +86,18 @@ warn() {
   echo "WARNING [product-checkout]: $1"
   [ "${GITHUB_ACTIONS:-}" != true ] || echo "::warning title=product-checkout::$1"
 }
+# The record read whole, for the two "set, but written so field cannot read it" tests below. Matched in
+# bash (grep -q under pipefail can end the pipe early); byte by byte, as field reads it, since the script
+# runs under LC_ALL=C (above), which `yad run checks` matches.
+_raw="$(git show "${BASE}:${rec}" 2>/dev/null | tr -d '\n\r')" || _raw=""
+_is_set() { local re="\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]"; [[ "$_raw" =~ $re ]]; }
+# Before the token: a url this check cannot read is the thing to fix first, with or without a token.
+if [ -z "$url" ] && _is_set git_url; then
+  # yad check --fix compares the parsed value, so it keeps an escaped url that decodes to the same one.
+  echo "note [product-checkout]: ${rec} on ${BASE} names a git_url this check cannot read (it is written with a JSON escape, a quote or a backslash) — the Product is not checked out."
+  echo "  Write git_url in ${rec} without escapes, and merge that change first."
+  exit 0
+fi
 if [ -z "${YAD_PRODUCT_TOKEN:-}" ]; then
   # Whether this PR comes from a fork, which never gets a secret: GitHub's workflow passes YAD_PR_FORK
   # (head repo != this repo); GitLab names both projects. Outside CI nothing is known, and it is a note.
@@ -106,16 +118,6 @@ if [ -z "${YAD_PRODUCT_TOKEN:-}" ]; then
   echo "note [product-checkout]: no YAD_PRODUCT_TOKEN secret — the Product is not checked out, and the gates defer."
   [ "$_fork" != true ] || echo "  This PR comes from a fork, which is never given secrets."
   echo "  To check it out here, add a token that can read the Product as the YAD_PRODUCT_TOKEN secret (CI variable)."
-  exit 0
-fi
-# The record read whole, for the two "set, but written so field cannot read it" tests below. Matched in
-# bash: grep -q under pipefail can end the pipe early.
-_raw="$(git show "${BASE}:${rec}" 2>/dev/null | tr -d '\n\r')" || _raw=""
-_set_url='"git_url"[[:space:]]*:[[:space:]]*"[^"]'
-if [ -z "$url" ] && [[ "$_raw" =~ $_set_url ]]; then
-  # yad check --fix compares the parsed value, so it never rewrites an escaped url that decodes right.
-  echo "note [product-checkout]: ${rec} on ${BASE} names a git_url this check cannot read (it is written with a JSON escape, a quote or a backslash) — the Product is not checked out."
-  echo "  Write git_url in ${rec} without escapes, and merge that change first."
   exit 0
 fi
 if [ -z "$url" ]; then
@@ -148,10 +150,9 @@ if [ "$_bad" = true ]; then
   # missing path is one `yad check --fix --push` writes; a path that is set is kept by it, so a person
   # changes that one. `field` reads a value written with an escape, a quote or a backslash as empty:
   # that path is set.
-  _set_path='"path"[[:space:]]*:[[:space:]]*"[^"]'
   if [ -n "$dest" ]; then
     echo "FAIL [product-checkout]: ${rec} on ${BASE} says path '${dest}' — it must be a folder inside this repo. Change path in ${rec} to one, such as .yad/product, and merge that change first: this check reads the record from ${BASE}, so changing it in this PR does not help."
-  elif [[ "$_raw" =~ $_set_path ]]; then
+  elif _is_set path; then
     echo "FAIL [product-checkout]: ${rec} on ${BASE} names a path this check cannot read (it is written with a JSON escape, a quote or a backslash) — change path in ${rec} to a plain folder such as .yad/product, and merge that change first: this check reads the record from ${BASE}."
   else
     echo "FAIL [product-checkout]: ${rec} on ${BASE} names no path — run yad check --fix --push from the Product, on a machine that has this repo cloned and on its default branch; it writes path .yad/product to ${rec} there. Or set path yourself and merge that change first."
