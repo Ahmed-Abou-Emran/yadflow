@@ -338,13 +338,15 @@ test('yad run checks: a record CI refuses says what to change, as product-checko
     r = onBase(JSON.stringify({ git_url: 'x', path: '\u00a0' }));
     assert.doesNotMatch(r.out, /says path/, r.out);
     assert.ok(r.out.includes('is written to \u00a0, as CI checks it out'), r.out);
+    assert.ok(!fs.existsSync(path.join(backend, '\u00a0')), 'the copy is removed after the gates');
     // A NUL byte in the value: the gate reads past it, so the value comes back without it…
     r = onBase('{"git_url": "x", "path": "../a\u0000b"}');
     assert.match(r.out, /says path "\.\.\/ab"/);
     r = onBase('{"git_url": "x", "path": ".yad/a\u0000b"}');
     // …and one that passes the path checks reaches git with the NUL gone: the Product is written to .yad/ab.
     assert.doesNotMatch(r.out, /ERR_INVALID_ARG_VALUE|null bytes/, r.out);
-    assert.match(r.out, /is written to \.yad\/ab, as CI checks it out/);
+    assert.match(r.out, /is written to \.yad\/ab, as CI checks it out/, r.out);
+    assert.ok(!fs.existsSync(path.join(backend, '.yad/ab')), 'the copy is removed after the gates');
     // A nested key: the gate reads the last "path" in the text, wherever it sits, and so does this.
     r = onBase('{"git_url": "x", "path": ".yad/product", "meta": {"path": "../n"}}');
     assert.equal(r.code, 1, r.out);
