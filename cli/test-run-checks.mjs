@@ -292,6 +292,37 @@ test('yad run checks: a path CI refuses fails here too, and nothing outside the 
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 
+test('yad run checks: a record CI refuses says what to change, as product-checkout does (#382)', () => {
+  const { W, backend } = workspace();
+  try {
+    const onBase = (record) => {
+      git(backend, 'checkout', '-q', 'main');
+      commitAll(backend, 'chore: change the record', { '.sdlc/product-link.json': record });
+      git(backend, 'push', '-q', 'origin', 'main');
+      git(backend, 'checkout', '-q', 'feature');
+      return yad(backend, ['run', 'checks', '--no-build']);
+    };
+    // A path that is set but outside the repo: `yad check --fix` keeps it, so it is changed and merged first.
+    let r = onBase(JSON.stringify({ git_url: 'x', path: '../elsewhere' }));
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /says path "\.\.\/elsewhere", which is not a folder inside this repo — .*\. Change path in it to one, such as \.yad\/product, and merge that change first: the record is read from origin\/main, so changing it on this branch does not help/);
+    // No path: `yad check --fix --push` writes one.
+    r = onBase(JSON.stringify({ git_url: 'x' }));
+    assert.match(r.out, /names no path — .*; run `yad check --fix --push` from the Product, which writes path \.yad\/product/);
+    // Not a JSON object: --fix leaves it alone unless told to replace it.
+    r = onBase('[1]');
+    assert.match(r.out, /is not a JSON object — .*\. Fix it by hand and merge that change first, or run `yad check --fix --overwrite-local --push` from the Product/);
+    // A tracked folder: untrack it here, or move the path on the base.
+    git(backend, 'checkout', '-q', 'main');
+    commitAll(backend, 'chore: a tracked folder', { '.sdlc/product-link.json': JSON.stringify({ git_url: 'x', path: 'prod' }), 'prod/x.txt': 'x\n' });
+    git(backend, 'push', '-q', 'origin', 'main');
+    git(backend, 'checkout', '-q', 'feature');
+    git(backend, 'merge', '-q', '--no-edit', 'main');
+    r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.match(r.out, /'prod' holds files this repo tracks — .*Untrack them \(git rm -r --cached 'prod'\), or change path in \.sdlc\/product-link\.json to an untracked folder such as \.yad\/product and merge that change first \(the record is read from origin\/main\)/);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
 test('yad run checks: an SSH signature git has no allowed-signers list for is "cannot check here", not "not signed"', { skip: spawnSync('ssh-keygen', ['-?']).error && 'needs ssh-keygen' }, () => {
   const { W, backend } = workspace();
   try {

@@ -79,7 +79,14 @@ function readRecord(repoRoot, base) {
   let record;
   try { record = JSON.parse(shown.stdout); } catch { record = null; }
   const rel = safeRecordPath(record?.path);
-  if (!rel) return { fail: `.sdlc/product-link.json on ${base} names no usable path (a folder inside this repo, such as .yad/product) — CI's product-checkout fails it too when YAD_PRODUCT_TOKEN is set; run \`yad check --fix --push\` from the Product to write it again` };
+  // `yad check --fix` writes a missing path, keeps one that is set (even one of only spaces), and leaves a record that is not a
+  // JSON object alone unless told to replace it — so the fix named differs by case.
+  if (!rel) {
+    const ci = "CI's product-checkout fails it too when YAD_PRODUCT_TOKEN is set";
+    if (!record || typeof record !== 'object' || Array.isArray(record)) return { fail: `.sdlc/product-link.json on ${base} is not a JSON object — ${ci}. Fix it by hand and merge that change first, or run \`yad check --fix --overwrite-local --push\` from the Product to write it again (that flag also replaces every managed file changed by hand, keeping a .yad-orig copy of each)` };
+    if (typeof record.path !== 'string' || !record.path) return { fail: `.sdlc/product-link.json on ${base} names no path — ${ci}; run \`yad check --fix --push\` from the Product, which writes path .yad/product` };
+    return { fail: `.sdlc/product-link.json on ${base} says path ${JSON.stringify(record.path)}, which is not a folder inside this repo — ${ci}. Change path in it to one, such as .yad/product, and merge that change first: the record is read from ${base}, so changing it on this branch does not help` };
+  }
   // No default_branch is deliberate (cli/plan.mjs writes null when it does not know): CI then clones the
   // remote's own default branch, so placeProduct asks the Product clone's origin/HEAD for it.
   const raw = typeof record?.default_branch === 'string' && record.default_branch ? record.default_branch : null;
@@ -98,7 +105,7 @@ function readRecord(repoRoot, base) {
     if (i < parts.length && !st.isDirectory()) return { fail: `'${parts.slice(0, i).join('/')}' is a file where the Product's folder goes — move it, or point path in .sdlc/product-link.json elsewhere` };
   }
   const tracked = git(repoRoot, ['ls-files', '-z', '--', rel]);
-  if (tracked.ok && tracked.stdout) return { fail: `'${rel}' holds files this repo tracks — the Product cannot be checked out there (CI refuses it too, when YAD_PRODUCT_TOKEN is set). Point path in .sdlc/product-link.json at an untracked folder such as .yad/product` };
+  if (tracked.ok && tracked.stdout) return { fail: `'${rel}' holds files this repo tracks — the Product cannot be checked out there (CI refuses it too, when YAD_PRODUCT_TOKEN is set). Untrack them (git rm -r --cached '${rel}'), or change path in .sdlc/product-link.json to an untracked folder such as .yad/product and merge that change first (the record is read from ${base})` };
   return { rel, branch, record };
 }
 

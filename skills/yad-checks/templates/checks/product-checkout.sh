@@ -117,7 +117,14 @@ fi
 # read an UNTRACKED folder there as CI's checkout.
 case "/${dest}/" in
   //|/./|*/../*|//*|/.git/*|/.git)
-    echo "FAIL [product-checkout]: ${rec} on ${BASE} says path '${dest}' — it must be a folder inside this repo, such as .yad/product."
+    # The record is read from the base, so a fix on the PR's branch does not count until it merges. A
+    # missing path is one `yad check --fix --push` writes; a path that is set is kept by it, so a person
+    # changes that one.
+    if [ -z "$dest" ]; then
+      echo "FAIL [product-checkout]: ${rec} on ${BASE} names no path — run yad check --fix --push from the Product, which writes path .yad/product to ${rec} on every code repo's default branch; or set path yourself and merge that change first."
+    else
+      echo "FAIL [product-checkout]: ${rec} on ${BASE} says path '${dest}' — it must be a folder inside this repo. Change path in ${rec} to one, such as .yad/product, and merge that change first: this check reads the record from ${BASE}, so changing it in this PR does not help."
+    fi
     exit 1 ;;
 esac
 # And no symlink on the way (review 1): the text above is only text, and a PR can track `.yad` as a link
@@ -136,7 +143,7 @@ while [ -n "$_rest" ]; do
 done
 # Tracked first (review 2): a tracked folder is also "already there", and read that way it passed.
 if [ -n "$(git ls-files -- "$dest" 2>/dev/null | head -1)" ]; then
-  echo "FAIL [product-checkout]: '${dest}' holds files this repo tracks — the Product cannot be checked out there."
+  echo "FAIL [product-checkout]: '${dest}' holds files this repo tracks — the Product cannot be checked out there. Untrack them (git rm -r --cached '${dest}'), or change path in ${rec} to an untracked folder such as .yad/product and merge that change first (the record is read from ${BASE})."
   exit 1
 fi
 if [ -e "$dest" ]; then
@@ -150,7 +157,7 @@ case "$url" in
   ssh://git@*) _h="${url#ssh://git@}"; _hp="${_h%%/*}"; url="https://${_hp%%:*}/${_h#*/}" ;;   # an ssh port is not the https one
   https://*|file://*) ;;
   http://*) echo "FAIL [product-checkout]: ${rec} on ${BASE} has an http:// git_url — the token is not sent over plain http. Use the https url."; exit 1 ;;
-  *) echo "FAIL [product-checkout]: ${rec} on ${BASE} has a git_url git cannot clone over https: '${url}'."; exit 1 ;;
+  *) echo "FAIL [product-checkout]: ${rec} on ${BASE} has a git_url git cannot clone over https: '${url}' — set the Product's git_url to an https:// or git@host:org/repo form, then run yad check --fix --push from the Product; it writes the record on every code repo's default branch."; exit 1 ;;
 esac
 # --- the token's expiry (#345) ---
 # One call to the Product host's API with the token: GitHub answers a personal access token's expiry in

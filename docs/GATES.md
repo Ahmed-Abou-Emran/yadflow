@@ -625,10 +625,11 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
 
 | Message (after `FAIL [product-checkout]: …`) | What to change |
 |---|---|
-| `<record> on <base> says path '<path>' — it must be a folder inside this repo, such as .yad/product.` | Fix `path` by running `yad check --fix --push` from the Product, or in its own pull request. |
+| `<record> on <base> says path '<path>' — it must be a folder inside this repo. Change path in <record> to one, such as .yad/product, and merge that change first …` | Change `path` in `.sdlc/product-link.json` to a folder inside the repo, such as `.yad/product`, in its own pull request, and merge it first. The record is read from the base, so changing it in the failing pull request does not help. `yad check --fix --push` does not help either: it keeps a `path` that is set. |
+| `<record> on <base> names no path — run yad check --fix --push from the Product …` | Run `yad check --fix --push` from the Product. It writes `path` `.yad/product` to the record on every code repo's default branch. Or set `path` yourself, in its own pull request. |
 | `'<path>' is a symlink … Point path in <record> at a real folder.` | As it says. |
-| `'<path>' holds files this repo tracks — the Product cannot be checked out there.` | Change `path` to an untracked folder such as `.yad/product`, in its own pull request. |
-| `<record> on <base> has an http:// git_url … Use the https url.` / `… a git_url git cannot clone over https: '<url>'.` | Set the Product's `git_url` to an `https://` or `git@host:org/repo` form, then run `yad check --fix --push` from the Product. |
+| `'<path>' holds files this repo tracks — the Product cannot be checked out there. Untrack them (git rm -r --cached '<path>'), or change path …` | Untrack those files in this pull request (`git rm -r --cached '<path>'`, then commit). Or change `path` to an untracked folder such as `.yad/product` in its own pull request, and merge it first: the record is read from the base. |
+| `<record> on <base> has an http:// git_url … Use the https url.` / `… a git_url git cannot clone over https: '<url>' — set the Product's git_url to an https:// or git@host:org/repo form, then run yad check --fix --push from the Product …` | Set the Product's `git_url` to an `https://` or `git@host:org/repo` form, then run `yad check --fix --push` from the Product. |
 | `could not clone the Product from <url> (<branch>) into '<path>'.` | The next line says why. A rejected token (HTTP 401) has expired or been revoked: renew `YAD_PRODUCT_TOKEN`. Otherwise check that the token can read that repo, and that `git_url` and `default_branch` are right. |
 
 `yad doctor` also checks, by name only, that `YAD_PRODUCT_TOKEN` is set where CI can read it.
