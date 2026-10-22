@@ -305,13 +305,15 @@ test('yad run checks: a record CI refuses says what to change, as product-checko
     // A path that is set but outside the repo: `yad check --fix` keeps it, so it is changed and merged first.
     let r = onBase(JSON.stringify({ git_url: 'x', path: '../elsewhere' }));
     assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /says path "\.\.\/elsewhere", which is not a folder inside this repo — .*\. Change path in it to one, such as \.yad\/product, and merge that change first: the record is read from origin\/main, so changing it on this branch does not help/);
+    assert.match(r.out, /says path "\.\.\/elsewhere", which is not a folder inside this repo — .*\. Change path in it to one, such as \.yad\/product, and merge that change first: the record is read from origin\/main, so changing it on this branch does not help$/m);
     // No path: `yad check --fix --push` writes one.
     r = onBase(JSON.stringify({ git_url: 'x' }));
-    assert.match(r.out, /names no path — .*; run `yad check --fix --push` from the Product, which writes path \.yad\/product/);
-    // Not a JSON object: --fix leaves it alone unless told to replace it.
-    r = onBase('[1]');
-    assert.match(r.out, /is not a JSON object — .*\. Fix it by hand and merge that change first, or run `yad check --fix --overwrite-local --push` from the Product/);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /names no path — .*; run `yad check --fix --push` from the Product, on a machine that has this repo cloned and on its default branch; it writes path \.yad\/product to the record there\. Or set path yourself and merge that change first$/m);
+    // No git_url: CI clones nothing and says so before it reads the path, so neither fails here.
+    r = onBase(JSON.stringify({ path: '../elsewhere' }));
+    assert.doesNotMatch(r.out, /FAIL \[product-checkout\]/, r.out);
+    assert.match(r.out, /names no git_url, so CI checks no Product out/);
     // A tracked folder: untrack it here, or move the path on the base.
     git(backend, 'checkout', '-q', 'main');
     commitAll(backend, 'chore: a tracked folder', { '.sdlc/product-link.json': JSON.stringify({ git_url: 'x', path: 'prod' }), 'prod/x.txt': 'x\n' });
@@ -319,7 +321,8 @@ test('yad run checks: a record CI refuses says what to change, as product-checko
     git(backend, 'checkout', '-q', 'feature');
     git(backend, 'merge', '-q', '--no-edit', 'main');
     r = yad(backend, ['run', 'checks', '--no-build']);
-    assert.match(r.out, /'prod' holds files this repo tracks — .*Untrack them \(git rm -r --cached 'prod'\), or change path in \.sdlc\/product-link\.json to an untracked folder such as \.yad\/product and merge that change first \(the record is read from origin\/main\)/);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /'prod' holds files this repo tracks — .*Untrack them only if they do not belong in this repo \(git rm -r --cached -- 'prod', and add the folder to \.gitignore\), or change path in \.sdlc\/product-link\.json to an untracked folder such as \.yad\/product and merge that change first \(the record is read from origin\/main\)$/m);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 
