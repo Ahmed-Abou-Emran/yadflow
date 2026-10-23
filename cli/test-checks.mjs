@@ -816,6 +816,88 @@ test('contract-check gate: a slice holding a zero byte is refused (issue #344 re
   fs.rmSync(T, { recursive: true, force: true });
 });
 
+// Every reason under "contract surface changed without a trailer" says what to change (#380). Each case
+// builds one state and checks the reason line's own fix, word for word.
+test('contract-check gate: each reason a slice is not a quote says what to change (#380)', () => {
+  const FRESH = 'check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0"), then run again';
+  const DECLARE = 'or, if the surface really changes, declare it (see below).';
+  const REWRITE = 're-run yad-spec, which writes the slice again.';
+  const slice = { 'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)) };
+  // Writes the Product's epic files (null removes one), commits the slice, runs the gate, and returns the
+  // reason line that starts with `starts`.
+  const reasonOf = (starts, { product = {}, files = {}, env = {}, link } = {}) => {
+    const T = scaffoldRepo();
+    const hash = seedLockedContract(T);
+    for (const [rel, text] of Object.entries(product)) {
+      const f = path.join(T, 'product', rel);
+      if (text === null) fs.rmSync(f, { recursive: true, force: true });
+      else { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, text); }
+    }
+    commit(T, 'docs(spec): the S01 slice', { ...slice, 'specs/EP-demo-S01/link.md': link ?? quoteLink('EP-demo-S01', hash), ...files });
+    const r = runGate(CONTRACT, T, ['main'], env);
+    fs.rmSync(T, { recursive: true, force: true });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /FAIL \[contract-check\]: contract surface changed without a 'Contract-Change: yes' trailer\./, r.out);
+    const line = r.out.split('\n').find((l) => l.startsWith(`  ${starts}`));
+    assert.ok(line, `no reason starting '${starts}':\n${r.out}`);
+    return line;
+  };
+  const E = 'epics/EP-demo';
+  // Not under a story ID.
+  assert.ok(reasonOf('notes: specs/notes/contracts is not under a story ID, so it quotes no lock — ', { files: { 'specs/notes/contracts/x.md': 'x\n' } })
+    .endsWith("— move it under its story's folder (specs/EP-<slug>-S<n>/contracts/), or delete it."));
+  // The Product holds no lock for the epic.
+  assert.ok(reasonOf('EP-demo-S01: cannot check EP-demo-S01\'s slice against its lock, because the Product holds no ', { product: { [`${E}/.sdlc/contract-lock.json`]: null } })
+    .endsWith("— lock EP-demo's contract upstream first (yad-architecture Step 5); an epic on a short lane (chore/spike) locks none, so delete the slice (a delete-only change passes)."));
+  // No Product reached from link.md.
+  assert.ok(reasonOf("EP-demo-S01: cannot check EP-demo-S01's slice against its lock, because no Product is reached from ", { link: quoteLink('EP-demo-S01', 'a'.repeat(64), '../../nowhere') })
+    .endsWith('— let CI check the Product out (run yad check --fix --push from the Product, which writes .sdlc/product-link.json, and set the YAD_PRODUCT_TOKEN secret), then run again; or, if the surface really changes, declare it (see below).'));
+  // A Product reached that has no folder for the epic.
+  assert.ok(reasonOf("EP-demo-S01: cannot check EP-demo-S01's slice against its lock, because the Product has no EP-demo ", { product: { [E]: null, 'epics/EP-other/.keep': '' } })
+    .endsWith("— check the story id in the slice's folder name; if EP-demo is new, merge its Shape review PRs into the Product's default branch first. A PR that only deletes the slice passes."));
+  // A lock with no readable hash.
+  assert.ok(reasonOf('EP-demo-S01: ', { product: { [`${E}/.sdlc/contract-lock.json`]: '{}' } })
+    .endsWith('has no readable "hash": "sha256:…" value — lock the contract again upstream (yad-architecture Step 5), then run again.'));
+  // No contract.md to quote from.
+  assert.ok(reasonOf('EP-demo-S01: ', { product: { [`${E}/contract.md`]: null } })
+    .endsWith("is not there, so there is nothing to quote from — write that epic's contract.md in the Product and lock it (yad-architecture Step 5)."));
+  // A pointer lock that names no epic's lock, and one that names an epic with no lock.
+  const POINTER = "— fix ref / inheritedFrom in ";
+  const pointerTo = (ref) => {
+    const T0 = scaffoldRepo();
+    const h = seedLockedContract(T0);
+    fs.rmSync(T0, { recursive: true, force: true });
+    return { [`${E}/contract.md`]: null, [`${E}/.sdlc/contract-lock.json`]: JSON.stringify({ hash: `sha256:${h}`, ref }) };
+  };
+  for (const [ref, says] of [['../../../nowhere/.sdlc/contract-lock.json', 'which is not another epic\'s lock in this Product'], ['../../EP-owner/.sdlc/contract-lock.json', 'and there is no lock there']]) {
+    const line = reasonOf("EP-demo-S01: EP-demo's pointer lock names ", { product: { ...pointerTo(ref), 'epics/EP-owner/.sdlc/.keep': '' } });
+    assert.ok(line.includes(`${says} ${POINTER}`) && line.endsWith("so they name the owner epic's .sdlc/contract-lock.json (the yad-change skill writes them)."), line);
+  }
+  // Slice text that is not read, or quotes nothing.
+  assert.ok(reasonOf('specs/EP-demo-S01/contracts/orders.md: holds a zero byte', { files: { 'specs/EP-demo-S01/contracts/orders.md': quoteSlice([`${SURFACE_LINES[2]}\u0000`]) } })
+    .endsWith(`— remove the zero byte, or ${REWRITE}`));
+  assert.ok(reasonOf('specs/EP-demo-S01/contracts/orders.md: a CONTRACT-QUOTE block quotes nothing', { files: { 'specs/EP-demo-S01/contracts/orders.md': quoteSlice([]) } })
+    .endsWith(`— ${REWRITE}`));
+  // No hash tool on this machine: both fail, as when neither is installed.
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-nohash-'));
+  for (const tool of ['sha256sum', 'shasum']) fs.writeFileSync(path.join(bin, tool), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  assert.ok(reasonOf('EP-demo-S01: no sha256sum or shasum on this machine', { env: { PATH: `${bin}:${process.env.PATH}` } })
+    .endsWith('— use a runner image with coreutils (sha256sum) or perl (shasum).'));
+  fs.rmSync(bin, { recursive: true, force: true });
+  // git cannot list the slice's files, or lists none.
+  const gitBin = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-fakegit-'));
+  const real = execFileSync('sh', ['-c', 'command -v git']).toString().trim();
+  for (const [cases, starts] of [
+    [['*"--diff-filter=D --name-only -z"*) exit 128 ;;'], "EP-demo-S01: git could not list the slice's deletions — "],
+    [['*"--diff-filter=d --name-only -z"*) exit 128 ;;'], "EP-demo-S01: git could not list the slice's changes — "],
+    [['*"--diff-filter=d --name-only -z"*) exit 0 ;;', '*"--format= --name-only -z"*) exit 0 ;;'], 'EP-demo-S01: git listed no changed slice file for this story, so the quote cannot be checked — '],
+  ]) {
+    fs.writeFileSync(path.join(gitBin, 'git'), `#!/bin/sh\ncase "$*" in\n${cases.join('\n')}\nesac\nexec "${real}" "$@"\n`, { mode: 0o755 });
+    assert.ok(reasonOf(starts, { env: { PATH: `${gitBin}:${process.env.PATH}` } }).endsWith(`— ${FRESH}; ${DECLARE}`), starts);
+  }
+  fs.rmSync(gitBin, { recursive: true, force: true });
+});
+
 // Review 1, hole A: a line outside the block was never read, so a new endpoint written there passed.
 test('contract-check gate: a line outside the quote block fails, naming it (issue #344 review 1)', () => {
   const T = scaffoldRepo();
@@ -1520,16 +1602,33 @@ test('contract-check gate: a second spelling of contracts/ or of a story folder 
   fs.rmSync(T, { recursive: true, force: true });
 });
 
-test('contract-check gate: a git that cannot read the tree fails with a line that says so (E115)', () => {
+// Each git step that fails says what to change, as backfill-check says it (E115, #380): a fresh checkout
+// with full history, and, where only a git older than 2.38 runs the step, the newer git that skips it. A
+// fake git fails one step: `case` lines for "$*", the first match wins, anything else runs the real git.
+test('contract-check gate: a git step that fails says what to change (E115, #380)', () => {
   const T = scaffoldRepo();
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-fakegit-'));
+  commit(T, 'docs(spec): touch the slice', { 'specs/EP-demo-S01/contracts/orders.md': 'x\n' });
   const real = execFileSync('sh', ['-c', 'command -v git']).toString().trim();
-  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\ncase " $* " in *" ls-tree "*) echo "fatal: broken" >&2; exit 128 ;; esac\nexec "${real}" "$@"\n`, { mode: 0o755 });
-  const r = runGate(CONTRACT, T, ['main'], { PATH: `${bin}:${process.env.PATH}` });
-  assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /FAIL \[contract-check\]: could not read the tree at HEAD/);
+  const FIX = /— check the code out again, fresh and with full history \(GitHub: actions\/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0"\), then run again\./;
+  const NEWER = /Git 2\.38 or newer on the runner builds the merge instead and skips this step\./;
+  const cases = [
+    { fake: ['ls-tree*HEAD*) exit 128 ;;'], says: /FAIL \[contract-check\]: git could not read the tree at HEAD, so the links under specs\/ cannot be checked — /, older: false },
+    { fake: ['merge-tree*) exit 2 ;;'], says: /FAIL \[contract-check\]: git could not build the merge of this branch into main \(git merge-tree exit 2\) — /, older: false },
+    { fake: ['merge-tree*) exit 129 ;;', '*diff-filter=D*) exit 128 ;;'], says: /FAIL \[contract-check\]: git could not list what 'main' removed since the branch split off — /, older: true },
+    { fake: ['merge-tree*) exit 129 ;;', '"diff --no-renames --name-status"*) exit 128 ;;'], says: /FAIL \[contract-check\]: git could not list what this branch changes since it split off from 'main' — /, older: true },
+  ];
+  for (const c of cases) {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-fakegit-'));
+    fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\ncase "$*" in\n${c.fake.join('\n')}\nesac\nexec "${real}" "$@"\n`, { mode: 0o755 });
+    const r = runGate(CONTRACT, T, ['main'], { PATH: `${bin}:${process.env.PATH}` });
+    fs.rmSync(bin, { recursive: true, force: true });
+    assert.equal(r.code, 1, `${c.fake}:\n${r.out}`);
+    assert.match(r.out, c.says, r.out);
+    assert.match(r.out, FIX, r.out);
+    if (c.older) assert.match(r.out, NEWER, r.out);
+    else assert.doesNotMatch(r.out, NEWER, r.out);
+  }
   fs.rmSync(T, { recursive: true, force: true });
-  fs.rmSync(bin, { recursive: true, force: true });
 });
 
 test('contract-check gate: a symlink outside specs/ is not this gate\'s concern (E115)', () => {
@@ -2031,6 +2130,8 @@ test('backfill gate: a git step that fails says what to change (E116, #384)', ()
     { fake: [`ls-tree*${base}*) exit 128 ;;`], says: /FAIL \[backfill\]: git could not read the tree of '[0-9a-f]{40}', so the gate cannot tell which features are being backfilled — /, older: false },
     { fake: ['ls-tree*HEAD*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not read the tree at HEAD, so the gate cannot check src\/ for links — /, older: false },
     { fake: ['"diff --no-renames --raw"*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not list what this branch changes in '[0-9a-f]{40}' — /, older: false },
+    // The same line as contract-check's (#380): a merge git could not build is a damaged clone too.
+    { fake: ['merge-tree*) exit 2 ;;'], says: /FAIL \[backfill\]: git could not build the merge of this branch into [0-9a-f]{40} \(git merge-tree exit 2\) — /, older: false },
     // merge-tree exit 129 is a git older than 2.38: the gate reads the merge base instead.
     { fake: ['merge-tree*) exit 129 ;;', '*diff-filter=D*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not list what '[0-9a-f]{40}' removed since the branch split off — /, older: true },
     { fake: ['merge-tree*) exit 129 ;;', '"diff --no-renames --name-status"*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not list what this branch changes since it split off from '[0-9a-f]{40}' — /, older: true },

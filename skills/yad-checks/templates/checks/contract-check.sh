@@ -100,7 +100,7 @@ elif [ "$_mt" = 1 ]; then
   echo "FAIL [contract-check]: this branch does not merge cleanly into ${BASE}, so what it changes there cannot be read. Merge ${BASE} into the branch, resolve the conflicts, then push again."
   exit 1
 elif [ "$_mt" != 129 ]; then
-  echo "FAIL [contract-check]: git could not build the merge of this branch into ${BASE} (git merge-tree exit ${_mt}) — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
+  echo "FAIL [contract-check]: git could not build the merge of this branch into ${BASE} (git merge-tree exit ${_mt}) — check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
   exit 1
 elif [ "$_mb_count" != 1 ]; then
   echo "FAIL [contract-check]: '${BASE}' and HEAD have ${_mb_count} merge bases, and this git (older than 2.38) cannot build the merge into ${BASE}. Merge ${BASE} into the branch, then push again."
@@ -111,8 +111,8 @@ else
   # the rename into the merge unseen (review 4). Rename detection itself has limits the real merge does
   # not share (review 5: `diff.renameLimit`), so it is not used: a path the base REMOVED — deleted or
   # moved away — that the branch MODIFIES fails closed. Both deleting it is a clean merge, and passes.
-  _gone="$(git diff --no-renames --diff-filter=D --name-status -z "$_mbs" "$BASE" | tr '\n\0' '?\n' | awk 'NR % 2 == 0')" || { echo "FAIL [contract-check]: git could not list what ${BASE} removed since the branch split off."; exit 1; }
-  _mine="$(git diff --no-renames --name-status -z "$_mbs" HEAD | tr '\n\0' '?\n' | awk 'NR % 2 == 1 { s = $0; next } s == "M" || s == "T"')" || { echo "FAIL [contract-check]: git could not list what this branch changes."; exit 1; }
+  _gone="$(git diff --no-renames --diff-filter=D --name-status -z "$_mbs" "$BASE" | tr '\n\0' '?\n' | awk 'NR % 2 == 0')" || { echo "FAIL [contract-check]: git could not list what '${BASE}' removed since the branch split off — check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again. Git 2.38 or newer on the runner builds the merge instead and skips this step."; exit 1; }
+  _mine="$(git diff --no-renames --name-status -z "$_mbs" HEAD | tr '\n\0' '?\n' | awk 'NR % 2 == 1 { s = $0; next } s == "M" || s == "T"')" || { echo "FAIL [contract-check]: git could not list what this branch changes since it split off from '${BASE}' — check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again. Git 2.38 or newer on the runner builds the merge instead and skips this step."; exit 1; }
   # A here-string, not a pipe: `grep -q` stops at the first match, and a large list written into a pipe
   # it has left would end in SIGPIPE — read as "no match" under pipefail (review 5).
   if [ -n "$_gone" ] && [ -n "$_mine" ] && grep -Fxq -f <(printf '%s\n' "$_mine") <<<"$_gone"; then
@@ -171,7 +171,7 @@ links="$(git ls-tree -r -z --full-tree HEAD | tr '\n\0' '?\n' | awk '
   (fs in story) && story[fs] != c[2] { once("s/" c[2], "specs/" story[fs] (n == 2 ? " and specs/" c[2] " (one file" : "/ and specs/" c[2] "/ (one folder") " on macOS and Windows)") }
   !(fs in story) { story[fs] = c[2] }
   n >= 3 && c[3] != "contracts" && fold(c[3]) == "contracts" { once("c/" c[2] "/" c[3], "specs/" c[2] "/" c[3] (n == 3 ? " (a file" : "/ (a folder") " spelled other than contracts — the same name on macOS and Windows)") }
-')" || { echo "FAIL [contract-check]: could not read the tree at HEAD — the links under specs/ cannot be checked."; exit 1; }
+')" || { echo "FAIL [contract-check]: git could not read the tree at HEAD, so the links under specs/ cannot be checked — check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."; exit 1; }
 if [ -n "$links" ]; then
   echo "FAIL [contract-check]: specs/ holds a symlink, a submodule or a second spelling — this gate cannot see what it points at:"
   printf '%s\n' "$links"
@@ -650,15 +650,15 @@ phys_dir() { (cd "$1" 2>/dev/null && pwd -P) || true; }
 quote_story() {
   _qs="$1"; _qbad=0; current=""
   if ! story_ok "$_qs"; then
-    echo "  ${_qs}: specs/${_qs}/contracts is not under a story ID — it quotes no lock."; return 1
+    echo "  ${_qs}: specs/${_qs}/contracts is not under a story ID, so it quotes no lock — move it under its story's folder (specs/EP-<slug>-S<n>/contracts/), or delete it."; return 1
   fi
   _qp="specs/${_qs}/contracts"   # a story ID holds no pattern character, so this pathspec is exact
   yad_tmp
-  git diff --no-renames --diff-filter=D --name-only -z "$DIFF_FROM" "$DIFF_TO" -- "$_qp" > "$_yad_tmp/q-gone" || { echo "  ${_qs}: git could not list the slice's deletions."; return 1; }
-  { git diff --no-renames --diff-filter=d --name-only -z "$DIFF_FROM" "$DIFF_TO" -- "$_qp" && git log --full-history --no-merges --no-renames --format= --name-only -z "$RANGE" -- "$_qp"; } | sort -z -u > "$_yad_tmp/q-files" || { echo "  ${_qs}: git could not list the slice's changes."; return 1; }
+  git diff --no-renames --diff-filter=D --name-only -z "$DIFF_FROM" "$DIFF_TO" -- "$_qp" > "$_yad_tmp/q-gone" || { echo "  ${_qs}: git could not list the slice's deletions — check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again; or, if the surface really changes, declare it (see below)."; return 1; }
+  { git diff --no-renames --diff-filter=d --name-only -z "$DIFF_FROM" "$DIFF_TO" -- "$_qp" && git log --full-history --no-merges --no-renames --format= --name-only -z "$RANGE" -- "$_qp"; } | sort -z -u > "$_yad_tmp/q-files" || { echo "  ${_qs}: git could not list the slice's changes — check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again; or, if the surface really changes, declare it (see below)."; return 1; }
   # Never a PASS by an empty list: the surface named this story, so its slice has changed files.
   if [ ! -s "$_yad_tmp/q-files" ] && [ ! -s "$_yad_tmp/q-gone" ]; then
-    echo "  ${_qs}: git listed no changed slice file for this story — the quote cannot be checked."; return 1
+    echo "  ${_qs}: git listed no changed slice file for this story, so the quote cannot be checked — check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again; or, if the surface really changes, declare it (see below)."; return 1
   fi
   if [ -s "$_yad_tmp/q-gone" ]; then
     tr '\n\0' '?\n' < "$_yad_tmp/q-gone" | while IFS= read -r _f; do echo "  ${_f}: this removes slice file(s) — a deletion changes the surface."; done
@@ -687,12 +687,22 @@ quote_story() {
   _qepic="$(story_epic "$_qs")"
   _qlock=""
   [ -n "$prod" ] && _qlock="${prod}/epics/${_qepic}/.sdlc/contract-lock.json"
-  if [ -z "$_qlock" ] || [ ! -f "$_qlock" ]; then
-    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock — the Product's lock is not reachable at ${_qlock:-<no product-repo in ${_ql}>}."
+  # Three states, three fixes (#380): no Product reached here (no value, or a folder that is not there), a
+  # Product without the epic, or an epic without a lock.
+  if [ -z "$prod" ] || [ ! -d "$prod" ]; then
+    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because no Product is reached from ${_ql}${prod:+ (it reads '${prod}')} — let CI check the Product out (run yad check --fix --push from the Product, which writes .sdlc/product-link.json, and set the YAD_PRODUCT_TOKEN secret), then run again; or, if the surface really changes, declare it (see below)."
+    return 1
+  fi
+  if [ ! -d "${prod}/epics/${_qepic}" ]; then
+    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because the Product has no ${_qepic} (${prod}/epics/) — check the story id in the slice's folder name; if ${_qepic} is new, merge its Shape review PRs into the Product's default branch first. A PR that only deletes the slice passes."
+    return 1
+  fi
+  if [ ! -f "$_qlock" ]; then
+    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because the Product holds no ${_qlock} — lock ${_qepic}'s contract upstream first (yad-architecture Step 5); an epic on a short lane (chore/spike) locks none, so delete the slice (a delete-only change passes)."
     return 1
   fi
   current="$(lock_hash "$_qlock")" || current=""
-  if [ -z "$current" ]; then echo "  ${_qs}: ${_qlock} has no readable \"hash\": \"sha256:…\" value."; return 1; fi
+  if [ -z "$current" ]; then echo "  ${_qs}: ${_qlock} has no readable \"hash\": \"sha256:…\" value — lock the contract again upstream (yad-architecture Step 5), then run again."; return 1; fi
   if [ -z "$_qpin" ]; then
     echo "  ${_qs}: ${_ql} names no contract-lock — re-run yad-spec, which copies it from the Product."; return 1
   fi
@@ -718,21 +728,21 @@ quote_story() {
     [ -n "$_qepics" ] || _qowner_sdlc=""
     case "$_qowner_sdlc" in
       "$_qepics"/*/.sdlc) ;;
-      *) echo "  ${_qs}: ${_qepic}'s pointer lock names '${_qref}', which is not another epic's lock in this Product."; return 1 ;;
+      *) echo "  ${_qs}: ${_qepic}'s pointer lock names '${_qref}', which is not another epic's lock in this Product — fix ref / inheritedFrom in ${_qlock} so they name the owner epic's .sdlc/contract-lock.json (the yad-change skill writes them)."; return 1 ;;
     esac
     _qowner_lock="${_qowner_sdlc}/$(basename "$_qref")"
     if [ "$(basename "$_qref")" != "contract-lock.json" ] || [ ! -f "$_qowner_lock" ]; then
-      echo "  ${_qs}: ${_qepic}'s pointer lock names '${_qref}', and there is no lock there."; return 1
+      echo "  ${_qs}: ${_qepic}'s pointer lock names '${_qref}', and there is no lock there — fix ref / inheritedFrom in ${_qlock} so they name the owner epic's .sdlc/contract-lock.json (the yad-change skill writes them)."; return 1
     fi
     if [ "$(lock_hash "$_qowner_lock")" != "$current" ]; then
       echo "  ${_qs}: ${_qepic}'s pointer lock copies ${current:0:12}…, but its owner now locks another surface — re-copy the owner's hash (yad-change)."; return 1
     fi
     _qc="$(dirname "$_qowner_sdlc")/contract.md"
   fi
-  if [ ! -f "$_qc" ]; then echo "  ${_qs}: ${_qc} is not there — nothing to quote from."; return 1; fi
+  if [ ! -f "$_qc" ]; then echo "  ${_qs}: ${_qc} is not there, so there is nothing to quote from — write that epic's contract.md in the Product and lock it (yad-architecture Step 5)."; return 1; fi
   surface_lines "$_qc" > "$_yad_tmp/surface"
   _qh="$(sha256_hex < "$_yad_tmp/surface")" || _qh=""
-  if [ -z "$_qh" ]; then echo "  ${_qs}: no sha256sum or shasum on this machine — the lock cannot be checked."; return 1; fi
+  if [ -z "$_qh" ]; then echo "  ${_qs}: no sha256sum or shasum on this machine, so the lock cannot be checked — use a runner image with coreutils (sha256sum) or perl (shasum)."; return 1; fi
   if [ "$_qh" != "$current" ]; then
     echo "  ${_qs}: the Product's contract.md no longer matches its lock (${_qh:0:12}… vs ${current:0:12}…) — re-lock it upstream (yad-architecture Step 5)."
     return 1
@@ -753,7 +763,7 @@ quote_story() {
     fi
     # A zero byte ends a line for some awks (macOS), so text after it was never compared (review 2).
     if ! tr -d '\000' < "$_yad_tmp/q-file" | cmp -s - "$_yad_tmp/q-file"; then
-      echo "  ${_f}: holds a zero byte — a slice is text; it is not read."; _qbad=1; continue
+      echo "  ${_f}: holds a zero byte, and a slice is text, so it is not read — remove the zero byte, or re-run yad-spec, which writes the slice again."; _qbad=1; continue
     fi
     _qv="$(awk -v title="# Contract slice — ${_qs}" -v bom="$(printf '\357\273\277')" '
       function norm(x) { sub(/\r$/, "", x); sub(/[ \t]+$/, "", x); return x }
@@ -792,11 +802,11 @@ quote_story() {
       none) echo "  ${_f}: has no CONTRACT-QUOTE block, so it cannot be told from a change."; _qbad=1 ;;
       count) echo "  ${_f}: every CONTRACT-QUOTE block must be closed, BEGIN before END, none inside another."; _qbad=1 ;;
       many) echo "  ${_f}: holds more than one CONTRACT-QUOTE block — one block per file; quote another part of the surface in another file."; _qbad=1 ;;
-      empty) echo "  ${_f}: a CONTRACT-QUOTE block quotes nothing."; _qbad=1 ;;
+      empty) echo "  ${_f}: a CONTRACT-QUOTE block quotes nothing — re-run yad-spec, which writes the slice again."; _qbad=1 ;;
       outside*) echo "  ${_f}: this line sits outside the CONTRACT-QUOTE block: ${_qv#outside?} — only blank lines and, first, the title '# Contract slice — ${_qs}' may; notes go in spec.md or plan.md."; _qbad=1 ;;
       miss*) echo "  ${_f}: this line is not in the locked surface: ${_qv#miss?}"; _qbad=1 ;;
       run*) echo "  ${_f}: the block starting '${_qv#run?}' is not one unbroken run of the locked surface, in its order — quote whole consecutive lines."; _qbad=1 ;;
-      *) echo "  ${_f}: could not be read."; _qbad=1 ;;
+      *) echo "  ${_f}: could not be read — re-run yad-spec, which writes the slice again."; _qbad=1 ;;
     esac
   done < "$_yad_tmp/q-files"
   return "$_qbad"
