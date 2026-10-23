@@ -2017,17 +2017,36 @@ test('backfill gate: a spec whose frontmatter never closes is not approved by a 
   fs.rmSync(T, { recursive: true, force: true });
 });
 
-test('backfill gate: a git that cannot read the tree fails with a line that says so (E116)', () => {
+// Each git step that fails says what to change: the checkout setting, and, where only a git older than
+// 2.38 runs the step, the newer git that skips it (E116, #384). A fake git fails one step: `case` lines
+// for "$*", the first match wins, and anything else runs the real git.
+test('backfill gate: a git step that fails says what to change (E116, #384)', () => {
   const { T, base } = renameRepo({ 'src/billing/pay.js': 'pay()\n' });
   commit(T, 'feat: touch billing', { 'src/billing/pay.js': 'pay(2)\n' });
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-fakegit-'));
   const real = execFileSync('bash', ['-c', 'command -v git']).toString().trim();
-  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\n[ "$1" = ls-tree ] && exit 128\nexec "${real}" "$@"\n`, { mode: 0o755 });
-  const r = runGate(BACKFILL, T, [base], { PATH: `${bin}:${process.env.PATH}` });
-  assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /FAIL \[backfill\]: git could not read the tree of/);
+  // Every step reads commits already on disk, so a failure means an object is missing: a fresh checkout.
+  const FIX = /— check the code out again, fresh and with full history \(GitHub: actions\/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0"\), then run again\./;
+  const NEWER = /Git 2\.38 or newer on the runner builds the merge instead and skips this step\./;
+  const cases = [
+    { fake: [`ls-tree*${base}*) exit 128 ;;`], says: /FAIL \[backfill\]: git could not read the tree of '[0-9a-f]{40}', so the gate cannot tell which features are being backfilled — /, older: false },
+    { fake: ['ls-tree*HEAD*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not read the tree at HEAD, so the gate cannot check src\/ for links — /, older: false },
+    { fake: ['"diff --no-renames --raw"*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not list what this branch changes in '[0-9a-f]{40}' — /, older: false },
+    // merge-tree exit 129 is a git older than 2.38: the gate reads the merge base instead.
+    { fake: ['merge-tree*) exit 129 ;;', '*diff-filter=D*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not list what '[0-9a-f]{40}' removed since the branch split off — /, older: true },
+    { fake: ['merge-tree*) exit 129 ;;', '"diff --no-renames --name-status"*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not list what this branch changes since it split off from '[0-9a-f]{40}' — /, older: true },
+  ];
+  for (const c of cases) {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-fakegit-'));
+    fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nREAL="${real}"\ncase "$*" in\n${c.fake.join('\n')}\nesac\nexec "$REAL" "$@"\n`, { mode: 0o755 });
+    const r = runGate(BACKFILL, T, [base], { PATH: `${bin}:${process.env.PATH}` });
+    fs.rmSync(bin, { recursive: true, force: true });
+    assert.equal(r.code, 1, `${c.fake}:\n${r.out}`);
+    assert.match(r.out, c.says, r.out);
+    assert.match(r.out, FIX, r.out);
+    if (c.older) assert.match(r.out, NEWER, r.out);
+    else assert.doesNotMatch(r.out, NEWER, r.out);
+  }
   fs.rmSync(T, { recursive: true, force: true });
-  fs.rmSync(bin, { recursive: true, force: true });
 });
 
 test('backfill-check reads both trees before its first PASS (E116)', () => {
