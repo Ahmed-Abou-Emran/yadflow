@@ -104,7 +104,7 @@ else
   # not share (review 5: `diff.renameLimit`), so it is not used: a path the base REMOVED — deleted or
   # moved away — that the branch MODIFIES fails closed. Both deleting it is a clean merge, and passes.
   _gone="$(git diff --no-renames --diff-filter=D --name-status -z "$_mbs" "$BASE" | tr '\n\0' '?\n' | awk 'NR % 2 == 0')" || { echo "FAIL [backfill]: git could not list what ${BASE} removed since the branch split off — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again. Git 2.38 or newer on the runner builds the merge instead and skips this step."; exit 1; }
-  _mine="$(git diff --no-renames --name-status -z "$_mbs" HEAD | tr '\n\0' '?\n' | awk 'NR % 2 == 1 { s = $0; next } s == "M" || s == "T"')" || { echo "FAIL [backfill]: git could not list what this branch changes — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again. Git 2.38 or newer on the runner builds the merge instead and skips this step."; exit 1; }
+  _mine="$(git diff --no-renames --name-status -z "$_mbs" HEAD | tr '\n\0' '?\n' | awk 'NR % 2 == 1 { s = $0; next } s == "M" || s == "T"')" || { echo "FAIL [backfill]: git could not list what this branch changes since it split off from ${BASE} — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again. Git 2.38 or newer on the runner builds the merge instead and skips this step."; exit 1; }
   # A here-string, not a pipe: `grep -q` stops at the first match, and a large list written into a pipe
   # it has left would end in SIGPIPE — read as "no match" under pipefail (review 5).
   if [ -n "$_gone" ] && [ -n "$_mine" ] && grep -Fxq -f <(printf '%s\n' "$_mine") <<<"$_gone"; then
@@ -140,7 +140,7 @@ FOLD='function fold(x) { x = tolower(x)
 # `tr '\n\0' '?\n'`: one record per line, and a newline inside a path becomes `?` — split on newlines
 # alone, a file named `notes<newline>100644 blob 0<TAB>src/Billing/y` added a record nobody made (review 2).
 base_tree="$(git ls-tree -r -z --full-tree "$BASE" | tr '\n\0' '?\n')" || {
-  echo "FAIL [backfill]: git could not read the tree of '${BASE}', so the gate cannot tell which features are being backfilled — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
+  echo "FAIL [backfill]: git could not read the tree of '${BASE}', so the gate cannot tell which features are being backfilled — check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
   exit 1
 }
 # One line each: `S <oid> <path>` a spec to read, `U - <path>` a link where a spec goes, `A - <path>` a
@@ -173,7 +173,7 @@ bf="$(printf '%s\n' "$specs" | sed -n 's/^[SU] [^ ]* //p' | awk "$FOLD"'{ split(
 # empty.
 tagged() { printf '%s\n' "$2" | awk -v t="$1" 'length($0) { print t "\t" $0 }'; }
 head_tree="$(git ls-tree -r -z --full-tree HEAD | tr '\n\0' '?\n')" || {
-  echo "FAIL [backfill]: git could not read the tree at HEAD, so the gate cannot check src/ for links — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
+  echo "FAIL [backfill]: git could not read the tree at HEAD, so the gate cannot check src/ for links — check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
   exit 1
 }
 if [ -n "$bf" ] || [ -n "$blind" ]; then
@@ -218,7 +218,7 @@ fi
 changed="$(git diff --no-renames --raw -z "$DIFF_FROM" "$DIFF_TO" | while IFS= read -r -d '' h && IFS= read -r -d '' p; do
   printf '%s\t%s\n' "$h" "${p//$'\n'/?}"
 done)" || {
-  echo "FAIL [backfill]: git could not list what this branch changes in '${BASE}' — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
+  echo "FAIL [backfill]: git could not list what this branch changes in '${BASE}' — check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
   exit 1
 }
 # The spellings of each src/<feature> folder, on the base and at HEAD: `<top>/<feature>`, once each.

@@ -2024,7 +2024,8 @@ test('backfill gate: a git step that fails says what to change (E116, #384)', ()
   const { T, base } = renameRepo({ 'src/billing/pay.js': 'pay()\n' });
   commit(T, 'feat: touch billing', { 'src/billing/pay.js': 'pay(2)\n' });
   const real = execFileSync('bash', ['-c', 'command -v git']).toString().trim();
-  const FIX = /check the code out with full history \(GitHub: actions\/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0"\), then run again\./;
+  // A tree git cannot read is a damaged clone as often as a shallow one, so those say "again, fresh" too.
+  const FIX = /check the code out (again, fresh and )?with full history \(GitHub: actions\/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0"\), then run again\./;
   const NEWER = /Git 2\.38 or newer on the runner builds the merge instead and skips this step\./;
   const cases = [
     { fake: [`ls-tree*${base}*) exit 128 ;;`], says: /FAIL \[backfill\]: git could not read the tree of '[0-9a-f]{40}', so the gate cannot tell which features are being backfilled — /, older: false },
@@ -2032,7 +2033,7 @@ test('backfill gate: a git step that fails says what to change (E116, #384)', ()
     { fake: ['"diff --no-renames --raw"*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not list what this branch changes in '[0-9a-f]{40}' — /, older: false },
     // merge-tree exit 129 is a git older than 2.38: the gate reads the merge base instead.
     { fake: ['merge-tree*) exit 129 ;;', '*diff-filter=D*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not list what [0-9a-f]{40} removed since the branch split off — /, older: true },
-    { fake: ['merge-tree*) exit 129 ;;', '*diff-filter=D*) exec "$REAL" "$@" ;;', '"diff --no-renames --name-status"*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not list what this branch changes — /, older: true },
+    { fake: ['merge-tree*) exit 129 ;;', '"diff --no-renames --name-status"*) exit 128 ;;'], says: /FAIL \[backfill\]: git could not list what this branch changes since it split off from [0-9a-f]{40} — /, older: true },
   ];
   for (const c of cases) {
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-fakegit-'));
@@ -2044,6 +2045,8 @@ test('backfill gate: a git step that fails says what to change (E116, #384)', ()
     assert.match(r.out, FIX, r.out);
     if (c.older) assert.match(r.out, NEWER, r.out);
     else assert.doesNotMatch(r.out, NEWER, r.out);
+    // The old-git steps read a merge base a shallow clone lacks; the others say "again, fresh".
+    assert.match(r.out, c.older ? /— check the code out with full history/ : /— check the code out again, fresh and with full history/, r.out);
   }
   fs.rmSync(T, { recursive: true, force: true });
 });
