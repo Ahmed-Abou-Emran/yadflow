@@ -650,7 +650,7 @@ phys_dir() { (cd "$1" 2>/dev/null && pwd -P) || true; }
 quote_story() {
   _qs="$1"; _qbad=0; current=""
   if ! story_ok "$_qs"; then
-    echo "  ${_qs}: specs/${_qs}/contracts is not under a story ID, so it quotes no lock — move it under its story's folder (specs/EP-<slug>-S<n>/contracts/), or delete it."; return 1
+    echo "  ${_qs}: specs/${_qs}/contracts is not under a story ID, so it quotes no lock — move it under its story's folder (specs/EP-<slug>-S<n>/contracts/), or delete it and commit the deletion with Contract-Change: yes (yad commit --contract-change); a delete-only change with the trailer passes."; return 1
   fi
   _qp="specs/${_qs}/contracts"   # a story ID holds no pattern character, so this pathspec is exact
   yad_tmp
@@ -694,11 +694,11 @@ quote_story() {
     return 1
   fi
   if [ ! -d "${prod}/epics/${_qepic}" ]; then
-    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because the Product has no ${_qepic} (${prod}/epics/) — check the story id in the slice's folder name; if ${_qepic} is new, merge its Shape review PRs into the Product's default branch first. A PR that only deletes the slice passes."
+    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because the Product has no ${_qepic} (${prod}/epics/) — check the story id in the slice's folder name; if ${_qepic} is new, merge its Shape review PRs into the Product's default branch first; or delete the slice and commit the deletion with Contract-Change: yes (yad commit --contract-change); a delete-only change with the trailer passes."
     return 1
   fi
   if [ ! -f "$_qlock" ]; then
-    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because the Product holds no ${_qlock} — lock ${_qepic}'s contract upstream first (yad-architecture Step 5); an epic on a short lane (chore/spike) locks none, so delete the slice (a delete-only change passes)."
+    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because the Product holds no ${_qlock} — lock ${_qepic}'s contract upstream first (yad-architecture Step 5); an epic on a short lane (chore/spike) locks none, so delete the slice and commit the deletion with Contract-Change: yes (yad commit --contract-change); a delete-only change with the trailer passes."
     return 1
   fi
   current="$(lock_hash "$_qlock")" || current=""
@@ -728,11 +728,11 @@ quote_story() {
     [ -n "$_qepics" ] || _qowner_sdlc=""
     case "$_qowner_sdlc" in
       "$_qepics"/*/.sdlc) ;;
-      *) echo "  ${_qs}: ${_qepic}'s pointer lock names '${_qref}', which is not another epic's lock in this Product — fix ref / inheritedFrom in ${_qlock} so they name the owner epic's .sdlc/contract-lock.json (the yad-change skill writes them)."; return 1 ;;
+      *) echo "  ${_qs}: ${_qepic}'s pointer lock names '${_qref}', which is not another epic's lock in this Product — fix ref (a path to the owner epic's .sdlc/contract-lock.json) or inheritedFrom (the owner epic's ID) in ${_qlock} (the yad-change skill writes them)."; return 1 ;;
     esac
     _qowner_lock="${_qowner_sdlc}/$(basename "$_qref")"
     if [ "$(basename "$_qref")" != "contract-lock.json" ] || [ ! -f "$_qowner_lock" ]; then
-      echo "  ${_qs}: ${_qepic}'s pointer lock names '${_qref}', and there is no lock there — fix ref / inheritedFrom in ${_qlock} so they name the owner epic's .sdlc/contract-lock.json (the yad-change skill writes them)."; return 1
+      echo "  ${_qs}: ${_qepic}'s pointer lock names '${_qref}', and there is no lock there — fix ref (a path to the owner epic's .sdlc/contract-lock.json) or inheritedFrom (the owner epic's ID) in ${_qlock} (the yad-change skill writes them)."; return 1
     fi
     if [ "$(lock_hash "$_qowner_lock")" != "$current" ]; then
       echo "  ${_qs}: ${_qepic}'s pointer lock copies ${current:0:12}…, but its owner now locks another surface — re-copy the owner's hash (yad-change)."; return 1
