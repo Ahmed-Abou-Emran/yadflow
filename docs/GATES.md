@@ -591,18 +591,24 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
 | Message (after `FAIL [member-check]: …`) | What to change |
 |---|---|
 | `a PR may add or change only its author's own member file …` | Each person runs `yad member add` in their own pull request. To drop someone else, use `yad member remove <login> --reason "<why>"`. |
-| `only <platform>-<login>.json files belong in .sdlc/members/` | Remove or rename the file. |
-| `<file>: not a member file (no "accounts" list)` / `does not hold <author>'s own <platform> account …` / `the account id in the file … is not the author's` / `must hold exactly one <platform> account …` | Write the file again with `yad member add`, as its own person. |
+| `only <platform>-<login>.json files belong in .sdlc/members/` | Rename the file to `<platform>-<login>.json`, or remove it. |
+| `<file>: not a member file (no "accounts" list)` / `does not hold <author>'s own <platform> account …` / `the account id in the file … is not the author's` / `must hold exactly one <platform> account …` | Write the file again with `yad member add`, run by its own person. |
 | `belonged to account id …, not <author>'s (<id>) — a reused login does not take over a member file; remove it first` | Remove the old file first with `yad member remove <login> --reason`, in its own pull request. |
 | `holds an email no commit in this PR proves …` (GitHub only) | Make one commit with that email in the pull request (`yad member add` does), and verify the email on your account. |
 | `the account <x> is in <a> and <b>` | One account belongs to one member. Remove the stale file with `yad member remove <login> --reason`. |
-| `one email is in <a> and <b>` (GitHub only) | One email belongs to one member. Remove the duplicate email from one file, or remove the stale file. |
-| `"<path>" is another spelling of .sdlc/ …` / `… of .sdlc/members/` / `… is not a folder at HEAD (a link?)` / `… is not a plain file (a link?)` / `<a> and <b> are one file on macOS and Windows` | Use the real `.sdlc/members/` folder and plain files, one spelling each. |
-| `member files changed, but the Product names no platform` | Set `platform` (`github` or `gitlab`) in `.sdlc/product.json`. |
-| `no API token (GITLAB_TOKEN or SDLC_API_TOKEN) …` / `could not read the MR (HTTP N)` / `could not read the MR: …` | Add a `GITLAB_TOKEN` masked CI/CD variable with the `read_api` scope, whose user can see the project. Renew it if it has expired. |
-| `cannot tell who opened this PR/MR …` / `cannot tell the numeric id of who opened this PR (PR_AUTHOR_ID)` | On GitHub, the job must pass `PR_AUTHOR` and `PR_AUTHOR_ID` from the event, as the `yad` workflow does. A bot cannot change member files: open the pull request as the person. |
+| `one email is in <a> and <b>` (GitHub only) | One email belongs to one member. Remove it from the file it does not belong in: that file's own person runs `yad member add` again, which keeps only the emails their account has verified. Or remove a stale file with `yad member remove <login> --reason`. |
+| `"<path>" is another spelling of .sdlc/ …` / `… of .sdlc/members/ …` | Move the file into the real folder (`git mv`), or delete it. |
+| `… is not a folder at HEAD (a link?) …` | Replace the link with a real folder that holds the files themselves. |
+| `… is not a plain file (a link?) …` | Replace the link with the file itself (`yad member add` writes it), or delete it. |
+| `<a> and <b> are one file on macOS and Windows` | Keep one of the two. |
+| `member files changed, but the Product names no platform …` | Set `platform` (`github` or `gitlab`) in `.sdlc/product.json`. |
+| `no API token (GITLAB_TOKEN or SDLC_API_TOKEN) …` | Add a `GITLAB_TOKEN` masked CI/CD variable with the `read_api` scope, whose user can see the project. |
+| `could not read the MR (HTTP N): …` | The message says what to change, by the answer: 401 renew or replace the token; 403 give it the `read_api` scope; 404 use a token of a project member with Reporter access or more. Any other answer is GitLab's: run the job again later. |
+| `could not read the MR: <error> …` | Check that `CI_API_V4_URL` is reachable from the runner, then run the job again. |
+| `cannot tell who opened this PR/MR (<x> is a bot) …` | A bot cannot change member files: open the pull request as the person. |
+| `cannot tell who opened this PR/MR — …` / `cannot tell the numeric id of who opened this PR (PR_AUTHOR_ID) …` | On GitHub, the job must pass `PR_AUTHOR` and `PR_AUTHOR_ID` from the `pull_request` event, as `yad-product-checks.yml` does. On GitLab, run the job in a merge request pipeline, as `yad-product-checks.gitlab-ci.yml` does; if the API named no author, run the job again. |
 | The base messages | See [the base cannot be found](#the-base-cannot-be-found). |
-| `git could not list the changed files` | Fetch the whole history, then run again. |
+| `git could not list the changed files` | Check the code out with full history (GitHub: `actions/checkout` with `fetch-depth: 0`; GitLab: `GIT_DEPTH: "0"`), then run again. |
 | `usage: node checks/member-check.mjs <base-ref>` | A wiring problem: the job must pass the base. |
 
 ## product-checkout

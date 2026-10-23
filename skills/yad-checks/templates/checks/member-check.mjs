@@ -74,7 +74,7 @@ if (!git('rev-parse', '--verify', '-q', `${base}^{commit}`).ok) { say(`FAIL [mem
 // Every path the PR touches, with its status. NUL-separated, no renames (a rename is a delete plus an add,
 // and each is judged).
 const diff = git('diff', '--no-renames', '--name-status', '-z', `${base}...HEAD`);
-if (!diff.ok) { say('FAIL [member-check]: git could not list the changed files'); process.exit(1); }
+if (!diff.ok) { say('FAIL [member-check]: git could not list the changed files — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0"), then run again'); process.exit(1); }
 const parts = diff.out.split('\0').filter(Boolean);
 const all = [];
 for (let i = 0; i + 1 < parts.length; i += 2) all.push({ status: parts[i][0], path: parts[i + 1] });
@@ -86,19 +86,20 @@ const fold = (p) => p.normalize('NFKC').toLowerCase();
 for (const { status, path } of all) {
   if (status === 'D') continue;
   const f = fold(path);
-  if ((f === '.sdlc' || f.startsWith('.sdlc/')) && !(path === '.sdlc' || path.startsWith('.sdlc/'))) fail(`${JSON.stringify(path)} is another spelling of .sdlc/ — a macOS or Windows checkout reads it as the Product's own folder, unjudged`);
-  else if ((f === '.sdlc/members' || f.startsWith(DIR)) && !path.startsWith(DIR)) fail(`${JSON.stringify(path)} is another spelling of ${DIR} — a macOS or Windows checkout reads it as a member file this gate does not judge`);
+  if ((f === '.sdlc' || f.startsWith('.sdlc/')) && !(path === '.sdlc' || path.startsWith('.sdlc/'))) fail(`${JSON.stringify(path)} is another spelling of .sdlc/, which a macOS or Windows checkout reads as the Product's own folder, unjudged — move it into the real .sdlc/ folder (git mv), or delete it`);
+  // `.sdlc/members` itself, a link where the folder goes, is the folder check's below, not a second spelling.
+  else if ((f === '.sdlc/members' || f.startsWith(DIR)) && !path.startsWith(DIR) && path !== '.sdlc/members') fail(`${JSON.stringify(path)} is another spelling of ${DIR}, which a macOS or Windows checkout reads as a member file this gate does not judge — move it into the real ${DIR} folder (git mv), or delete it`);
 }
 // The folders themselves must be folders at HEAD, and nothing under them a link.
 for (const p of ['.sdlc', '.sdlc/members']) {
   const t = git('ls-tree', 'HEAD', '--', p).out.trim();
-  if (t && !t.startsWith('040000 ')) fail(`${p} is not a folder at HEAD (a link?) — member files are read only from a real ${DIR}`);
+  if (t && !t.startsWith('040000 ')) fail(`${p} is not a folder at HEAD (a link?), and member files are read only from a real ${DIR} — replace it with a real folder that holds the files themselves`);
 }
 const tree = git('ls-tree', '-r', '-z', 'HEAD', '--', DIR).out.split('\0').filter(Boolean);
 const folded = new Map();
 for (const line of tree) {
   const [meta, p] = line.split('\t');
-  if (!meta.startsWith('100644 ') && !meta.startsWith('100755 ')) fail(`${p} is not a plain file (a link?) — a member file is never read through one`);
+  if (!meta.startsWith('100644 ') && !meta.startsWith('100755 ')) fail(`${p} is not a plain file (a link?), and a member file is never read through one — replace it with the file itself (yad member add writes it), or delete it`);
   const k = fold(p);
   if (folded.has(k)) fail(`${p} and ${folded.get(k)} are one file on macOS and Windows — keep one`);
   folded.set(k, p);
@@ -107,7 +108,7 @@ if (rc) process.exit(rc);
 
 const changed = all.filter((c) => c.path.startsWith(DIR));
 if (!changed.length) { say('PASS [member-check]: no member file changed'); process.exit(0); }
-if (!platform) { say('FAIL [member-check]: member files changed, but the Product names no platform — nothing can be proven'); process.exit(1); }
+if (!platform) { say('FAIL [member-check]: member files changed, but the Product names no platform, so nothing can be proven — set "platform" ("github" or "gitlab") in .sdlc/product.json'); process.exit(1); }
 
 // Who opened the PR/MR, asked of the platform's own record.
 // Returns { login, id }: the numeric id is what stays with a person when a login is renamed and reused.
@@ -121,17 +122,37 @@ async function prAuthor() {
   if (!token) { fail('no API token (GITLAB_TOKEN or SDLC_API_TOKEN) to read who opened this MR — a member file cannot be checked without it; add the token as a masked CI/CD variable'); return null; }
   try {
     const r = await fetch(`${url}/projects/${encodeURIComponent(project)}/merge_requests/${encodeURIComponent(iid)}`, { headers: { 'PRIVATE-TOKEN': token } });
-    if (!r.ok) { fail(`could not read the MR (HTTP ${r.status})`); return null; }
+    // What to change, by what GitLab answered, as pr-template says it (#381). Only a refusal is the
+    // token's fault; anything else is said as it is, with no advice to change the token.
+    if (!r.ok) {
+      const name = process.env.GITLAB_TOKEN ? 'GITLAB_TOKEN' : 'SDLC_API_TOKEN';
+      const why = {
+        401: `${name} was not accepted (expired, revoked, or not a valid token here) — renew or replace it`,
+        403: `${name} was refused — give it the read_api scope`,
+        404: `${name}'s user cannot see this project — use a token of a project member with Reporter access or more`,
+      }[r.status] || 'GitLab did not answer with the MR — run the job again later';
+      fail(`could not read the MR (HTTP ${r.status}): ${why}`);
+      return null;
+    }
     const mr = await r.json();
     return { login: mr?.author?.username || null, id: Number(mr?.author?.id) || null };
-  } catch (e) { fail(`could not read the MR: ${e.message}`); return null; }
+  } catch (e) { fail(`could not read the MR: ${e.message} — check that CI_API_V4_URL (${url}) is reachable from the runner, then run the job again`); return null; }
 }
 
 const who = await prAuthor();
 if (rc) process.exit(rc);
 const author = who?.login || null;
 const authorId = who?.id || null;
-if (!author || !LOGIN_RE.test(author)) { say(`FAIL [member-check]: cannot tell who opened this ${platform === 'github' ? 'PR' : 'MR'}${author ? ` (${author} is a bot)` : ''} — a member file is changed only by its own person`); process.exit(1); }
+// Two causes, each with its own fix (#381): the job did not say who opened it, or a bot did.
+if (!author || !LOGIN_RE.test(author)) {
+  const what = platform === 'github' ? 'PR' : 'MR';
+  const fix = author ? `a member file is changed only by its own person: open the ${what} as that person`
+    : platform === 'github' ? 'the job must pass PR_AUTHOR and PR_AUTHOR_ID from the pull_request event (github.event.pull_request.user.login and .id), as yad-product-checks.yml does'
+      : who ? 'the merge request API named no author — run the job again'
+        : 'run the job in a merge request pipeline, which sets CI_API_V4_URL, CI_PROJECT_ID and CI_MERGE_REQUEST_IID, as yad-product-checks.gitlab-ci.yml does';
+  say(`FAIL [member-check]: cannot tell who opened this ${what}${author ? ` (${author} is a bot)` : ''} — ${fix}`);
+  process.exit(1);
+}
 
 const fileAt = (ref, path) => { const r = git('show', `${ref}:${path}`); return r.ok ? parse(r.out) : null; };
 const emailsOf = (rec) => new Set(Array.isArray(rec?.emails) ? rec.emails.filter((h) => typeof h === 'string' && HASH_RE.test(h)) : []);
@@ -146,21 +167,24 @@ function githubLogin(sha) {
   return login;
 }
 
+// The fix for a file that is not the author's own as `yad member add` writes it.
+const AGAIN = 'write the file again with yad member add, run by its own person';
+
 const prCommits = git('log', '--format=%H%x1f%ae', `${base}..HEAD`).out.split('\n').filter(Boolean).map((l) => { const [sha, email] = l.split('\x1f'); return { sha, hash: hash(email) }; });
 
 for (const { status, path } of changed) {
   const name = path.slice(DIR.length);
   if (status === 'D') { say(`PASS [member-check]: ${path} removed (removing a member can only make the count larger)`); continue; }
-  if (name.includes('/') || !name.endsWith('.json')) { fail(`${path}: only <platform>-<login>.json files belong in ${DIR}`); continue; }
+  if (name.includes('/') || !name.endsWith('.json')) { fail(`${path}: only <platform>-<login>.json files belong in ${DIR} — rename it so, or remove it`); continue; }
   if (name !== `${platform}-${author.toLowerCase()}.json`) { fail(`${path}: a PR may add or change only its author's own member file (${platform}-${author.toLowerCase()}.json) — use \`yad member remove <login> --reason\` to remove someone else's`); continue; }
   const rec = fileAt('HEAD', path);
-  if (!rec || !Array.isArray(rec.accounts)) { fail(`${path}: not a member file (no "accounts" list)`); continue; }
+  if (!rec || !Array.isArray(rec.accounts)) { fail(`${path}: not a member file (no "accounts" list) — ${AGAIN}`); continue; }
   const here = rec.accounts.filter(onProduct);
-  if (here.length !== 1) { fail(`${path}: must hold exactly one ${platform} account on ${productHost}, the author's own (it holds ${here.length})`); continue; }
-  if (String(here[0].login || '').toLowerCase() !== author.toLowerCase()) { fail(`${path}: does not hold ${author}'s own ${platform} account on ${productHost}`); continue; }
+  if (here.length !== 1) { fail(`${path}: must hold exactly one ${platform} account on ${productHost}, the author's own (it holds ${here.length}) — ${AGAIN}`); continue; }
+  if (String(here[0].login || '').toLowerCase() !== author.toLowerCase()) { fail(`${path}: does not hold ${author}'s own ${platform} account on ${productHost} — ${AGAIN}`); continue; }
   // The numeric id: a login can be renamed away and registered again by someone else.
-  if (!authorId) { fail(`${path}: cannot tell the numeric id of who opened this ${platform === 'github' ? 'PR (PR_AUTHOR_ID)' : 'MR'}`); continue; }
-  if (here[0].id !== authorId) { fail(`${path}: the account id in the file (${here[0].id ?? 'none'}) is not the author's (${authorId})`); continue; }
+  if (!authorId) { fail(`${path}: cannot tell the numeric id of who opened this ${platform === 'github' ? 'PR (PR_AUTHOR_ID) — the job must pass PR_AUTHOR_ID from the pull_request event (github.event.pull_request.user.id), as yad-product-checks.yml does' : 'MR — the merge request API gave no author id; run the job again'}`); continue; }
+  if (here[0].id !== authorId) { fail(`${path}: the account id in the file (${here[0].id ?? 'none'}) is not the author's (${authorId}) — ${AGAIN}`); continue; }
   const was = fileAt(base, path);
   const wasHere = Array.isArray(was?.accounts) ? was.accounts.filter(onProduct) : [];
   if (wasHere.length && wasHere[0].id !== authorId) { fail(`${path}: belonged to account id ${wasHere[0].id}, not ${author}'s (${authorId}) — a reused login does not take over a member file; remove it first`); continue; }
@@ -188,10 +212,10 @@ for (const p of files) {
   accounts.set(k, [...new Set([...(accounts.get(k) || []), p])]);
   for (const h of emailsOf(rec)) emails.set(h, [...(emails.get(h) || []), p]);
 }
-for (const [k, list] of accounts) if (list.length > 1) fail(`the account ${k} is in ${list.join(' and ')} — one account belongs to one member`);
+for (const [k, list] of accounts) if (list.length > 1) fail(`the account ${k} is in ${list.join(' and ')}, and one account belongs to one member — remove the stale file with yad member remove <login> --reason "<why>"`);
 // On GitLab an email is never proven and never used by the count, so a shared one is not refused: refusing it
 // would let whoever listed someone's known address first block that person (review 3). The CLI pairs it
 // with nobody.
-if (platform === 'github') for (const [, list] of emails) if (list.length > 1) fail(`one email is in ${list.join(' and ')} — one email belongs to one member`);
+if (platform === 'github') for (const [, list] of emails) if (list.length > 1) fail(`one email is in ${list.join(' and ')}, and one email belongs to one member — remove it from the file it does not belong in (that file's own person runs yad member add again, which keeps only the emails their account has verified), or remove a stale file with yad member remove <login> --reason "<why>"`);
 
 process.exit(rc);
