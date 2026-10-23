@@ -554,7 +554,7 @@ test('E131 member-check: someone else\'s file is refused; a deletion is allowed;
     g.attribute(shaB, 'bob');
     r = g.check({ PR_AUTHOR: 'bob', PR_AUTHOR_ID: '9' });
     assert.equal(r.code, 1);
-    assert.match(r.out, /belonged to account id 2/);
+    assert.match(r.out, /belonged to account id 2, not bob's \(9\), and a reused login does not take over a member file — remove the old file first with yad member remove bob --reason "<why>", in a pull request of its own\n/);
     assert.match(g.check({ PR_AUTHOR: 'bob', PR_AUTHOR_ID: '2' }).out, /account id in the file \(9\) is not the author's \(2\)/);
     git(g.T, 'reset', '-q', '--hard', 'main');
     g.commitAs('alice@work.com', { [FILE('bob')]: null }, 'chore(product): remove team member bob');
@@ -636,8 +636,272 @@ test('E131 member-check: on GitLab with no API token a member change FAILS close
     g.commitAs('alice@work.com', { [`${M.MEMBERS_DIR}/gitlab-alice.json`]: { accounts: [{ platform: 'gitlab', host: 'gitlab.com', login: 'alice' }] } });
     const r = g.check({ CI_API_V4_URL: 'http://127.0.0.1:9/api/v4', CI_PROJECT_ID: '1', CI_MERGE_REQUEST_IID: '2', GITLAB_TOKEN: '', SDLC_API_TOKEN: '' });
     assert.equal(r.code, 1);
-    assert.match(r.out, /no API token/);
+    assert.match(r.out, /no API token .* — .*; add a GITLAB_TOKEN masked CI\/CD variable with the read_api scope, whose user can see the project\n/);
   } finally { fs.rmSync(g.T, { recursive: true, force: true }); }
+});
+
+// Every failure says what is wrong AND what to change (#381): `FAIL [member-check]: <wrong> — <change>`.
+test('E131 member-check: each failure says what to change (#381)', () => {
+  // The fix of the first FAIL line; every FAIL line has exactly one ' — ' between what is wrong and the fix.
+  const fixOf = (out) => {
+    for (const x of out.split('\n').filter((y) => y.startsWith('FAIL [member-check]: '))) assert.equal(x.split(' — ').length, 2, `one ' — ' in: ${x}`);
+    const l = out.split('\n').find((x) => x.startsWith('FAIL [member-check]: '));
+    return l ? l.slice(l.indexOf(' — ') + 3) : null;
+  };
+  // Its own file, new in this PR: dropped from another PR; one the base holds is restored, never deleted (review 6).
+  const AGAIN = /^write the file again with yad member add, run by its own person \(it opens its own pull request\); if this is another pull request, drop \.sdlc\/members\/github-alice\.json from this pull request \(git rm it on this branch\)$/;
+  const AGAIN_BASE = /^write the file again with yad member add, run by its own person \(it opens its own pull request\); if this is another pull request, restore \.sdlc\/members\/github-alice\.json to the base's copy \(git checkout main\.\.\.HEAD -- \.sdlc\/members\/github-alice\.json\)$/;
+  const g = gateRepo();
+  try {
+    g.commitAs('alice@work.com', { [FILE('alice')]: { accounts: [{ platform: 'github', host: 'github.com', login: 'alice', id: 1 }] } });
+    // The job passed no author, and a bot opened it: two causes, two fixes.
+    assert.match(fixOf(g.check({ PR_AUTHOR: '', PR_AUTHOR_ID: '' }).out), /^the job must pass PR_AUTHOR and PR_AUTHOR_ID from the pull_request event \(github\.event\.pull_request\.user\.login and \.id\), as yad-product-checks\.yml does$/);
+    const bot = g.check({ PR_AUTHOR: 'dependabot[bot]' }).out;
+    assert.match(bot, /cannot tell who opened this PR \(dependabot\[bot\] is a bot\) — /);
+    assert.match(fixOf(bot), /^a member file is changed only by its own person: open the PR as that person$/);
+    assert.match(fixOf(g.check({ PR_AUTHOR: 'alice', PR_AUTHOR_ID: '' }).out), /^the job must pass PR_AUTHOR_ID from the pull_request event \(github\.event\.pull_request\.user\.id\), as yad-product-checks\.yml does$/);
+    assert.match(fixOf(g.check({ PR_AUTHOR: 'alice', PR_AUTHOR_ID: '7' }).out), AGAIN, 'the account id is not the author\'s');
+    for (const [bad, says] of [
+      [{}, /not a member file \(no "accounts" list\) — /],
+      [{ accounts: [] }, /must hold exactly one github account on github\.com, the author's own \(it holds 0\) — /],
+      [{ accounts: [{ platform: 'github', host: 'github.com', login: 'bob', id: 1 }] }, /does not hold alice's own github account on github\.com — /],
+    ]) {
+      git(g.T, 'reset', '-q', '--hard', 'main');
+      g.commitAs('alice@work.com', { [FILE('alice')]: bad });
+      const out = g.check(as('alice')).out;
+      assert.match(out, says, out);
+      assert.match(fixOf(out), AGAIN, JSON.stringify(bad));
+    }
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    g.commitAs('alice@work.com', { '.sdlc/members/notes.txt': 'x' });
+    assert.match(fixOf(g.check(as('alice')).out), /^move it to \.sdlc\/members\/github-<login>\.json, or remove it$/);
+    // A file that is not the author's own: misnamed, or someone else's — new in this PR, or a teammate's the
+    // base holds, which is restored, never deleted (review 6: git rm would remove them and pass).
+    const OWN = (undo) => `${undo}, and change only github-alice.json, which yad member add writes. To remove someone else, use yad member remove <login> --reason "<why>" in a pull request of its own`;
+    for (const file of [`${M.MEMBERS_DIR}/alice.json`, FILE('bob')]) {
+      git(g.T, 'reset', '-q', '--hard', 'main');
+      g.commitAs('alice@work.com', { [file]: rec('alice', []) });
+      const out = g.check(as('alice')).out;
+      assert.ok(out.includes(`${file}: a PR may add or change only its author's own member file (github-alice.json) — `), out);
+      assert.equal(fixOf(out), OWN(`drop ${file} from this pull request (git rm it on this branch)`));
+    }
+    const mainBefore = git(g.T, 'rev-parse', 'main');
+    git(g.T, 'checkout', '-q', 'main');
+    put(path.join(g.T, FILE('bob')), rec('bob', []));
+    put(path.join(g.T, FILE('alice')), rec('alice', []));
+    git(g.T, 'add', '-A');
+    git(g.T, 'commit', '-q', '-m', 'bob and alice joined');
+    git(g.T, 'checkout', '-q', 'pr');
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    g.commitAs('alice@work.com', { [FILE('bob')]: { ...rec('bob', []), names: ['B'] } });
+    // Bob changes his own file on main after this branch split off: the restore is the split point's copy,
+    // and following it passes (review 7: the base's tip would leave the file changed).
+    git(g.T, 'checkout', '-q', 'main');
+    put(path.join(g.T, FILE('bob')), { ...rec('bob', []), names: ['Bob B'] });
+    git(g.T, 'commit', '-q', '-am', 'bob renamed himself');
+    git(g.T, 'checkout', '-q', 'pr');
+    assert.equal(fixOf(g.check(as('alice')).out), OWN(`restore ${FILE('bob')} to the base's copy (git checkout main...HEAD -- ${FILE('bob')})`));
+    git(g.T, 'checkout', 'main...HEAD', '--', FILE('bob'));
+    git(g.T, 'commit', '-q', '-m', 'undo the edit to bob');
+    assert.match(g.check(as('alice')).out, /PASS \[member-check\]: no member file changed/);
+    // A link put over a teammate's file is undone, not deleted: git rm would remove bob, and pass (review 7).
+    git(g.T, 'reset', '-q', '--hard', 'HEAD~2');
+    fs.rmSync(path.join(g.T, FILE('bob')));
+    fs.symlinkSync('../../README.md', path.join(g.T, FILE('bob')));
+    git(g.T, 'add', '-A');
+    git(g.T, 'commit', '-q', '-m', 'bob, linked');
+    const linked = g.check(as('alice')).out;
+    assert.equal(fixOf(linked), `restore ${FILE('bob')} to the base's copy (git checkout main...HEAD -- ${FILE('bob')})`, linked);
+    git(g.T, 'checkout', 'main...HEAD', '--', FILE('bob'));
+    git(g.T, 'commit', '-q', '-m', 'undo the link');
+    assert.match(g.check(as('alice')).out, /PASS \[member-check\]: no member file changed/);
+    // Her own file the base holds, edited wrong: restored in another PR.
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    g.commitAs('alice@work.com', { [FILE('alice')]: {} });
+    assert.match(fixOf(g.check(as('alice')).out), AGAIN_BASE);
+    git(g.T, 'branch', '-f', 'main', mainBefore);
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    // Two spellings of one file: which to keep, and how to take the other out (review 4). Written into git's
+    // index, not the disk: a Mac's disk holds only one of them.
+    const mainWas = git(g.T, 'rev-parse', 'main');
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: g.T, input: '{}' }).toString().trim();
+    const twinsOf = (onMain, inPr) => {
+      git(g.T, 'branch', '-f', 'main', mainWas);
+      git(g.T, 'reset', '-q', '--hard', 'main');
+      for (const [names, branch] of [[onMain, 'main'], [inPr, 'pr']]) {
+        if (branch === 'main') git(g.T, 'checkout', '-q', 'main');
+        for (const f of names) {
+          const [name, mode] = Array.isArray(f) ? f : [f, '100644'];
+          git(g.T, 'update-index', '--add', '--cacheinfo', `${mode},${blob},${M.MEMBERS_DIR}/${name}`);
+        }
+        git(g.T, 'commit', '-q', '--allow-empty', '-m', `twins on ${branch}`);
+        if (branch === 'main') { git(g.T, 'checkout', '-q', '-f', 'pr'); git(g.T, 'reset', '-q', '--hard', 'main'); }
+      }
+      const out = g.check(as('alice')).out;
+      fixOf(out);
+      const lines = out.split('\n').filter((l) => l.includes('are one file on macOS and Windows — '));
+      assert.equal(lines.length, 1, `one message per group of names:\n${out}`);
+      return lines[0].slice(lines[0].indexOf(' — ') + 3);
+    };
+    const D = M.MEMBERS_DIR;
+    const RM = '(any pull request may delete a member file)';
+    // Both new in this PR: keep the lower-case name, drop the other.
+    assert.equal(twinsOf([], ['github-alice.json', 'github-ALICE.json']), `keep ${D}/github-alice.json: drop ${D}/github-ALICE.json from this pull request (git rm it on this branch)`);
+    // The base holds one: keep the base's copy and drop the new one — unless the new one is its person's own
+    // yad member add file, which may keep it and git rm the base's copy instead (review 5).
+    assert.equal(twinsOf(['github-Alice.json'], ['github-alice.json']), `keep ${D}/github-Alice.json: drop ${D}/github-alice.json from this pull request (git rm it on this branch); or, if ${D}/github-alice.json is your own file as yad member add writes it, keep it and git rm ${D}/github-Alice.json ${RM}`);
+    // Both on the base, neither in lower case: keep one, git rm the other. No rename: that clears it.
+    assert.equal(twinsOf(['GitHub-Alice.json', 'github-ALICE.json'], []), `keep ${D}/GitHub-Alice.json: git rm ${D}/github-ALICE.json ${RM}`);
+    // Three names of one file: ONE kept for the group, the rest taken out (review 5).
+    assert.equal(twinsOf(['github-AB.json', 'github-Ab.json', 'github-ab.json'], []), `keep ${D}/github-ab.json: git rm ${D}/github-AB.json ${D}/github-Ab.json ${RM}`);
+    // A link the base holds is not kept: the gate refuses it in the same run (review 6).
+    assert.equal(twinsOf([['github-Alice.json', '120000']], ['github-alice.json']), `keep ${D}/github-alice.json: git rm ${D}/github-Alice.json ${RM}`);
+    // A plain file is kept over a link; a non-ASCII name is quoted, so the command pastes whole.
+    assert.equal(twinsOf([], [['github-alice.json', '120000'], 'github-ALICE.json']), `keep ${D}/github-ALICE.json: drop ${D}/github-alice.json from this pull request (git rm it on this branch)`);
+    assert.equal(twinsOf(['github-\uff53am.json', 'github-sam.json'], []), `keep ${D}/github-sam.json: git rm '${D}/github-\uff53am.json' ${RM}`);
+    git(g.T, 'branch', '-f', 'main', mainWas);
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    // An email no commit GitHub gives to the author proves.
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    g.commitAs('alice@work.com', { [FILE('alice')]: rec('alice', ['alice@work.com']) });
+    const unproven = g.check(as('alice')).out;
+    assert.match(unproven, /holds an email no commit in this PR proves \(a commit authored by that email that GitHub attributes to alice\) — /, unproven);
+    assert.equal(fixOf(unproven), "verify the email on alice's account, then run yad member add, which writes one such commit per email");
+    // The job passed no base.
+    assert.equal(fixOf(spawnSyncNode(CHECK, [], { cwd: g.T }).stdout), 'the job must pass the base ref (the branch the PR targets), as yad-product-checks.yml (GitHub) and yad-product-checks.gitlab-ci.yml (GitLab) do');
+    // Another spelling of either folder. Written into git's index, not the disk: a Mac's disk would put
+    // `.SDLC/x.json` in the real `.sdlc/`.
+    for (const [file, dir] of [['.sdlc/Members/github-alice.json', '.sdlc/members/'], ['.SDLC/x.json', '.sdlc/']]) {
+      git(g.T, 'reset', '-q', '--hard', 'main');
+      const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: g.T, input: 'x' }).toString().trim();
+      git(g.T, 'update-index', '--add', '--cacheinfo', `100644,${blob},${file}`);
+      git(g.T, 'commit', '-q', '-m', 'twin');
+      const out = g.check(as('alice')).out;
+      assert.ok(out.includes(`another spelling of ${dir}, which`), out);
+      assert.equal(fixOf(out), `move it into the real ${dir} folder (git mv), or delete it`);
+    }
+    // The Product names no platform: the fix names the file the gate read, or says there is none.
+    for (const [files, fix] of [
+      [{ '.sdlc/product.json': { git_url: 'git@github.com:acme/product.git' } }, 'set "platform" ("github" or "gitlab") in .sdlc/product.json'],
+      [{ '.sdlc/product.json': '{' }, '.sdlc/product.json is not valid JSON or not an object: fix it, and set "platform" ("github" or "gitlab") in it'],
+      [{ '.sdlc/product.json': '[]' }, '.sdlc/product.json is not valid JSON or not an object: fix it, and set "platform" ("github" or "gitlab") in it'],
+      [{ '.sdlc/product.json': null, '.sdlc/hub.json': { git_url: 'x' } }, 'set "platform" ("github" or "gitlab") in .sdlc/hub.json'],
+      [{ '.sdlc/product.json': null }, 'there is no .sdlc/product.json: run yad setup in the Product, or write the file with "platform" ("github" or "gitlab")'],
+    ]) {
+      git(g.T, 'reset', '-q', '--hard', 'main');
+      g.commitAs('alice@work.com', { ...files, [FILE('alice')]: rec('alice', []) });
+      const out = g.check(as('alice')).out;
+      assert.match(out, /member files changed, but the Product names no platform, so nothing can be proven — /, out);
+      assert.equal(fixOf(out), fix);
+    }
+    // One account, and one email, in two files: a stale file on the base.
+    git(g.T, 'checkout', '-q', 'main');
+    put(path.join(g.T, M.MEMBERS_DIR, 'alice.json'), rec('alice', []));
+    put(path.join(g.T, FILE('bob')), rec('bob', ['alice@work.com']));
+    git(g.T, 'add', '-A');
+    git(g.T, 'commit', '-q', '-m', 'stale files');
+    git(g.T, 'checkout', '-q', 'pr');
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    const sha = g.commitAs('alice@work.com', { [FILE('alice')]: rec('alice', ['alice@work.com']) });
+    g.attribute(sha, 'alice');
+    const dup = g.check(as('alice')).out.split('\n');
+    // The clash is with a file named other than github-<login>.json, which yad member remove cannot reach.
+    assert.equal(fixOf(dup.find((l) => l.includes('the account github:github.com:alice is in'))), 'git rm .sdlc/members/alice.json (any pull request may delete a member file). Only github-<login>.json files are member files', dup.join('\n'));
+    assert.equal(fixOf(dup.find((l) => l.includes('one email is in'))), 'remove it from the file it does not belong in (that file\'s own person runs yad member add again, which keeps only the emails their account has verified), or remove a stale file with yad member remove <login> --reason "<why>"');
+    // The misnamed file is this PR's own: both lines say to drop it from this PR, never a PR of its own.
+    git(g.T, 'checkout', '-q', 'main');
+    git(g.T, 'rm', '-q', `${M.MEMBERS_DIR}/alice.json`);
+    put(path.join(g.T, FILE('alice')), rec('alice', []));
+    git(g.T, 'add', '-A');
+    git(g.T, 'commit', '-q', '-m', 'alice, well named');
+    git(g.T, 'checkout', '-q', 'pr');
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    g.commitAs('alice@work.com', { [`${M.MEMBERS_DIR}/alice.json`]: rec('alice', []) });
+    const added = g.check(as('alice')).out.split('\n');
+    assert.match(fixOf(added.join('\n')), /^drop \.sdlc\/members\/alice\.json from this pull request \(git rm it on this branch\), and change only /, added.join('\n'));
+    assert.equal(fixOf(added.find((l) => l.includes('the account github:github.com:alice is in'))), 'drop .sdlc/members/alice.json from this pull request (git rm it on this branch). Only github-<login>.json files are member files', added.join('\n'));
+    // A misnamed file the base holds that this PR only edits: dropping the edit leaves it, so git rm (review 4).
+    git(g.T, 'checkout', '-q', 'main');
+    put(path.join(g.T, M.MEMBERS_DIR, 'alice.json'), rec('alice', []));
+    git(g.T, 'add', '-A');
+    git(g.T, 'commit', '-q', '-m', 'alice, also misnamed');
+    git(g.T, 'checkout', '-q', 'pr');
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    g.commitAs('alice@work.com', { [`${M.MEMBERS_DIR}/alice.json`]: { ...rec('alice', []), names: ['A'] } });
+    const edited = g.check(as('alice')).out.split('\n');
+    assert.equal(fixOf(edited.find((l) => l.includes('the account github:github.com:alice is in'))), 'git rm .sdlc/members/alice.json (any pull request may delete a member file). Only github-<login>.json files are member files', edited.join('\n'));
+    // A misnamed file this PR adds with an email another file holds: the email message says drop it too.
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    g.commitAs('alice@work.com', { [`${M.MEMBERS_DIR}/carol x.json`]: rec('carol', ['alice@work.com']) });
+    const carol = g.check(as('alice')).out.split('\n');
+    assert.equal(fixOf(carol.find((l) => l.includes('one email is in'))), "drop '.sdlc/members/carol x.json' from this pull request (git rm it on this branch). Only github-<login>.json files are member files", carol.join('\n'));
+    // A base that shares no history: git cannot list the changes.
+    git(g.T, 'checkout', '-q', '--orphan', 'alone');
+    git(g.T, 'commit', '-q', '-m', 'unrelated');
+    git(g.T, 'branch', '-f', 'main', 'HEAD');
+    git(g.T, 'checkout', '-q', 'pr');
+    assert.match(fixOf(g.check(as('alice')).out), /^check the code out with full history \(GitHub: actions\/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0"\), and give a base this branch shares history with, then run again$/);
+  } finally { fs.rmSync(g.T, { recursive: true, force: true }); }
+  // A link where a folder or a file goes.
+  const link = gateRepo();
+  try {
+    fs.mkdirSync(path.join(link.T, '.sdlc'), { recursive: true });
+    fs.symlinkSync('../other', path.join(link.T, M.MEMBERS_DIR));
+    git(link.T, 'add', '-A');
+    git(link.T, 'commit', '-q', '-m', 'link');
+    const linked = link.check(as('alice')).out;
+    assert.match(fixOf(linked), /^replace it with a real folder that holds the files themselves$/);
+    assert.doesNotMatch(linked, /another spelling/, 'a link where the folder goes is not a second spelling of it');
+    fs.rmSync(path.join(link.T, M.MEMBERS_DIR));
+    fs.mkdirSync(path.join(link.T, M.MEMBERS_DIR));
+    fs.symlinkSync('../../README.md', path.join(link.T, FILE('alice')));
+    git(link.T, 'add', '-A');
+    git(link.T, 'commit', '-q', '-m', 'file link');
+    assert.match(fixOf(link.check(as('alice')).out), /^replace it with the file itself \(yad member add writes it\), or drop \.sdlc\/members\/github-alice\.json from this pull request \(git rm it on this branch\)$/);
+  } finally { fs.rmSync(link.T, { recursive: true, force: true }); }
+});
+
+// On GitLab the MR is read from the API: each answer says what to change, as pr-template does (#381). The
+// gate runs async here, so this process can answer as GitLab.
+test('E131 member-check: on GitLab each API answer says what to change (#381)', async () => {
+  const http = await import('node:http');
+  const { spawn } = await import('node:child_process');
+  let answer = { status: 200, body: {} };
+  const server = http.createServer((req, res) => { res.writeHead(answer.status, { 'content-type': 'application/json' }); res.end(JSON.stringify(answer.body)); });
+  await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
+  const api = `http://127.0.0.1:${server.address().port}/api/v4`;
+  const g = gateRepo('gitlab');
+  const run = (env) => new Promise((ok) => {
+    const c = spawn(process.execPath, [CHECK, 'main'], { cwd: g.T, env: { ...process.env, GITLAB_TOKEN: '', SDLC_API_TOKEN: '', ...env } });
+    let out = '';
+    c.stdout.on('data', (d) => { out += d; });
+    c.on('close', (code) => ok({ code, out }));
+  });
+  const MR = { CI_API_V4_URL: api, CI_PROJECT_ID: '1', CI_MERGE_REQUEST_IID: '2' };
+  try {
+    g.commitAs('alice@work.com', { [`${M.MEMBERS_DIR}/gitlab-alice.json`]: { accounts: [{ platform: 'gitlab', host: 'gitlab.com', login: 'alice', id: 1 }] } });
+    for (const [status, token, fix] of [
+      [401, 'GITLAB_TOKEN', 'GITLAB_TOKEN was not accepted (expired, revoked, or not a valid token here) — renew or replace it'],
+      [403, 'SDLC_API_TOKEN', 'SDLC_API_TOKEN was refused — give it the read_api scope'],
+      [404, 'GITLAB_TOKEN', "GITLAB_TOKEN's user cannot see this project — use a token of a project member with Reporter access or more"],
+      [502, 'GITLAB_TOKEN', 'GitLab did not answer with the MR — run the job again later'],
+    ]) {
+      answer = { status, body: {} };
+      const r = await run({ ...MR, [token]: 't' });
+      assert.equal(r.code, 1, r.out);
+      assert.ok(r.out.includes(`FAIL [member-check]: could not read the MR (HTTP ${status}): ${fix}\n`), r.out);
+      for (const l of r.out.split('\n').filter((x) => x.startsWith('FAIL '))) assert.equal(l.split(' — ').length, 2, `one ' — ' in: ${l}`);
+    }
+    // The API named no author; the job ran outside a merge request pipeline; the API cannot be reached.
+    // The API named the author but no numeric id.
+    answer = { status: 200, body: { author: { username: 'alice' } } };
+    assert.match((await run({ ...MR, GITLAB_TOKEN: 't' })).out, /gitlab-alice\.json: cannot tell the numeric id of who opened this MR — the merge request API gave no author id; run the job again\n/);
+    answer = { status: 200, body: { author: null } };
+    assert.match((await run({ ...MR, GITLAB_TOKEN: 't' })).out, /cannot tell who opened this MR — the merge request API named no author; run the job again\n/);
+    assert.match((await run({ GITLAB_TOKEN: 't', CI_API_V4_URL: '', CI_PROJECT_ID: '', CI_MERGE_REQUEST_IID: '' })).out, /cannot tell who opened this MR — run the job in a merge request pipeline, which sets CI_API_V4_URL, CI_PROJECT_ID and CI_MERGE_REQUEST_IID, as yad-product-checks\.gitlab-ci\.yml does\n/);
+    const down = await run({ ...MR, CI_API_V4_URL: 'http://127.0.0.1:9/api/v4', GITLAB_TOKEN: 't' });
+    assert.match(down.out, /could not read the MR: .+ — check that CI_API_V4_URL \(http:\/\/127\.0\.0\.1:9\/api\/v4\) is reachable from the runner and answers as GitLab's API, then run the job again\n/);
+  } finally { server.close(); fs.rmSync(g.T, { recursive: true, force: true }); }
 });
 
 test('E131 doctor: an unusable file, a duplicate, and an unchecked Product are each said', async () => {
