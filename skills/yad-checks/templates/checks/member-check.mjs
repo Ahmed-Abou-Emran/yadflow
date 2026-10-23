@@ -82,17 +82,23 @@ for (let i = 0; i + 1 < parts.length; i += 2) all.push({ status: parts[i][0], pa
 // How to take member files out, the one rule every message uses (#381 review 4): a file this PR brings in
 // (not on the base) is dropped from it; one the base holds — even one this PR edits — is deleted with git
 // rm, which any PR may do (a deletion is never refused).
-// A FILE at that path on the base (a folder there is not one); the path read literally, never as a pattern.
-const onBase = (p) => {
-  const t = spawnSync('git', ['--literal-pathspecs', 'ls-tree', '-z', base, '--', p], { encoding: 'utf8' });
+// "On the base" means where this branch split off from it — the commit the diff above starts from — not the
+// base's tip, which may have moved on (review 7). The path is read literally, never as a pattern.
+const split = git('merge-base', base, 'HEAD').out.trim() || base;
+const modeOnBase = (p) => {
+  const t = spawnSync('git', ['--literal-pathspecs', 'ls-tree', '-z', split, '--', p], { encoding: 'utf8' });
   const [meta, at] = (t.status === 0 ? t.stdout : '').split('\0')[0].split('\t');
-  return at === p && !meta.startsWith('040000 ');
+  return at === p ? meta.slice(0, 6) : null;
 };
+// A FILE there (a folder is not one), and a plain one (not a link).
+const onBase = (p) => { const m = modeOnBase(p); return !!m && m !== '040000'; };
+const plainOnBase = (p) => ['100644', '100755'].includes(modeOnBase(p));
 // A path as a command takes it: shell-quoted unless it is plain (review 5), so a name with a space pastes whole.
 const q = (p) => (/^[A-Za-z0-9._\/@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`);
 // How to UNDO this PR's change to one file (review 6) — not to remove it: the base's copy, if the base holds
 // one, comes back; a file only this PR added goes. A teammate's file the PR edited is never deleted by it.
-const undo = (p) => (onBase(p) ? `restore ${q(p)} to the base's copy (git checkout ${base} -- ${q(p)})`
+// `<base>...HEAD` names that split point, so the command restores the copy the diff compares against.
+const undo = (p) => (onBase(p) ? `restore ${q(p)} to the base's copy (git checkout ${q(`${base}...HEAD`)} -- ${q(p)})`
   : `drop ${q(p)} from this pull request (git rm it on this branch)`);
 const removal = (paths) => {
   const here = paths.filter((p) => !onBase(p));
@@ -140,7 +146,11 @@ const folded = new Map();
 for (const line of tree) {
   const [meta, p] = line.split('\t');
   const plain = meta.startsWith('100644 ') || meta.startsWith('100755 ');
-  if (!plain) fail(`${p} is not a plain file (a link?), and a member file is never read through one — replace it with the file itself (yad member add writes it), or delete it`);
+  // Where the base held a plain file, this PR's link is undone, never deleted: a deletion passes, and would
+  // remove that person (review 7). A link the base already held was never read, so deleting it loses nothing.
+  const linkFix = plainOnBase(p) ? undo(p) : onBase(p) ? `replace it with the file itself, or git rm it: the gate never read it, so nothing is lost`
+    : `replace it with the file itself (yad member add writes it), or ${undo(p)}`;
+  if (!plain) fail(`${p} is not a plain file (a link?), and a member file is never read through one — ${linkFix}`);
   const k = fold(p);
   folded.set(k, [...(folded.get(k) || []), { path: p, plain }]);
 }

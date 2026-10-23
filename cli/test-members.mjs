@@ -650,7 +650,7 @@ test('E131 member-check: each failure says what to change (#381)', () => {
   };
   // Its own file, new in this PR: dropped from another PR; one the base holds is restored, never deleted (review 6).
   const AGAIN = /^write the file again with yad member add, run by its own person \(it opens its own pull request\); if this is another pull request, drop \.sdlc\/members\/github-alice\.json from this pull request \(git rm it on this branch\)$/;
-  const AGAIN_BASE = /^write the file again with yad member add, run by its own person \(it opens its own pull request\); if this is another pull request, restore \.sdlc\/members\/github-alice\.json to the base's copy \(git checkout main -- \.sdlc\/members\/github-alice\.json\)$/;
+  const AGAIN_BASE = /^write the file again with yad member add, run by its own person \(it opens its own pull request\); if this is another pull request, restore \.sdlc\/members\/github-alice\.json to the base's copy \(git checkout main\.\.\.HEAD -- \.sdlc\/members\/github-alice\.json\)$/;
   const g = gateRepo();
   try {
     g.commitAs('alice@work.com', { [FILE('alice')]: { accounts: [{ platform: 'github', host: 'github.com', login: 'alice', id: 1 }] } });
@@ -694,7 +694,27 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     git(g.T, 'checkout', '-q', 'pr');
     git(g.T, 'reset', '-q', '--hard', 'main');
     g.commitAs('alice@work.com', { [FILE('bob')]: { ...rec('bob', []), names: ['B'] } });
-    assert.equal(fixOf(g.check(as('alice')).out), OWN(`restore ${FILE('bob')} to the base's copy (git checkout main -- ${FILE('bob')})`));
+    // Bob changes his own file on main after this branch split off: the restore is the split point's copy,
+    // and following it passes (review 7: the base's tip would leave the file changed).
+    git(g.T, 'checkout', '-q', 'main');
+    put(path.join(g.T, FILE('bob')), { ...rec('bob', []), names: ['Bob B'] });
+    git(g.T, 'commit', '-q', '-am', 'bob renamed himself');
+    git(g.T, 'checkout', '-q', 'pr');
+    assert.equal(fixOf(g.check(as('alice')).out), OWN(`restore ${FILE('bob')} to the base's copy (git checkout main...HEAD -- ${FILE('bob')})`));
+    git(g.T, 'checkout', 'main...HEAD', '--', FILE('bob'));
+    git(g.T, 'commit', '-q', '-m', 'undo the edit to bob');
+    assert.match(g.check(as('alice')).out, /PASS \[member-check\]: no member file changed/);
+    // A link put over a teammate's file is undone, not deleted: git rm would remove bob, and pass (review 7).
+    git(g.T, 'reset', '-q', '--hard', 'HEAD~2');
+    fs.rmSync(path.join(g.T, FILE('bob')));
+    fs.symlinkSync('../../README.md', path.join(g.T, FILE('bob')));
+    git(g.T, 'add', '-A');
+    git(g.T, 'commit', '-q', '-m', 'bob, linked');
+    const linked = g.check(as('alice')).out;
+    assert.equal(fixOf(linked), `restore ${FILE('bob')} to the base's copy (git checkout main...HEAD -- ${FILE('bob')})`, linked);
+    git(g.T, 'checkout', 'main...HEAD', '--', FILE('bob'));
+    git(g.T, 'commit', '-q', '-m', 'undo the link');
+    assert.match(g.check(as('alice')).out, /PASS \[member-check\]: no member file changed/);
     // Her own file the base holds, edited wrong: restored in another PR.
     git(g.T, 'reset', '-q', '--hard', 'main');
     g.commitAs('alice@work.com', { [FILE('alice')]: {} });
@@ -837,7 +857,7 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     fs.symlinkSync('../../README.md', path.join(link.T, FILE('alice')));
     git(link.T, 'add', '-A');
     git(link.T, 'commit', '-q', '-m', 'file link');
-    assert.match(fixOf(link.check(as('alice')).out), /^replace it with the file itself \(yad member add writes it\), or delete it$/);
+    assert.match(fixOf(link.check(as('alice')).out), /^replace it with the file itself \(yad member add writes it\), or drop \.sdlc\/members\/github-alice\.json from this pull request \(git rm it on this branch\)$/);
   } finally { fs.rmSync(link.T, { recursive: true, force: true }); }
 });
 

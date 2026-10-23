@@ -599,7 +599,7 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
 | `one email is in <a> and <b>` (GitHub only) | One email belongs to one member. If one of the files is not named `<platform>-<login>.json`, the message names it and how to take it out (see below). Otherwise remove the email from the file it does not belong in: that file's own person runs `yad member add` again, which keeps only the emails their account has verified. Or remove a stale file with `yad member remove <login> --reason`. |
 | `"<path>" is another spelling of .sdlc/ …` / `… of .sdlc/members/ …` | Move the file into the real folder (`git mv`), or delete it. |
 | `… is not a folder at HEAD (a link?) …` | Replace the link with a real folder that holds the files themselves. |
-| `… is not a plain file (a link?) …` | Replace the link with the file itself (`yad member add` writes it), or delete it. |
+| `… is not a plain file (a link?) …` | If the base held a plain file there, undo this pull request's change to it (see below) — never delete it, which would remove that person. A link this pull request adds: replace it with the file itself, or drop it. A link the base already held: replace it, or `git rm` it; the gate never read it, so nothing is lost. |
 | `<a> and <b> are one file on macOS and Windows` | The message names one file to keep for all the names of that file, and how to take each other one out (see below). It keeps, in order: a plain file over a link (a link is refused in the same run), then a copy the base holds, then the lower-case name `yad member add` writes. If this pull request adds that lower-case name beside the base's copy, and it is your own file, the message also says how to keep it and remove the base's copy instead. |
 | `member files changed, but the Product names no platform …` | Set `platform` (`github` or `gitlab`) in the settings file the message names. With no `.sdlc/product.json`, run `yad setup` in the Product. |
 | `no API token (GITLAB_TOKEN or SDLC_API_TOKEN) …` | Add a `GITLAB_TOKEN` masked CI/CD variable with the `read_api` scope, whose user can see the project. |
@@ -613,7 +613,9 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
 
 **Taking a member file out** (the rule the account clash, the email duplicate and the twin messages use): a file this pull request brings in, and the base does not hold, is dropped from the pull request — `git rm` it on this branch, so the pull request no longer adds it. A file the base holds — even one this pull request only edits — is deleted with `git rm`; any pull request may delete a member file. A path with a space or another unusual character is printed in single quotes, so the command can be pasted as it is.
 
-**Undoing a change to a member file** (the owner message and the `yad member add` rows use it): a file the base holds is restored to the base's copy (`git checkout <base> -- <file>`), never deleted — deleting a teammate's file would remove them, and a deletion always passes. A file only this pull request adds is dropped (`git rm` it on this branch).
+**Undoing a change to a member file** (the owner, link and `yad member add` rows use it): a file the base holds is restored to the base's copy (`git checkout <base>...HEAD -- <file>`), never deleted — deleting a teammate's file would remove them, and a deletion always passes. A file only this pull request adds is dropped (`git rm` it on this branch).
+
+In both rules, "the base" is the commit this branch split off from, which is what the gate compares against. `<base>...HEAD` names that commit, so a restore still works after the base branch has moved on.
 
 ## product-checkout
 
