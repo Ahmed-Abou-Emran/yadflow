@@ -554,7 +554,7 @@ test('E131 member-check: someone else\'s file is refused; a deletion is allowed;
     g.attribute(shaB, 'bob');
     r = g.check({ PR_AUTHOR: 'bob', PR_AUTHOR_ID: '9' });
     assert.equal(r.code, 1);
-    assert.match(r.out, /belonged to account id 2/);
+    assert.match(r.out, /belonged to account id 2, not bob's \(9\), and a reused login does not take over a member file — remove the old file first with yad member remove <login> --reason "<why>", in a pull request of its own\n/);
     assert.match(g.check({ PR_AUTHOR: 'bob', PR_AUTHOR_ID: '2' }).out, /account id in the file \(9\) is not the author's \(2\)/);
     git(g.T, 'reset', '-q', '--hard', 'main');
     g.commitAs('alice@work.com', { [FILE('bob')]: null }, 'chore(product): remove team member bob');
@@ -636,14 +636,14 @@ test('E131 member-check: on GitLab with no API token a member change FAILS close
     g.commitAs('alice@work.com', { [`${M.MEMBERS_DIR}/gitlab-alice.json`]: { accounts: [{ platform: 'gitlab', host: 'gitlab.com', login: 'alice' }] } });
     const r = g.check({ CI_API_V4_URL: 'http://127.0.0.1:9/api/v4', CI_PROJECT_ID: '1', CI_MERGE_REQUEST_IID: '2', GITLAB_TOKEN: '', SDLC_API_TOKEN: '' });
     assert.equal(r.code, 1);
-    assert.match(r.out, /no API token/);
+    assert.match(r.out, /no API token .* — .*; add a GITLAB_TOKEN masked CI\/CD variable with the read_api scope, whose user can see the project\n/);
   } finally { fs.rmSync(g.T, { recursive: true, force: true }); }
 });
 
 // Every failure says what is wrong AND what to change (#381): `FAIL [member-check]: <wrong> — <change>`.
 test('E131 member-check: each failure says what to change (#381)', () => {
   const fixOf = (out) => { const l = out.split('\n').find((x) => x.startsWith('FAIL [member-check]: ')); return l && l.includes(' — ') ? l.slice(l.indexOf(' — ') + 3) : null; };
-  const AGAIN = /^write the file again with yad member add, run by its own person$/;
+  const AGAIN = /^write the file again with yad member add, run by its own person; it opens its own pull request, so drop the file from any other one$/;
   const g = gateRepo();
   try {
     g.commitAs('alice@work.com', { [FILE('alice')]: { accounts: [{ platform: 'github', host: 'github.com', login: 'alice', id: 1 }] } });
@@ -654,14 +654,20 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     assert.match(fixOf(bot), /^a member file is changed only by its own person: open the PR as that person$/);
     assert.match(fixOf(g.check({ PR_AUTHOR: 'alice', PR_AUTHOR_ID: '' }).out), /^the job must pass PR_AUTHOR_ID from the pull_request event \(github\.event\.pull_request\.user\.id\), as yad-product-checks\.yml does$/);
     assert.match(fixOf(g.check({ PR_AUTHOR: 'alice', PR_AUTHOR_ID: '7' }).out), AGAIN, 'the account id is not the author\'s');
-    for (const bad of [{}, { accounts: [] }, { accounts: [{ platform: 'github', host: 'github.com', login: 'bob', id: 1 }] }]) {
+    for (const [bad, says] of [
+      [{}, /not a member file \(no "accounts" list\) — /],
+      [{ accounts: [] }, /must hold exactly one github account on github\.com, the author's own \(it holds 0\) — /],
+      [{ accounts: [{ platform: 'github', host: 'github.com', login: 'bob', id: 1 }] }, /does not hold alice's own github account on github\.com — /],
+    ]) {
       git(g.T, 'reset', '-q', '--hard', 'main');
       g.commitAs('alice@work.com', { [FILE('alice')]: bad });
-      assert.match(fixOf(g.check(as('alice')).out), AGAIN, JSON.stringify(bad));
+      const out = g.check(as('alice')).out;
+      assert.match(out, says, out);
+      assert.match(fixOf(out), AGAIN, JSON.stringify(bad));
     }
     git(g.T, 'reset', '-q', '--hard', 'main');
     g.commitAs('alice@work.com', { '.sdlc/members/notes.txt': 'x' });
-    assert.match(fixOf(g.check(as('alice')).out), /^rename it so, or remove it$/);
+    assert.match(fixOf(g.check(as('alice')).out), /^rename it to github-<login>\.json, or remove it$/);
     // Another spelling of either folder. Written into git's index, not the disk: a Mac's disk would put
     // `.SDLC/x.json` in the real `.sdlc/`.
     for (const [file, dir] of [['.sdlc/Members/github-alice.json', '.sdlc/members/'], ['.SDLC/x.json', '.sdlc/']]) {
@@ -673,10 +679,19 @@ test('E131 member-check: each failure says what to change (#381)', () => {
       assert.ok(out.includes(`another spelling of ${dir}, which`), out);
       assert.equal(fixOf(out), `move it into the real ${dir} folder (git mv), or delete it`);
     }
-    // The Product names no platform.
-    git(g.T, 'reset', '-q', '--hard', 'main');
-    g.commitAs('alice@work.com', { '.sdlc/product.json': { git_url: 'git@github.com:acme/product.git' }, [FILE('alice')]: rec('alice', []) });
-    assert.match(fixOf(g.check(as('alice')).out), /^set "platform" \("github" or "gitlab"\) in \.sdlc\/product\.json$/);
+    // The Product names no platform: the fix names the file the gate read, or says there is none.
+    for (const [files, fix] of [
+      [{ '.sdlc/product.json': { git_url: 'git@github.com:acme/product.git' } }, 'set "platform" ("github" or "gitlab") in .sdlc/product.json'],
+      [{ '.sdlc/product.json': '{' }, '.sdlc/product.json is not valid JSON: fix it, and set "platform" ("github" or "gitlab") in it'],
+      [{ '.sdlc/product.json': null, '.sdlc/hub.json': { git_url: 'x' } }, 'set "platform" ("github" or "gitlab") in .sdlc/hub.json'],
+      [{ '.sdlc/product.json': null }, 'there is no .sdlc/product.json: run yad setup in the Product, or write the file with "platform" ("github" or "gitlab")'],
+    ]) {
+      git(g.T, 'reset', '-q', '--hard', 'main');
+      g.commitAs('alice@work.com', { ...files, [FILE('alice')]: rec('alice', []) });
+      const out = g.check(as('alice')).out;
+      assert.match(out, /member files changed, but the Product names no platform, so nothing can be proven — /, out);
+      assert.equal(fixOf(out), fix);
+    }
     // One account, and one email, in two files: a stale file on the base.
     git(g.T, 'checkout', '-q', 'main');
     put(path.join(g.T, M.MEMBERS_DIR, 'alice.json'), rec('alice', []));
@@ -688,14 +703,15 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     const sha = g.commitAs('alice@work.com', { [FILE('alice')]: rec('alice', ['alice@work.com']) });
     g.attribute(sha, 'alice');
     const dup = g.check(as('alice')).out.split('\n');
-    assert.equal(fixOf(dup.find((l) => l.includes('the account github:github.com:alice is in'))), 'remove the stale file with yad member remove <login> --reason "<why>"', dup.join('\n'));
-    assert.match(fixOf(dup.find((l) => l.includes('one email is in'))), /^remove it from the file it does not belong in \(that file's own person runs yad member add again, which keeps only the emails their account has verified\), or remove a stale file with yad member remove <login> --reason "<why>"$/);
+    // The clash is with a file named other than github-<login>.json, which yad member remove cannot reach.
+    assert.equal(fixOf(dup.find((l) => l.includes('the account github:github.com:alice is in'))), 'remove .sdlc/members/alice.json (git rm) in a pull request of its own: only github-<login>.json files are member files', dup.join('\n'));
+    assert.equal(fixOf(dup.find((l) => l.includes('one email is in'))), 'remove it from the file it does not belong in (that file\'s own person runs yad member add again, which keeps only the emails their account has verified), or remove a stale file (yad member remove <login> --reason "<why>"; git rm one not named github-<login>.json)');
     // A base that shares no history: git cannot list the changes.
     git(g.T, 'checkout', '-q', '--orphan', 'alone');
     git(g.T, 'commit', '-q', '-m', 'unrelated');
     git(g.T, 'branch', '-f', 'main', 'HEAD');
     git(g.T, 'checkout', '-q', 'pr');
-    assert.match(fixOf(g.check(as('alice')).out), /^check the code out with full history \(GitHub: actions\/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0"\), then run again$/);
+    assert.match(fixOf(g.check(as('alice')).out), /^check the code out with full history \(GitHub: actions\/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0"\), and give a base this branch shares history with, then run again$/);
   } finally { fs.rmSync(g.T, { recursive: true, force: true }); }
   // A link where a folder or a file goes.
   const link = gateRepo();
@@ -748,7 +764,7 @@ test('E131 member-check: on GitLab each API answer says what to change (#381)', 
     }
     // The API named no author; the job ran outside a merge request pipeline; the API cannot be reached.
     answer = { status: 200, body: { author: null } };
-    assert.match((await run({ ...MR, GITLAB_TOKEN: 't' })).out, /cannot tell who opened this MR — the merge request API named no author — run the job again\n/);
+    assert.match((await run({ ...MR, GITLAB_TOKEN: 't' })).out, /cannot tell who opened this MR — the merge request API named no author; run the job again\n/);
     assert.match((await run({ GITLAB_TOKEN: 't', CI_API_V4_URL: '', CI_PROJECT_ID: '', CI_MERGE_REQUEST_IID: '' })).out, /cannot tell who opened this MR — run the job in a merge request pipeline, which sets CI_API_V4_URL, CI_PROJECT_ID and CI_MERGE_REQUEST_IID, as yad-product-checks\.gitlab-ci\.yml does\n/);
     const down = await run({ ...MR, CI_API_V4_URL: 'http://127.0.0.1:9/api/v4', GITLAB_TOKEN: 't' });
     assert.match(down.out, /could not read the MR: .+ — check that CI_API_V4_URL \(http:\/\/127\.0\.0\.1:9\/api\/v4\) is reachable from the runner, then run the job again\n/);
