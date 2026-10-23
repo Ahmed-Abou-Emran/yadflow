@@ -822,13 +822,19 @@ test('contract-check gate: each reason a slice is not a quote says what to chang
   const FRESH = 'check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0"), then run again';
   const DECLARE = 'or, if the surface really changes, declare it (see below).';
   const REWRITE = 're-run yad-spec, which writes the slice again.';
-  const DELETE = 'commit the deletion with Contract-Change: yes (yad commit --contract-change); a delete-only change with the trailer passes';
+  const TRAILER = 'commit that with Contract-Change: yes (yad commit --contract-change): moving or removing slice files changes the surface, so it needs the trailer';
   const slice = { 'specs/EP-demo-S01/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)) };
   // Writes the Product's epic files (null removes one), commits the slice, runs the gate, and returns the
   // reason line that starts with `starts`.
-  const reasonOf = (starts, { product = {}, files = {}, env = {}, link } = {}) => {
+  const reasonOf = (starts, { product = {}, files = {}, env = {}, link, base } = {}) => {
     const T = scaffoldRepo();
     const hash = seedLockedContract(T);
+    if (base) {
+      git(T, 'checkout', '-q', 'main');
+      commit(T, 'docs(spec): on the base', base);
+      git(T, 'checkout', '-q', 'feature');
+      git(T, 'reset', '-q', '--hard', 'main');
+    }
     for (const [rel, text] of Object.entries(product)) {
       const f = path.join(T, 'product', rel);
       if (text === null) fs.rmSync(f, { recursive: true, force: true });
@@ -846,16 +852,21 @@ test('contract-check gate: each reason a slice is not a quote says what to chang
   const E = 'epics/EP-demo';
   // Not under a story ID.
   assert.ok(reasonOf('notes: specs/notes/contracts is not under a story ID, so it quotes no lock — ', { files: { 'specs/notes/contracts/x.md': 'x\n' } })
-    .endsWith(`— move it under its story's folder (specs/EP-<slug>-S<n>/contracts/), or delete it and ${DELETE}.`));
+    .endsWith(`— move it under its story's folder (specs/EP-<slug>-S<n>/contracts/) or delete it, and ${TRAILER}.`));
   // The Product holds no lock for the epic.
   assert.ok(reasonOf('EP-demo-S01: cannot check EP-demo-S01\'s slice against its lock, because the Product holds no ', { product: { [`${E}/.sdlc/contract-lock.json`]: null } })
-    .endsWith(`— lock EP-demo's contract upstream first (yad-architecture Step 5); an epic on a short lane (chore/spike) locks none, so delete the slice and ${DELETE}.`));
-  // No Product reached from link.md.
-  assert.ok(reasonOf("EP-demo-S01: cannot check EP-demo-S01's slice against its lock, because no Product is reached from ", { link: quoteLink('EP-demo-S01', 'a'.repeat(64), '../../nowhere') })
-    .endsWith('— let CI check the Product out (run yad check --fix --push from the Product, which writes .sdlc/product-link.json, and set the YAD_PRODUCT_TOKEN secret), then run again; or, if the surface really changes, declare it (see below).'));
+    .endsWith(`— lock EP-demo's contract upstream first (yad-architecture Step 5), then re-run yad-spec; an epic on a short lane (chore/spike) locks none, so delete the slice, and ${TRAILER}.`));
+  // No Product reached from link.md. On the repo's first spec the trailer does not help (review 2); once
+  // the base names a Product, it does.
+  const REACH = '— let CI check the Product out (run yad check --fix --push from the Product, which writes .sdlc/product-link.json, and set the YAD_PRODUCT_TOKEN secret), then run again';
+  const NOWHERE = { link: quoteLink('EP-demo-S01', 'a'.repeat(64), '../../nowhere') };
+  assert.ok(reasonOf("EP-demo-S01: cannot check EP-demo-S01's slice against its lock, because no Product is reached from ", NOWHERE)
+    .endsWith(`${REACH}; this is the repo's first spec, so CI must reach the Product either way.`));
+  assert.ok(reasonOf("EP-demo-S01: cannot check EP-demo-S01's slice against its lock, because no Product is reached from ", { ...NOWHERE, base: { 'specs/EP-demo-S02/link.md': quoteLink('EP-demo-S02', 'a'.repeat(64), '../../nowhere') } })
+    .endsWith(`${REACH}; or, if the surface really changes, declare it (see below).`));
   // A Product reached that has no folder for the epic.
   assert.ok(reasonOf("EP-demo-S01: cannot check EP-demo-S01's slice against its lock, because the Product has no EP-demo ", { product: { [E]: null, 'epics/EP-other/.keep': '' } })
-    .endsWith(`— check the story id in the slice's folder name; if EP-demo is new, merge its Shape review PRs into the Product's default branch first; or delete the slice and ${DELETE}.`));
+    .endsWith(`— if EP-demo is new, merge its Shape review PRs into the Product's default branch first; if the story id in the slice's folder name is wrong, rename the folder or delete the slice, and ${TRAILER}.`));
   // A lock with no readable hash.
   assert.ok(reasonOf('EP-demo-S01: ', { product: { [`${E}/.sdlc/contract-lock.json`]: '{}' } })
     .endsWith('has no readable "hash": "sha256:…" value — lock the contract again upstream (yad-architecture Step 5), then run again.'));
@@ -899,10 +910,11 @@ test('contract-check gate: each reason a slice is not a quote says what to chang
   fs.rmSync(gitBin, { recursive: true, force: true });
   // What the fixes promise for a deletion: it needs the trailer (review 1). Without it, deleting a slice
   // fails; with it, a delete-only change passes — for an epic with no lock, and for a folder that is no story.
-  for (const [dir, product] of [['specs/EP-demo-S01/contracts', { [`${E}/.sdlc/contract-lock.json`]: null }], ['specs/notes/contracts', {}]]) {
+  for (const [dir, product] of [['specs/EP-demo-S01/contracts', { [`${E}/.sdlc/contract-lock.json`]: null }], ['specs/notes/contracts', {}], ['specs/EP-demo-S01/contracts', { [E]: null }]]) {
     const T = scaffoldRepo();
     seedLockedContract(T);
-    for (const [rel, text] of Object.entries(product)) if (text === null) fs.rmSync(path.join(T, 'product', rel), { force: true });
+    for (const [rel, text] of Object.entries(product)) if (text === null) fs.rmSync(path.join(T, 'product', rel), { recursive: true, force: true });
+    if (product[E] === null) fs.mkdirSync(path.join(T, 'product', 'epics', 'EP-other'), { recursive: true });
     git(T, 'checkout', '-q', 'main');
     commit(T, 'docs(spec): a slice', { [`${dir}/orders.md`]: quoteSlice(SURFACE_LINES.slice(2, 5)), 'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', 'a'.repeat(64)) });
     git(T, 'checkout', '-q', 'feature');
@@ -913,6 +925,24 @@ test('contract-check gate: each reason a slice is not a quote says what to chang
     git(T, 'commit', '-q', '--amend', '-m', 'docs(spec): drop the slice\n\nContract-Change: yes');
     const withTrailer = runGate(CONTRACT, T);
     assert.equal(withTrailer.code, 0, `${dir}: ${withTrailer.out}`);
+    fs.rmSync(T, { recursive: true, force: true });
+  }
+  // A move out of a folder that is no story ID, which the base holds, is a deletion there: it needs the
+  // trailer too (review 2), and passes with it.
+  {
+    const T = scaffoldRepo();
+    const hash = seedLockedContract(T);
+    git(T, 'checkout', '-q', 'main');
+    commit(T, 'docs(spec): a Spec Kit slice', { 'specs/001-orders/contracts/orders.md': quoteSlice(SURFACE_LINES.slice(2, 5)) });
+    git(T, 'checkout', '-q', 'feature');
+    git(T, 'reset', '-q', '--hard', 'main');
+    fs.mkdirSync(path.join(T, 'specs/EP-demo-S01'), { recursive: true });
+    git(T, 'mv', 'specs/001-orders/contracts', 'specs/EP-demo-S01/contracts');
+    commit(T, 'docs(spec): move the slice under its story', { 'specs/EP-demo-S01/link.md': quoteLink('EP-demo-S01', hash) });
+    assert.equal(runGate(CONTRACT, T).code, 1, 'a move with no trailer fails');
+    git(T, 'commit', '-q', '--amend', '-m', 'docs(spec): move the slice under its story\n\nContract-Change: yes');
+    const moved = runGate(CONTRACT, T);
+    assert.equal(moved.code, 0, moved.out);
     fs.rmSync(T, { recursive: true, force: true });
   }
 });

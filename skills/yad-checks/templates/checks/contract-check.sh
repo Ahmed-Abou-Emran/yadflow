@@ -650,7 +650,7 @@ phys_dir() { (cd "$1" 2>/dev/null && pwd -P) || true; }
 quote_story() {
   _qs="$1"; _qbad=0; current=""
   if ! story_ok "$_qs"; then
-    echo "  ${_qs}: specs/${_qs}/contracts is not under a story ID, so it quotes no lock — move it under its story's folder (specs/EP-<slug>-S<n>/contracts/), or delete it and commit the deletion with Contract-Change: yes (yad commit --contract-change); a delete-only change with the trailer passes."; return 1
+    echo "  ${_qs}: specs/${_qs}/contracts is not under a story ID, so it quotes no lock — move it under its story's folder (specs/EP-<slug>-S<n>/contracts/) or delete it, and commit that with Contract-Change: yes (yad commit --contract-change): moving or removing slice files changes the surface, so it needs the trailer."; return 1
   fi
   _qp="specs/${_qs}/contracts"   # a story ID holds no pattern character, so this pathspec is exact
   yad_tmp
@@ -690,15 +690,19 @@ quote_story() {
   # Three states, three fixes (#380): no Product reached here (no value, or a folder that is not there), a
   # Product without the epic, or an epic without a lock.
   if [ -z "$prod" ] || [ ! -d "$prod" ]; then
-    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because no Product is reached from ${_ql}${prod:+ (it reads '${prod}')} — let CI check the Product out (run yad check --fix --push from the Product, which writes .sdlc/product-link.json, and set the YAD_PRODUCT_TOKEN secret), then run again; or, if the surface really changes, declare it (see below)."
+    # On the repo's first spec (no value on the base, E119) the trailer does not help: CI must reach the
+    # Product either way (review 2).
+    _qor="; or, if the surface really changes, declare it (see below)"
+    [ -n "$_base_rel" ] || _qor="; this is the repo's first spec, so CI must reach the Product either way"
+    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because no Product is reached from ${_ql}${prod:+ (it reads '${prod}')} — let CI check the Product out (run yad check --fix --push from the Product, which writes .sdlc/product-link.json, and set the YAD_PRODUCT_TOKEN secret), then run again${_qor}."
     return 1
   fi
   if [ ! -d "${prod}/epics/${_qepic}" ]; then
-    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because the Product has no ${_qepic} (${prod}/epics/) — check the story id in the slice's folder name; if ${_qepic} is new, merge its Shape review PRs into the Product's default branch first; or delete the slice and commit the deletion with Contract-Change: yes (yad commit --contract-change); a delete-only change with the trailer passes."
+    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because the Product has no ${_qepic} (${prod}/epics/) — if ${_qepic} is new, merge its Shape review PRs into the Product's default branch first; if the story id in the slice's folder name is wrong, rename the folder or delete the slice, and commit that with Contract-Change: yes (yad commit --contract-change): moving or removing slice files changes the surface, so it needs the trailer."
     return 1
   fi
   if [ ! -f "$_qlock" ]; then
-    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because the Product holds no ${_qlock} — lock ${_qepic}'s contract upstream first (yad-architecture Step 5); an epic on a short lane (chore/spike) locks none, so delete the slice and commit the deletion with Contract-Change: yes (yad commit --contract-change); a delete-only change with the trailer passes."
+    echo "  ${_qs}: cannot check ${_qs}'s slice against its lock, because the Product holds no ${_qlock} — lock ${_qepic}'s contract upstream first (yad-architecture Step 5), then re-run yad-spec; an epic on a short lane (chore/spike) locks none, so delete the slice, and commit that with Contract-Change: yes (yad commit --contract-change): moving or removing slice files changes the surface, so it needs the trailer."
     return 1
   fi
   current="$(lock_hash "$_qlock")" || current=""
