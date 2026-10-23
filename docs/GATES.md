@@ -448,7 +448,7 @@ many approvers this change should have. It never fails the job. Anything it cann
 |---|---|
 | The base-and-history messages | See [the base cannot be found](#the-base-cannot-be-found). |
 | `does not merge cleanly into <base> …` / `N merge bases …` / `<base> removed or moved a file …` | Merge the base into the branch, then push again. |
-| `git could not list …` / `git could not read the tree …` | Fetch the whole history, then run again. |
+| `git could not list …` / `git could not read the tree …` | Check the code out with full history (GitHub: `fetch-depth: 0`; GitLab: `GIT_DEPTH: "0"`), then run again. The two `could not list` messages that come before the merge is read show only on git older than 2.38; git 2.38 or newer on the runner skips that step. |
 | `src/ holds a symlink, a submodule or a second spelling where a feature being backfilled lives …` | Put real files in place of each link, and keep one spelling. |
 | `cannot tell whether <feature> is being backfilled — on the base, … is a symlink or submodule` / `<feature> is being backfilled, but on the base <spec> is a symlink or submodule …` | Put the real `specs/backfill/` folder or spec back, in its own pull request first. |
 | `<feature> is being backfilled but its spec is not yet human-approved (verified: true) on the base.` | Approve the spec with the `yad-backfill` skill and merge that first. |
