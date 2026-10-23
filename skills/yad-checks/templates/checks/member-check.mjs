@@ -90,6 +90,10 @@ const onBase = (p) => {
 };
 // A path as a command takes it: shell-quoted unless it is plain (review 5), so a name with a space pastes whole.
 const q = (p) => (/^[A-Za-z0-9._\/@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`);
+// How to UNDO this PR's change to one file (review 6) — not to remove it: the base's copy, if the base holds
+// one, comes back; a file only this PR added goes. A teammate's file the PR edited is never deleted by it.
+const undo = (p) => (onBase(p) ? `restore ${q(p)} to the base's copy (git checkout ${base} -- ${q(p)})`
+  : `drop ${q(p)} from this pull request (git rm it on this branch)`);
 const removal = (paths) => {
   const here = paths.filter((p) => !onBase(p));
   const there = paths.filter(onBase);
@@ -113,17 +117,21 @@ for (const p of ['.sdlc', '.sdlc/members']) {
   const t = git('ls-tree', 'HEAD', '--', p).out.trim();
   if (t && !t.startsWith('040000 ')) fail(`${p} is not a folder at HEAD (a link?), and member files are read only from a real ${DIR} — replace it with a real folder that holds the files themselves`);
 }
-// Names of one file (twins): keep ONE per group, take every other out (reviews 4, 5). Kept first: a copy the
-// base holds (a new one was meant as another file), then a plain file over a link, then the ASCII lower-case
-// name `yad member add` writes. Nothing is renamed: taking the others out clears the clash. When this PR
+// Names of one file (twins): keep ONE per group, take every other out (reviews 4-6). Kept first: a plain file
+// (a link is refused in this same run), then a copy the base holds (a new one was meant as another file),
+// then the ASCII lower-case name `yad member add` writes. Nothing is renamed: taking the others out clears the clash. When this PR
 // brings in that lower-case name beside a base copy, it may be its person's own `yad member add` run — the
 // message says how to keep it instead.
 const lowerName = (p) => { const n = p.slice(p.lastIndexOf('/') + 1); return n === n.toLowerCase() && /^[\x20-\x7e]*$/.test(n); };
 function twins(group) {
   const old = group.filter((g) => onBase(g.path));
   const rank = (g) => (g.plain ? 0 : 2) + (lowerName(g.path) ? 0 : 1);
-  const keep = [...(old.length ? old : group)].sort((x, y) => rank(x) - rank(y))[0].path;
-  const own = old.length ? group.find((g) => !old.includes(g) && g.plain && lowerName(g.path)) : null;
+  // A link is refused in this same run, so it is kept only when every name is one (review 6).
+  const plain = group.filter((g) => g.plain);
+  const pick = plain.length ? plain : group;
+  const pickOld = pick.filter((g) => old.includes(g));
+  const keep = [...(pickOld.length ? pickOld : pick)].sort((x, y) => rank(x) - rank(y))[0].path;
+  const own = old.length ? group.find((g) => !old.includes(g) && g.plain && lowerName(g.path) && g.path !== keep) : null;
   const instead = own ? `; or, if ${q(own.path)} is your own file as yad member add writes it, keep it and ${removal(group.filter((g) => g !== own).map((g) => g.path))}` : '';
   fail(`${group.map((g) => g.path).join(' and ')} are one file on macOS and Windows — keep ${q(keep)}: ${removal(group.filter((g) => g.path !== keep).map((g) => g.path))}${instead}`);
 }
@@ -209,7 +217,7 @@ function githubLogin(sha) {
 
 // The fix for a file that is not the author's own as `yad member add` writes it.
 // It pushes its own branch (yad/member/<login>) and PR, so the file is dropped from any other PR.
-const AGAIN = 'write the file again with yad member add, run by its own person; it opens its own pull request, so drop the file from any other one';
+const again = (p) => `write the file again with yad member add, run by its own person (it opens its own pull request); if this is another pull request, ${undo(p)}`;
 
 const prCommits = git('log', '--format=%H%x1f%ae', `${base}..HEAD`).out.split('\n').filter(Boolean).map((l) => { const [sha, email] = l.split('\x1f'); return { sha, hash: hash(email) }; });
 
@@ -217,15 +225,15 @@ for (const { status, path } of changed) {
   const name = path.slice(DIR.length);
   if (status === 'D') { say(`PASS [member-check]: ${path} removed (removing a member can only make the count larger)`); continue; }
   if (name.includes('/') || !name.endsWith('.json')) { fail(`${path}: only <platform>-<login>.json files belong in ${DIR} — move it to ${DIR}${platform}-<login>.json, or remove it`); continue; }
-  if (name !== `${platform}-${author.toLowerCase()}.json`) { fail(`${path}: a PR may add or change only its author's own member file (${platform}-${author.toLowerCase()}.json) — drop this file from the PR, and change only ${platform}-${author.toLowerCase()}.json, which yad member add writes. To remove someone else's, use yad member remove <login> --reason "<why>"; git rm a file not named ${platform}-<login>.json`); continue; }
+  if (name !== `${platform}-${author.toLowerCase()}.json`) { fail(`${path}: a PR may add or change only its author's own member file (${platform}-${author.toLowerCase()}.json) — ${undo(path)}, and change only ${platform}-${author.toLowerCase()}.json, which yad member add writes. To remove someone else, use yad member remove <login> --reason "<why>" in a pull request of its own`); continue; }
   const rec = fileAt('HEAD', path);
-  if (!rec || !Array.isArray(rec.accounts)) { fail(`${path}: not a member file (no "accounts" list) — ${AGAIN}`); continue; }
+  if (!rec || !Array.isArray(rec.accounts)) { fail(`${path}: not a member file (no "accounts" list) — ${again(path)}`); continue; }
   const here = rec.accounts.filter(onProduct);
-  if (here.length !== 1) { fail(`${path}: must hold exactly one ${platform} account on ${productHost}, the author's own (it holds ${here.length}) — ${AGAIN}`); continue; }
-  if (String(here[0].login || '').toLowerCase() !== author.toLowerCase()) { fail(`${path}: does not hold ${author}'s own ${platform} account on ${productHost} — ${AGAIN}`); continue; }
+  if (here.length !== 1) { fail(`${path}: must hold exactly one ${platform} account on ${productHost}, the author's own (it holds ${here.length}) — ${again(path)}`); continue; }
+  if (String(here[0].login || '').toLowerCase() !== author.toLowerCase()) { fail(`${path}: does not hold ${author}'s own ${platform} account on ${productHost} — ${again(path)}`); continue; }
   // The numeric id: a login can be renamed away and registered again by someone else.
   if (!authorId) { fail(`${path}: cannot tell the numeric id of who opened this ${platform === 'github' ? 'PR (PR_AUTHOR_ID) — the job must pass PR_AUTHOR_ID from the pull_request event (github.event.pull_request.user.id), as yad-product-checks.yml does' : 'MR — the merge request API gave no author id; run the job again'}`); continue; }
-  if (here[0].id !== authorId) { fail(`${path}: the account id in the file (${here[0].id ?? 'none'}) is not the author's (${authorId}) — ${AGAIN}`); continue; }
+  if (here[0].id !== authorId) { fail(`${path}: the account id in the file (${here[0].id ?? 'none'}) is not the author's (${authorId}) — ${again(path)}`); continue; }
   const was = fileAt(base, path);
   const wasHere = Array.isArray(was?.accounts) ? was.accounts.filter(onProduct) : [];
   if (wasHere.length && wasHere[0].id !== authorId) { fail(`${path}: belonged to account id ${wasHere[0].id}, not ${author}'s (${authorId}), and a reused login does not take over a member file — remove the old file first with yad member remove ${author.toLowerCase()} --reason "<why>", in a pull request of its own`); continue; }

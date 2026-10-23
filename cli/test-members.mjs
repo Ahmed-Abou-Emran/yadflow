@@ -648,7 +648,9 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     const l = out.split('\n').find((x) => x.startsWith('FAIL [member-check]: '));
     return l ? l.slice(l.indexOf(' — ') + 3) : null;
   };
-  const AGAIN = /^write the file again with yad member add, run by its own person; it opens its own pull request, so drop the file from any other one$/;
+  // Its own file, new in this PR: dropped from another PR; one the base holds is restored, never deleted (review 6).
+  const AGAIN = /^write the file again with yad member add, run by its own person \(it opens its own pull request\); if this is another pull request, drop \.sdlc\/members\/github-alice\.json from this pull request \(git rm it on this branch\)$/;
+  const AGAIN_BASE = /^write the file again with yad member add, run by its own person \(it opens its own pull request\); if this is another pull request, restore \.sdlc\/members\/github-alice\.json to the base's copy \(git checkout main -- \.sdlc\/members\/github-alice\.json\)$/;
   const g = gateRepo();
   try {
     g.commitAs('alice@work.com', { [FILE('alice')]: { accounts: [{ platform: 'github', host: 'github.com', login: 'alice', id: 1 }] } });
@@ -673,15 +675,32 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     git(g.T, 'reset', '-q', '--hard', 'main');
     g.commitAs('alice@work.com', { '.sdlc/members/notes.txt': 'x' });
     assert.match(fixOf(g.check(as('alice')).out), /^move it to \.sdlc\/members\/github-<login>\.json, or remove it$/);
-    // A file that is not the author's own: misnamed, or someone else's.
-    const OWN = 'drop this file from the PR, and change only github-alice.json, which yad member add writes. To remove someone else\'s, use yad member remove <login> --reason "<why>"; git rm a file not named github-<login>.json';
+    // A file that is not the author's own: misnamed, or someone else's — new in this PR, or a teammate's the
+    // base holds, which is restored, never deleted (review 6: git rm would remove them and pass).
+    const OWN = (undo) => `${undo}, and change only github-alice.json, which yad member add writes. To remove someone else, use yad member remove <login> --reason "<why>" in a pull request of its own`;
     for (const file of [`${M.MEMBERS_DIR}/alice.json`, FILE('bob')]) {
       git(g.T, 'reset', '-q', '--hard', 'main');
       g.commitAs('alice@work.com', { [file]: rec('alice', []) });
       const out = g.check(as('alice')).out;
       assert.ok(out.includes(`${file}: a PR may add or change only its author's own member file (github-alice.json) — `), out);
-      assert.equal(fixOf(out), OWN);
+      assert.equal(fixOf(out), OWN(`drop ${file} from this pull request (git rm it on this branch)`));
     }
+    const mainBefore = git(g.T, 'rev-parse', 'main');
+    git(g.T, 'checkout', '-q', 'main');
+    put(path.join(g.T, FILE('bob')), rec('bob', []));
+    put(path.join(g.T, FILE('alice')), rec('alice', []));
+    git(g.T, 'add', '-A');
+    git(g.T, 'commit', '-q', '-m', 'bob and alice joined');
+    git(g.T, 'checkout', '-q', 'pr');
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    g.commitAs('alice@work.com', { [FILE('bob')]: { ...rec('bob', []), names: ['B'] } });
+    assert.equal(fixOf(g.check(as('alice')).out), OWN(`restore ${FILE('bob')} to the base's copy (git checkout main -- ${FILE('bob')})`));
+    // Her own file the base holds, edited wrong: restored in another PR.
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    g.commitAs('alice@work.com', { [FILE('alice')]: {} });
+    assert.match(fixOf(g.check(as('alice')).out), AGAIN_BASE);
+    git(g.T, 'branch', '-f', 'main', mainBefore);
+    git(g.T, 'reset', '-q', '--hard', 'main');
     // Two spellings of one file: which to keep, and how to take the other out (review 4). Written into git's
     // index, not the disk: a Mac's disk holds only one of them.
     const mainWas = git(g.T, 'rev-parse', 'main');
@@ -715,6 +734,8 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     assert.equal(twinsOf(['GitHub-Alice.json', 'github-ALICE.json'], []), `keep ${D}/GitHub-Alice.json: git rm ${D}/github-ALICE.json ${RM}`);
     // Three names of one file: ONE kept for the group, the rest taken out (review 5).
     assert.equal(twinsOf(['github-AB.json', 'github-Ab.json', 'github-ab.json'], []), `keep ${D}/github-ab.json: git rm ${D}/github-AB.json ${D}/github-Ab.json ${RM}`);
+    // A link the base holds is not kept: the gate refuses it in the same run (review 6).
+    assert.equal(twinsOf([['github-Alice.json', '120000']], ['github-alice.json']), `keep ${D}/github-alice.json: git rm ${D}/github-Alice.json ${RM}`);
     // A plain file is kept over a link; a non-ASCII name is quoted, so the command pastes whole.
     assert.equal(twinsOf([], [['github-alice.json', '120000'], 'github-ALICE.json']), `keep ${D}/github-ALICE.json: drop ${D}/github-alice.json from this pull request (git rm it on this branch)`);
     assert.equal(twinsOf(['github-\uff53am.json', 'github-sam.json'], []), `keep ${D}/github-sam.json: git rm '${D}/github-\uff53am.json' ${RM}`);
@@ -777,7 +798,7 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     git(g.T, 'reset', '-q', '--hard', 'main');
     g.commitAs('alice@work.com', { [`${M.MEMBERS_DIR}/alice.json`]: rec('alice', []) });
     const added = g.check(as('alice')).out.split('\n');
-    assert.match(fixOf(added.join('\n')), /^drop this file from the PR, /, added.join('\n'));
+    assert.match(fixOf(added.join('\n')), /^drop \.sdlc\/members\/alice\.json from this pull request \(git rm it on this branch\), and change only /, added.join('\n'));
     assert.equal(fixOf(added.find((l) => l.includes('the account github:github.com:alice is in'))), 'drop .sdlc/members/alice.json from this pull request (git rm it on this branch). Only github-<login>.json files are member files', added.join('\n'));
     // A misnamed file the base holds that this PR only edits: dropping the edit leaves it, so git rm (review 4).
     git(g.T, 'checkout', '-q', 'main');
