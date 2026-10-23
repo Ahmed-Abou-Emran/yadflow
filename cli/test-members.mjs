@@ -691,23 +691,33 @@ test('E131 member-check: each failure says what to change (#381)', () => {
       git(g.T, 'reset', '-q', '--hard', 'main');
       for (const [names, branch] of [[onMain, 'main'], [inPr, 'pr']]) {
         if (branch === 'main') git(g.T, 'checkout', '-q', 'main');
-        for (const f of names) git(g.T, 'update-index', '--add', '--cacheinfo', `100644,${blob},${M.MEMBERS_DIR}/${f}`);
+        for (const f of names) {
+          const [name, mode] = Array.isArray(f) ? f : [f, '100644'];
+          git(g.T, 'update-index', '--add', '--cacheinfo', `${mode},${blob},${M.MEMBERS_DIR}/${name}`);
+        }
         git(g.T, 'commit', '-q', '--allow-empty', '-m', `twins on ${branch}`);
         if (branch === 'main') { git(g.T, 'checkout', '-q', '-f', 'pr'); git(g.T, 'reset', '-q', '--hard', 'main'); }
       }
       const out = g.check(as('alice')).out;
-      assert.match(out, /are one file on macOS and Windows — /, out);
-      return fixOf(out);
+      fixOf(out);
+      const lines = out.split('\n').filter((l) => l.includes('are one file on macOS and Windows — '));
+      assert.equal(lines.length, 1, `one message per group of names:\n${out}`);
+      return lines[0].slice(lines[0].indexOf(' — ') + 3);
     };
     const D = M.MEMBERS_DIR;
+    const RM = '(any pull request may delete a member file)';
     // Both new in this PR: keep the lower-case name, drop the other.
-    assert.equal(twinsOf([], ['github-alice.json', 'github-ALICE.json']), `keep ${D}/github-alice.json: drop ${D}/github-ALICE.json from this pull request`);
-    // The base holds one: keep the base's copy, even with an upper-case name, and drop the new one — no rename.
-    assert.equal(twinsOf(['github-Alice.json'], ['github-alice.json']), `keep ${D}/github-Alice.json: drop ${D}/github-alice.json from this pull request`);
-    // Both on the base, neither in lower case: keep one, git rm the other, rename the kept one.
-    assert.equal(twinsOf(['GitHub-Alice.json', 'github-ALICE.json'], []), `keep ${D}/GitHub-Alice.json: git rm ${D}/github-ALICE.json (any pull request may delete a member file); then git mv ${D}/GitHub-Alice.json to its name in lower case`);
-    // Unicode twins on the base: keep the ASCII name.
-    assert.equal(twinsOf(['github-\uff53am.json', 'github-sam.json'], []), `keep ${D}/github-sam.json: git rm ${D}/github-\uff53am.json (any pull request may delete a member file)`);
+    assert.equal(twinsOf([], ['github-alice.json', 'github-ALICE.json']), `keep ${D}/github-alice.json: drop ${D}/github-ALICE.json from this pull request (git rm it on this branch)`);
+    // The base holds one: keep the base's copy and drop the new one — unless the new one is its person's own
+    // yad member add file, which may keep it and git rm the base's copy instead (review 5).
+    assert.equal(twinsOf(['github-Alice.json'], ['github-alice.json']), `keep ${D}/github-Alice.json: drop ${D}/github-alice.json from this pull request (git rm it on this branch); or, if ${D}/github-alice.json is your own file as yad member add writes it, keep it and git rm ${D}/github-Alice.json ${RM}`);
+    // Both on the base, neither in lower case: keep one, git rm the other. No rename: that clears it.
+    assert.equal(twinsOf(['GitHub-Alice.json', 'github-ALICE.json'], []), `keep ${D}/GitHub-Alice.json: git rm ${D}/github-ALICE.json ${RM}`);
+    // Three names of one file: ONE kept for the group, the rest taken out (review 5).
+    assert.equal(twinsOf(['github-AB.json', 'github-Ab.json', 'github-ab.json'], []), `keep ${D}/github-ab.json: git rm ${D}/github-AB.json ${D}/github-Ab.json ${RM}`);
+    // A plain file is kept over a link; a non-ASCII name is quoted, so the command pastes whole.
+    assert.equal(twinsOf([], [['github-alice.json', '120000'], 'github-ALICE.json']), `keep ${D}/github-ALICE.json: drop ${D}/github-alice.json from this pull request (git rm it on this branch)`);
+    assert.equal(twinsOf(['github-\uff53am.json', 'github-sam.json'], []), `keep ${D}/github-sam.json: git rm '${D}/github-\uff53am.json' ${RM}`);
     git(g.T, 'branch', '-f', 'main', mainWas);
     git(g.T, 'reset', '-q', '--hard', 'main');
     // An email no commit GitHub gives to the author proves.
@@ -768,7 +778,7 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     g.commitAs('alice@work.com', { [`${M.MEMBERS_DIR}/alice.json`]: rec('alice', []) });
     const added = g.check(as('alice')).out.split('\n');
     assert.match(fixOf(added.join('\n')), /^drop this file from the PR, /, added.join('\n'));
-    assert.equal(fixOf(added.find((l) => l.includes('the account github:github.com:alice is in'))), 'drop .sdlc/members/alice.json from this pull request. Only github-<login>.json files are member files', added.join('\n'));
+    assert.equal(fixOf(added.find((l) => l.includes('the account github:github.com:alice is in'))), 'drop .sdlc/members/alice.json from this pull request (git rm it on this branch). Only github-<login>.json files are member files', added.join('\n'));
     // A misnamed file the base holds that this PR only edits: dropping the edit leaves it, so git rm (review 4).
     git(g.T, 'checkout', '-q', 'main');
     put(path.join(g.T, M.MEMBERS_DIR, 'alice.json'), rec('alice', []));
@@ -781,9 +791,9 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     assert.equal(fixOf(edited.find((l) => l.includes('the account github:github.com:alice is in'))), 'git rm .sdlc/members/alice.json (any pull request may delete a member file). Only github-<login>.json files are member files', edited.join('\n'));
     // A misnamed file this PR adds with an email another file holds: the email message says drop it too.
     git(g.T, 'reset', '-q', '--hard', 'main');
-    g.commitAs('alice@work.com', { [`${M.MEMBERS_DIR}/carol.json`]: rec('carol', ['alice@work.com']) });
+    g.commitAs('alice@work.com', { [`${M.MEMBERS_DIR}/carol x.json`]: rec('carol', ['alice@work.com']) });
     const carol = g.check(as('alice')).out.split('\n');
-    assert.equal(fixOf(carol.find((l) => l.includes('one email is in'))), 'drop .sdlc/members/carol.json from this pull request. Only github-<login>.json files are member files', carol.join('\n'));
+    assert.equal(fixOf(carol.find((l) => l.includes('one email is in'))), "drop '.sdlc/members/carol x.json' from this pull request (git rm it on this branch). Only github-<login>.json files are member files", carol.join('\n'));
     // A base that shares no history: git cannot list the changes.
     git(g.T, 'checkout', '-q', '--orphan', 'alone');
     git(g.T, 'commit', '-q', '-m', 'unrelated');

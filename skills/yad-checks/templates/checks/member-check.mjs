@@ -82,12 +82,19 @@ for (let i = 0; i + 1 < parts.length; i += 2) all.push({ status: parts[i][0], pa
 // How to take member files out, the one rule every message uses (#381 review 4): a file this PR brings in
 // (not on the base) is dropped from it; one the base holds — even one this PR edits — is deleted with git
 // rm, which any PR may do (a deletion is never refused).
-const onBase = (p) => git('cat-file', '-e', `${base}:${p}`).ok;
+// A FILE at that path on the base (a folder there is not one); the path read literally, never as a pattern.
+const onBase = (p) => {
+  const t = spawnSync('git', ['--literal-pathspecs', 'ls-tree', '-z', base, '--', p], { encoding: 'utf8' });
+  const [meta, at] = (t.status === 0 ? t.stdout : '').split('\0')[0].split('\t');
+  return at === p && !meta.startsWith('040000 ');
+};
+// A path as a command takes it: shell-quoted unless it is plain (review 5), so a name with a space pastes whole.
+const q = (p) => (/^[A-Za-z0-9._\/@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`);
 const removal = (paths) => {
   const here = paths.filter((p) => !onBase(p));
   const there = paths.filter(onBase);
-  return [...(here.length ? [`drop ${here.join(' and ')} from this pull request`] : []),
-    ...(there.length ? [`git rm ${there.join(' and ')} (any pull request may delete a member file)`] : [])].join('; ');
+  return [...(here.length ? [`drop ${here.map(q).join(' and ')} from this pull request (git rm it on this branch)`] : []),
+    ...(there.length ? [`git rm ${there.map(q).join(' ')} (any pull request may delete a member file)`] : [])].join('; ');
 };
 
 // A path as a case-insensitive, Unicode-folding file system sees it: `.sdlc/Members/x` and `.ſdlc/members/x`
@@ -106,27 +113,30 @@ for (const p of ['.sdlc', '.sdlc/members']) {
   const t = git('ls-tree', 'HEAD', '--', p).out.trim();
   if (t && !t.startsWith('040000 ')) fail(`${p} is not a folder at HEAD (a link?), and member files are read only from a real ${DIR} — replace it with a real folder that holds the files themselves`);
 }
-// Two names of one file: keep one, take the other out (review 4). The base's copy is kept over one this PR
-// brings in (whoever added the new one meant another file); then the name `yad member add` writes, in ASCII
-// lower case. Only when both are on the base and neither is so named does the kept one need renaming.
+// Names of one file (twins): keep ONE per group, take every other out (reviews 4, 5). Kept first: a copy the
+// base holds (a new one was meant as another file), then a plain file over a link, then the ASCII lower-case
+// name `yad member add` writes. Nothing is renamed: taking the others out clears the clash. When this PR
+// brings in that lower-case name beside a base copy, it may be its person's own `yad member add` run — the
+// message says how to keep it instead.
 const lowerName = (p) => { const n = p.slice(p.lastIndexOf('/') + 1); return n === n.toLowerCase() && /^[\x20-\x7e]*$/.test(n); };
-function twin(a, b) {
-  const pair = [a, b];
-  const base0 = pair.filter(onBase);
-  const pool = base0.length ? base0 : pair;
-  const keep = pool.find(lowerName) || pool[0];
-  const mv = base0.length === 2 && !lowerName(keep) ? `; then git mv ${keep} to its name in lower case` : '';
-  fail(`${a} and ${b} are one file on macOS and Windows — keep ${keep}: ${removal(pair.filter((p) => p !== keep))}${mv}`);
+function twins(group) {
+  const old = group.filter((g) => onBase(g.path));
+  const rank = (g) => (g.plain ? 0 : 2) + (lowerName(g.path) ? 0 : 1);
+  const keep = [...(old.length ? old : group)].sort((x, y) => rank(x) - rank(y))[0].path;
+  const own = old.length ? group.find((g) => !old.includes(g) && g.plain && lowerName(g.path)) : null;
+  const instead = own ? `; or, if ${q(own.path)} is your own file as yad member add writes it, keep it and ${removal(group.filter((g) => g !== own).map((g) => g.path))}` : '';
+  fail(`${group.map((g) => g.path).join(' and ')} are one file on macOS and Windows — keep ${q(keep)}: ${removal(group.filter((g) => g.path !== keep).map((g) => g.path))}${instead}`);
 }
 const tree = git('ls-tree', '-r', '-z', 'HEAD', '--', DIR).out.split('\0').filter(Boolean);
 const folded = new Map();
 for (const line of tree) {
   const [meta, p] = line.split('\t');
-  if (!meta.startsWith('100644 ') && !meta.startsWith('100755 ')) fail(`${p} is not a plain file (a link?), and a member file is never read through one — replace it with the file itself (yad member add writes it), or delete it`);
+  const plain = meta.startsWith('100644 ') || meta.startsWith('100755 ');
+  if (!plain) fail(`${p} is not a plain file (a link?), and a member file is never read through one — replace it with the file itself (yad member add writes it), or delete it`);
   const k = fold(p);
-  if (folded.has(k)) twin(folded.get(k), p);
-  folded.set(k, p);
+  folded.set(k, [...(folded.get(k) || []), { path: p, plain }]);
 }
+for (const group of folded.values()) if (group.length > 1) twins(group);
 if (rc) process.exit(rc);
 
 const changed = all.filter((c) => c.path.startsWith(DIR));
