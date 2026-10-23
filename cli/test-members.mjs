@@ -554,7 +554,7 @@ test('E131 member-check: someone else\'s file is refused; a deletion is allowed;
     g.attribute(shaB, 'bob');
     r = g.check({ PR_AUTHOR: 'bob', PR_AUTHOR_ID: '9' });
     assert.equal(r.code, 1);
-    assert.match(r.out, /belonged to account id 2, not bob's \(9\), and a reused login does not take over a member file — remove the old file first with yad member remove <login> --reason "<why>", in a pull request of its own\n/);
+    assert.match(r.out, /belonged to account id 2, not bob's \(9\), and a reused login does not take over a member file — remove the old file first with yad member remove bob --reason "<why>", in a pull request of its own\n/);
     assert.match(g.check({ PR_AUTHOR: 'bob', PR_AUTHOR_ID: '2' }).out, /account id in the file \(9\) is not the author's \(2\)/);
     git(g.T, 'reset', '-q', '--hard', 'main');
     g.commitAs('alice@work.com', { [FILE('bob')]: null }, 'chore(product): remove team member bob');
@@ -642,7 +642,12 @@ test('E131 member-check: on GitLab with no API token a member change FAILS close
 
 // Every failure says what is wrong AND what to change (#381): `FAIL [member-check]: <wrong> — <change>`.
 test('E131 member-check: each failure says what to change (#381)', () => {
-  const fixOf = (out) => { const l = out.split('\n').find((x) => x.startsWith('FAIL [member-check]: ')); return l && l.includes(' — ') ? l.slice(l.indexOf(' — ') + 3) : null; };
+  // The fix of the first FAIL line; every FAIL line has exactly one ' — ' between what is wrong and the fix.
+  const fixOf = (out) => {
+    for (const x of out.split('\n').filter((y) => y.startsWith('FAIL [member-check]: '))) assert.equal(x.split(' — ').length, 2, `one ' — ' in: ${x}`);
+    const l = out.split('\n').find((x) => x.startsWith('FAIL [member-check]: '));
+    return l ? l.slice(l.indexOf(' — ') + 3) : null;
+  };
   const AGAIN = /^write the file again with yad member add, run by its own person; it opens its own pull request, so drop the file from any other one$/;
   const g = gateRepo();
   try {
@@ -667,7 +672,32 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     }
     git(g.T, 'reset', '-q', '--hard', 'main');
     g.commitAs('alice@work.com', { '.sdlc/members/notes.txt': 'x' });
-    assert.match(fixOf(g.check(as('alice')).out), /^rename it to github-<login>\.json, or remove it$/);
+    assert.match(fixOf(g.check(as('alice')).out), /^move it to \.sdlc\/members\/github-<login>\.json, or remove it$/);
+    // A file that is not the author's own: misnamed, or someone else's.
+    const OWN = 'drop this file from the PR, and change only github-alice.json, which yad member add writes. To remove someone else\'s, use yad member remove <login> --reason "<why>"; git rm a file not named github-<login>.json';
+    for (const file of [`${M.MEMBERS_DIR}/alice.json`, FILE('bob')]) {
+      git(g.T, 'reset', '-q', '--hard', 'main');
+      g.commitAs('alice@work.com', { [file]: rec('alice', []) });
+      const out = g.check(as('alice')).out;
+      assert.ok(out.includes(`${file}: a PR may add or change only its author's own member file (github-alice.json) — `), out);
+      assert.equal(fixOf(out), OWN);
+    }
+    // Two spellings of one file, both committed: written into git's index, as a Mac's disk holds only one.
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: g.T, input: '{}' }).toString().trim();
+    for (const f of ['github-alice.json', 'github-ALICE.json']) git(g.T, 'update-index', '--add', '--cacheinfo', `100644,${blob},${M.MEMBERS_DIR}/${f}`);
+    git(g.T, 'commit', '-q', '-m', 'two spellings');
+    const twins = g.check(as('alice')).out;
+    assert.match(twins, /are one file on macOS and Windows — /, twins);
+    assert.equal(fixOf(twins), 'keep one: git rm the other');
+    // An email no commit GitHub gives to the author proves.
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    g.commitAs('alice@work.com', { [FILE('alice')]: rec('alice', ['alice@work.com']) });
+    const unproven = g.check(as('alice')).out;
+    assert.match(unproven, /holds an email no commit in this PR proves \(a commit authored by that email that GitHub attributes to alice\) — /, unproven);
+    assert.equal(fixOf(unproven), "verify the email on alice's account, then run yad member add, which writes one such commit per email");
+    // The job passed no base.
+    assert.equal(fixOf(spawnSyncNode(CHECK, [], { cwd: g.T }).stdout), 'the job must pass the base ref (the branch the PR targets), as yad-product-checks.yml does');
     // Another spelling of either folder. Written into git's index, not the disk: a Mac's disk would put
     // `.SDLC/x.json` in the real `.sdlc/`.
     for (const [file, dir] of [['.sdlc/Members/github-alice.json', '.sdlc/members/'], ['.SDLC/x.json', '.sdlc/']]) {
@@ -682,7 +712,7 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     // The Product names no platform: the fix names the file the gate read, or says there is none.
     for (const [files, fix] of [
       [{ '.sdlc/product.json': { git_url: 'git@github.com:acme/product.git' } }, 'set "platform" ("github" or "gitlab") in .sdlc/product.json'],
-      [{ '.sdlc/product.json': '{' }, '.sdlc/product.json is not valid JSON: fix it, and set "platform" ("github" or "gitlab") in it'],
+      [{ '.sdlc/product.json': '{' }, '.sdlc/product.json is not valid JSON or not an object: fix it, and set "platform" ("github" or "gitlab") in it'],
       [{ '.sdlc/product.json': null, '.sdlc/hub.json': { git_url: 'x' } }, 'set "platform" ("github" or "gitlab") in .sdlc/hub.json'],
       [{ '.sdlc/product.json': null }, 'there is no .sdlc/product.json: run yad setup in the Product, or write the file with "platform" ("github" or "gitlab")'],
     ]) {
@@ -763,11 +793,14 @@ test('E131 member-check: on GitLab each API answer says what to change (#381)', 
       assert.ok(r.out.includes(`FAIL [member-check]: could not read the MR (HTTP ${status}): ${fix}\n`), r.out);
     }
     // The API named no author; the job ran outside a merge request pipeline; the API cannot be reached.
+    // The API named the author but no numeric id.
+    answer = { status: 200, body: { author: { username: 'alice' } } };
+    assert.match((await run({ ...MR, GITLAB_TOKEN: 't' })).out, /gitlab-alice\.json: cannot tell the numeric id of who opened this MR — the merge request API gave no author id; run the job again\n/);
     answer = { status: 200, body: { author: null } };
     assert.match((await run({ ...MR, GITLAB_TOKEN: 't' })).out, /cannot tell who opened this MR — the merge request API named no author; run the job again\n/);
     assert.match((await run({ GITLAB_TOKEN: 't', CI_API_V4_URL: '', CI_PROJECT_ID: '', CI_MERGE_REQUEST_IID: '' })).out, /cannot tell who opened this MR — run the job in a merge request pipeline, which sets CI_API_V4_URL, CI_PROJECT_ID and CI_MERGE_REQUEST_IID, as yad-product-checks\.gitlab-ci\.yml does\n/);
     const down = await run({ ...MR, CI_API_V4_URL: 'http://127.0.0.1:9/api/v4', GITLAB_TOKEN: 't' });
-    assert.match(down.out, /could not read the MR: .+ — check that CI_API_V4_URL \(http:\/\/127\.0\.0\.1:9\/api\/v4\) is reachable from the runner, then run the job again\n/);
+    assert.match(down.out, /could not read the MR: .+ — check that CI_API_V4_URL \(http:\/\/127\.0\.0\.1:9\/api\/v4\) is reachable from the runner and answers as GitLab's API, then run the job again\n/);
   } finally { server.close(); fs.rmSync(g.T, { recursive: true, force: true }); }
 });
 

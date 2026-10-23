@@ -68,7 +68,7 @@ const productHost = hostOf(settings?.git_url) || hostOf(git('remote', 'get-url',
 const onProduct = (a) => a?.platform === platform && String(a?.host || '').toLowerCase() === productHost;
 
 const base = process.argv[2];
-if (!base) { say('FAIL [member-check]: usage: node checks/member-check.mjs <base-ref>'); process.exit(1); }
+if (!base) { say('FAIL [member-check]: usage: node checks/member-check.mjs <base-ref> — the job must pass the base ref (the branch the PR targets), as yad-product-checks.yml does'); process.exit(1); }
 if (!git('rev-parse', '--verify', '-q', `${base}^{commit}`).ok) { say(`FAIL [member-check]: cannot resolve the base ref ${base} — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0")`); process.exit(1); }
 
 // Every path the PR touches, with its status. NUL-separated, no renames (a rename is a delete plus an add,
@@ -101,7 +101,7 @@ for (const line of tree) {
   const [meta, p] = line.split('\t');
   if (!meta.startsWith('100644 ') && !meta.startsWith('100755 ')) fail(`${p} is not a plain file (a link?), and a member file is never read through one — replace it with the file itself (yad member add writes it), or delete it`);
   const k = fold(p);
-  if (folded.has(k)) fail(`${p} and ${folded.get(k)} are one file on macOS and Windows — keep one`);
+  if (folded.has(k)) fail(`${p} and ${folded.get(k)} are one file on macOS and Windows — keep one: git rm the other`);
   folded.set(k, p);
 }
 if (rc) process.exit(rc);
@@ -111,7 +111,7 @@ if (!changed.length) { say('PASS [member-check]: no member file changed'); proce
 // Where to set it: the file the gate read, or the one `yad setup` writes when there is none (review 1).
 if (!platform) {
   const fix = !settingsFile ? 'there is no .sdlc/product.json: run yad setup in the Product, or write the file with "platform" ("github" or "gitlab")'
-    : !settings ? `${settingsFile} is not valid JSON: fix it, and set "platform" ("github" or "gitlab") in it`
+    : !settings ? `${settingsFile} is not valid JSON or not an object: fix it, and set "platform" ("github" or "gitlab") in it`
       : `set "platform" ("github" or "gitlab") in ${settingsFile}`;
   say(`FAIL [member-check]: member files changed, but the Product names no platform, so nothing can be proven — ${fix}`);
   process.exit(1);
@@ -143,7 +143,7 @@ async function prAuthor() {
     }
     const mr = await r.json();
     return { login: mr?.author?.username || null, id: Number(mr?.author?.id) || null };
-  } catch (e) { fail(`could not read the MR: ${e.message} — check that CI_API_V4_URL (${url}) is reachable from the runner, then run the job again`); return null; }
+  } catch (e) { fail(`could not read the MR: ${e.message} — check that CI_API_V4_URL (${url}) is reachable from the runner and answers as GitLab's API, then run the job again`); return null; }
 }
 
 const who = await prAuthor();
@@ -183,8 +183,8 @@ const prCommits = git('log', '--format=%H%x1f%ae', `${base}..HEAD`).out.split('\
 for (const { status, path } of changed) {
   const name = path.slice(DIR.length);
   if (status === 'D') { say(`PASS [member-check]: ${path} removed (removing a member can only make the count larger)`); continue; }
-  if (name.includes('/') || !name.endsWith('.json')) { fail(`${path}: only <platform>-<login>.json files belong in ${DIR} — rename it to ${platform}-<login>.json, or remove it`); continue; }
-  if (name !== `${platform}-${author.toLowerCase()}.json`) { fail(`${path}: a PR may add or change only its author's own member file (${platform}-${author.toLowerCase()}.json) — use \`yad member remove <login> --reason\` to remove someone else's`); continue; }
+  if (name.includes('/') || !name.endsWith('.json')) { fail(`${path}: only <platform>-<login>.json files belong in ${DIR} — move it to ${DIR}${platform}-<login>.json, or remove it`); continue; }
+  if (name !== `${platform}-${author.toLowerCase()}.json`) { fail(`${path}: a PR may add or change only its author's own member file (${platform}-${author.toLowerCase()}.json) — drop this file from the PR, and change only ${platform}-${author.toLowerCase()}.json, which yad member add writes. To remove someone else's, use yad member remove <login> --reason "<why>"; git rm a file not named ${platform}-<login>.json`); continue; }
   const rec = fileAt('HEAD', path);
   if (!rec || !Array.isArray(rec.accounts)) { fail(`${path}: not a member file (no "accounts" list) — ${AGAIN}`); continue; }
   const here = rec.accounts.filter(onProduct);
@@ -195,14 +195,14 @@ for (const { status, path } of changed) {
   if (here[0].id !== authorId) { fail(`${path}: the account id in the file (${here[0].id ?? 'none'}) is not the author's (${authorId}) — ${AGAIN}`); continue; }
   const was = fileAt(base, path);
   const wasHere = Array.isArray(was?.accounts) ? was.accounts.filter(onProduct) : [];
-  if (wasHere.length && wasHere[0].id !== authorId) { fail(`${path}: belonged to account id ${wasHere[0].id}, not ${author}'s (${authorId}), and a reused login does not take over a member file — remove the old file first with yad member remove <login> --reason "<why>", in a pull request of its own`); continue; }
+  if (wasHere.length && wasHere[0].id !== authorId) { fail(`${path}: belonged to account id ${wasHere[0].id}, not ${author}'s (${authorId}), and a reused login does not take over a member file — remove the old file first with yad member remove ${author.toLowerCase()} --reason "<why>", in a pull request of its own`); continue; }
   if (platform !== 'github') { say(`PASS [member-check]: ${path} belongs to ${author} (on GitLab its emails feed the team list only)`); continue; }
   // EVERY email in a changed file is proven, not only the new ones (review 5): an email that reached the
   // branch while this gate was off or edited would otherwise ride along on any later change.
   const added = [...emailsOf(rec)];
   for (const h of added) {
     const proof = prCommits.filter((c) => c.hash === h).find((c) => String(githubLogin(c.sha) || '').toLowerCase() === author.toLowerCase());
-    if (!proof) fail(`${path}: holds an email no commit in this PR proves — GitHub must attribute a commit authored by that email to ${author} (\`yad member add\` writes one such commit per email; verify the email on the account)`);
+    if (!proof) fail(`${path}: holds an email no commit in this PR proves (a commit authored by that email that GitHub attributes to ${author}) — verify the email on ${author}'s account, then run yad member add, which writes one such commit per email`);
   }
   if (!rc) say(`PASS [member-check]: ${path} belongs to ${author}${added.length ? `; ${added.length} email(s), each proven by a commit GitHub attributes to them` : ''}`);
 }
