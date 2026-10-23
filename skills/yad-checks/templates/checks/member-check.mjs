@@ -79,6 +79,17 @@ const parts = diff.out.split('\0').filter(Boolean);
 const all = [];
 for (let i = 0; i + 1 < parts.length; i += 2) all.push({ status: parts[i][0], path: parts[i + 1] });
 
+// How to take member files out, the one rule every message uses (#381 review 4): a file this PR brings in
+// (not on the base) is dropped from it; one the base holds — even one this PR edits — is deleted with git
+// rm, which any PR may do (a deletion is never refused).
+const onBase = (p) => git('cat-file', '-e', `${base}:${p}`).ok;
+const removal = (paths) => {
+  const here = paths.filter((p) => !onBase(p));
+  const there = paths.filter(onBase);
+  return [...(here.length ? [`drop ${here.join(' and ')} from this pull request`] : []),
+    ...(there.length ? [`git rm ${there.join(' and ')} (any pull request may delete a member file)`] : [])].join('; ');
+};
+
 // A path as a case-insensitive, Unicode-folding file system sees it: `.sdlc/Members/x` and `.ſdlc/members/x`
 // land in `.sdlc/members/` on macOS and Windows.
 // A deletion is never judged here: removing a twin is how one is cleaned up (review 2).
@@ -95,13 +106,25 @@ for (const p of ['.sdlc', '.sdlc/members']) {
   const t = git('ls-tree', 'HEAD', '--', p).out.trim();
   if (t && !t.startsWith('040000 ')) fail(`${p} is not a folder at HEAD (a link?), and member files are read only from a real ${DIR} — replace it with a real folder that holds the files themselves`);
 }
+// Two names of one file: keep one, take the other out (review 4). The base's copy is kept over one this PR
+// brings in (whoever added the new one meant another file); then the name `yad member add` writes, in ASCII
+// lower case. Only when both are on the base and neither is so named does the kept one need renaming.
+const lowerName = (p) => { const n = p.slice(p.lastIndexOf('/') + 1); return n === n.toLowerCase() && /^[\x20-\x7e]*$/.test(n); };
+function twin(a, b) {
+  const pair = [a, b];
+  const base0 = pair.filter(onBase);
+  const pool = base0.length ? base0 : pair;
+  const keep = pool.find(lowerName) || pool[0];
+  const mv = base0.length === 2 && !lowerName(keep) ? `; then git mv ${keep} to its name in lower case` : '';
+  fail(`${a} and ${b} are one file on macOS and Windows — keep ${keep}: ${removal(pair.filter((p) => p !== keep))}${mv}`);
+}
 const tree = git('ls-tree', '-r', '-z', 'HEAD', '--', DIR).out.split('\0').filter(Boolean);
 const folded = new Map();
 for (const line of tree) {
   const [meta, p] = line.split('\t');
   if (!meta.startsWith('100644 ') && !meta.startsWith('100755 ')) fail(`${p} is not a plain file (a link?), and a member file is never read through one — replace it with the file itself (yad member add writes it), or delete it`);
   const k = fold(p);
-  if (folded.has(k)) fail(`${p} and ${folded.get(k)} are one file on macOS and Windows — keep the one named in lower case, as yad member add writes it: git rm the other`);
+  if (folded.has(k)) twin(folded.get(k), p);
   folded.set(k, p);
 }
 if (rc) process.exit(rc);
@@ -224,23 +247,14 @@ for (const p of files) {
 // clash here is a file named other than <platform>-<login>.json — which `yad member remove` cannot reach:
 // it removes the well-named one (review 1).
 const named = (p) => new RegExp(`^${platform}-[^/]+\\.json$`).test(p.slice(DIR.length));
-const STALE = `remove a stale file (yad member remove <login> --reason "<why>"; git rm one not named ${platform}-<login>.json)`;
-// A misnamed file this PR adds or changes is dropped from it; one already on the base is removed with git rm,
-// in any PR (a deletion always passes) (review 3).
-const mine = new Set(changed.filter((c) => c.status !== 'D').map((c) => c.path));
-for (const [k, list] of accounts) {
-  if (list.length < 2) continue;
-  const odd = list.filter((p) => !named(p));
-  const here = odd.filter((p) => mine.has(p));
-  const there = odd.filter((p) => !mine.has(p));
-  const fix = [...(here.length ? [`drop ${here.join(' and ')} from this pull request`] : []), ...(there.length ? [`git rm ${there.join(' and ')} (any pull request may delete a member file)`] : [])];
-  // `STALE` only if no file is misnamed: two well-named files with one key are twins, refused above, so it
-  // is a guard, not a path today.
-  fail(`the account ${k} is in ${list.join(' and ')}, and one account belongs to one member — ${fix.length ? `${fix.join('; ')}. Only ${platform}-<login>.json files are member files` : STALE}`);
-}
+const STALE = 'remove a stale file with yad member remove <login> --reason "<why>"';
+// A misnamed file in a clash is taken out by `removal` (review 3, 4); `STALE` only when none is misnamed —
+// two well-named files with one key are twins, refused above, so for accounts it is a guard, not a path today.
+const misnamed = (list) => { const odd = list.filter((p) => !named(p)); return odd.length ? `${removal(odd)}. Only ${platform}-<login>.json files are member files` : null; };
+for (const [k, list] of accounts) if (list.length > 1) fail(`the account ${k} is in ${list.join(' and ')}, and one account belongs to one member — ${misnamed(list) || STALE}`);
 // On GitLab an email is never proven and never used by the count, so a shared one is not refused: refusing it
 // would let whoever listed someone's known address first block that person (review 3). The CLI pairs it
 // with nobody.
-if (platform === 'github') for (const [, list] of emails) if (list.length > 1) fail(`one email is in ${list.join(' and ')}, and one email belongs to one member — remove it from the file it does not belong in (that file's own person runs yad member add again, which keeps only the emails their account has verified), or ${STALE}`);
+if (platform === 'github') for (const [, list] of emails) if (list.length > 1) fail(`one email is in ${list.join(' and ')}, and one email belongs to one member — ${misnamed(list) || `remove it from the file it does not belong in (that file's own person runs yad member add again, which keeps only the emails their account has verified), or ${STALE}`}`);
 
 process.exit(rc);

@@ -595,12 +595,12 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
 | `<file>: not a member file (no "accounts" list)` / `does not hold <author>'s own <platform> account …` / `the account id in the file … is not the author's` / `must hold exactly one <platform> account …` | Write the file again with `yad member add`, run by its own person. It opens its own pull request, so drop the file from any other one. |
 | `belonged to account id …, not <author>'s (<id>), and a reused login does not take over a member file …` | Remove the old file first with `yad member remove <login> --reason`, in its own pull request. |
 | `holds an email no commit in this PR proves …` (GitHub only) | Verify the email on your account, then run `yad member add`: it makes one commit with each email, which GitHub then gives to you. |
-| `the account <x> is in <a> and <b>` | One account belongs to one member. The message names the file that is not named `<platform>-<login>.json`. If this pull request adds it, drop it from the pull request. If it is already on the base, remove it with `git rm`; any pull request may delete a member file. (`yad member remove` cannot: it removes the well-named file.) |
-| `one email is in <a> and <b>` (GitHub only) | One email belongs to one member. Remove it from the file it does not belong in: that file's own person runs `yad member add` again, which keeps only the emails their account has verified. Or remove a stale file: `yad member remove <login> --reason`, or `git rm` for a file not named `<platform>-<login>.json`. |
+| `the account <x> is in <a> and <b>` | One account belongs to one member. The message names the file that is not named `<platform>-<login>.json`, and how to take it out (see below). (`yad member remove` cannot: it removes the well-named file.) |
+| `one email is in <a> and <b>` (GitHub only) | One email belongs to one member. If one of the files is not named `<platform>-<login>.json`, the message names it and how to take it out (see below). Otherwise remove the email from the file it does not belong in: that file's own person runs `yad member add` again, which keeps only the emails their account has verified. Or remove a stale file with `yad member remove <login> --reason`. |
 | `"<path>" is another spelling of .sdlc/ …` / `… of .sdlc/members/ …` | Move the file into the real folder (`git mv`), or delete it. |
 | `… is not a folder at HEAD (a link?) …` | Replace the link with a real folder that holds the files themselves. |
 | `… is not a plain file (a link?) …` | Replace the link with the file itself (`yad member add` writes it), or delete it. |
-| `<a> and <b> are one file on macOS and Windows` | Keep the one named in lower case, as `yad member add` writes it: `git rm` the other. |
+| `<a> and <b> are one file on macOS and Windows` | The message names the one to keep (the base's copy before one this pull request adds, then the lower-case name `yad member add` writes) and how to take the other out (see below). When both are on the base and neither name is in lower case, it also says to rename the kept one. |
 | `member files changed, but the Product names no platform …` | Set `platform` (`github` or `gitlab`) in the settings file the message names. With no `.sdlc/product.json`, run `yad setup` in the Product. |
 | `no API token (GITLAB_TOKEN or SDLC_API_TOKEN) …` | Add a `GITLAB_TOKEN` masked CI/CD variable with the `read_api` scope, whose user can see the project. |
 | `could not read the MR (HTTP N): …` | The message says what to change, by the answer: 401 renew or replace the token; 403 give it the `read_api` scope; 404 use a token of a project member with Reporter access or more. Any other answer is a GitLab problem, not the token's: run the job again later. |
@@ -610,6 +610,8 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
 | The base messages | See [the base cannot be found](#the-base-cannot-be-found). |
 | `git could not list the changed files` | Check the code out with full history (GitHub: `actions/checkout` with `fetch-depth: 0`; GitLab: `GIT_DEPTH: "0"`), and give a base this branch shares history with, then run again. |
 | `usage: node checks/member-check.mjs <base-ref> …` | A wiring problem: the job must pass the base ref (the branch the pull request targets), as `yad-product-checks.yml` (GitHub) and `yad-product-checks.gitlab-ci.yml` (GitLab) do. |
+
+**Taking a member file out** (the rule the three messages above use): a file this pull request brings in, and the base does not hold, is dropped from the pull request. A file the base holds — even one this pull request only edits — is deleted with `git rm`; any pull request may delete a member file.
 
 ## product-checkout
 
