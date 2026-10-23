@@ -689,7 +689,7 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     git(g.T, 'commit', '-q', '-m', 'two spellings');
     const twins = g.check(as('alice')).out;
     assert.match(twins, /are one file on macOS and Windows — /, twins);
-    assert.equal(fixOf(twins), 'keep one: git rm the other');
+    assert.equal(fixOf(twins), 'keep the one named in lower case, as yad member add writes it: git rm the other');
     // An email no commit GitHub gives to the author proves.
     git(g.T, 'reset', '-q', '--hard', 'main');
     g.commitAs('alice@work.com', { [FILE('alice')]: rec('alice', ['alice@work.com']) });
@@ -697,7 +697,7 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     assert.match(unproven, /holds an email no commit in this PR proves \(a commit authored by that email that GitHub attributes to alice\) — /, unproven);
     assert.equal(fixOf(unproven), "verify the email on alice's account, then run yad member add, which writes one such commit per email");
     // The job passed no base.
-    assert.equal(fixOf(spawnSyncNode(CHECK, [], { cwd: g.T }).stdout), 'the job must pass the base ref (the branch the PR targets), as yad-product-checks.yml does');
+    assert.equal(fixOf(spawnSyncNode(CHECK, [], { cwd: g.T }).stdout), 'the job must pass the base ref (the branch the PR targets), as yad-product-checks.yml (GitHub) and yad-product-checks.gitlab-ci.yml (GitLab) do');
     // Another spelling of either folder. Written into git's index, not the disk: a Mac's disk would put
     // `.SDLC/x.json` in the real `.sdlc/`.
     for (const [file, dir] of [['.sdlc/Members/github-alice.json', '.sdlc/members/'], ['.SDLC/x.json', '.sdlc/']]) {
@@ -713,6 +713,7 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     for (const [files, fix] of [
       [{ '.sdlc/product.json': { git_url: 'git@github.com:acme/product.git' } }, 'set "platform" ("github" or "gitlab") in .sdlc/product.json'],
       [{ '.sdlc/product.json': '{' }, '.sdlc/product.json is not valid JSON or not an object: fix it, and set "platform" ("github" or "gitlab") in it'],
+      [{ '.sdlc/product.json': '[]' }, '.sdlc/product.json is not valid JSON or not an object: fix it, and set "platform" ("github" or "gitlab") in it'],
       [{ '.sdlc/product.json': null, '.sdlc/hub.json': { git_url: 'x' } }, 'set "platform" ("github" or "gitlab") in .sdlc/hub.json'],
       [{ '.sdlc/product.json': null }, 'there is no .sdlc/product.json: run yad setup in the Product, or write the file with "platform" ("github" or "gitlab")'],
     ]) {
@@ -734,8 +735,20 @@ test('E131 member-check: each failure says what to change (#381)', () => {
     g.attribute(sha, 'alice');
     const dup = g.check(as('alice')).out.split('\n');
     // The clash is with a file named other than github-<login>.json, which yad member remove cannot reach.
-    assert.equal(fixOf(dup.find((l) => l.includes('the account github:github.com:alice is in'))), 'remove .sdlc/members/alice.json (git rm) in a pull request of its own: only github-<login>.json files are member files', dup.join('\n'));
+    assert.equal(fixOf(dup.find((l) => l.includes('the account github:github.com:alice is in'))), 'git rm .sdlc/members/alice.json (any pull request may delete a member file). Only github-<login>.json files are member files', dup.join('\n'));
     assert.equal(fixOf(dup.find((l) => l.includes('one email is in'))), 'remove it from the file it does not belong in (that file\'s own person runs yad member add again, which keeps only the emails their account has verified), or remove a stale file (yad member remove <login> --reason "<why>"; git rm one not named github-<login>.json)');
+    // The misnamed file is this PR's own: both lines say to drop it from this PR, never a PR of its own.
+    git(g.T, 'checkout', '-q', 'main');
+    git(g.T, 'rm', '-q', `${M.MEMBERS_DIR}/alice.json`);
+    put(path.join(g.T, FILE('alice')), rec('alice', []));
+    git(g.T, 'add', '-A');
+    git(g.T, 'commit', '-q', '-m', 'alice, well named');
+    git(g.T, 'checkout', '-q', 'pr');
+    git(g.T, 'reset', '-q', '--hard', 'main');
+    g.commitAs('alice@work.com', { [`${M.MEMBERS_DIR}/alice.json`]: rec('alice', []) });
+    const added = g.check(as('alice')).out.split('\n');
+    assert.match(fixOf(added.join('\n')), /^drop this file from the PR, /, added.join('\n'));
+    assert.equal(fixOf(added.find((l) => l.includes('the account github:github.com:alice is in'))), 'drop .sdlc/members/alice.json from this pull request. Only github-<login>.json files are member files', added.join('\n'));
     // A base that shares no history: git cannot list the changes.
     git(g.T, 'checkout', '-q', '--orphan', 'alone');
     git(g.T, 'commit', '-q', '-m', 'unrelated');

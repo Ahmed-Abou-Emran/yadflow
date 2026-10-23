@@ -68,7 +68,7 @@ const productHost = hostOf(settings?.git_url) || hostOf(git('remote', 'get-url',
 const onProduct = (a) => a?.platform === platform && String(a?.host || '').toLowerCase() === productHost;
 
 const base = process.argv[2];
-if (!base) { say('FAIL [member-check]: usage: node checks/member-check.mjs <base-ref> — the job must pass the base ref (the branch the PR targets), as yad-product-checks.yml does'); process.exit(1); }
+if (!base) { say('FAIL [member-check]: usage: node checks/member-check.mjs <base-ref> — the job must pass the base ref (the branch the PR targets), as yad-product-checks.yml (GitHub) and yad-product-checks.gitlab-ci.yml (GitLab) do'); process.exit(1); }
 if (!git('rev-parse', '--verify', '-q', `${base}^{commit}`).ok) { say(`FAIL [member-check]: cannot resolve the base ref ${base} — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: "0")`); process.exit(1); }
 
 // Every path the PR touches, with its status. NUL-separated, no renames (a rename is a delete plus an add,
@@ -101,7 +101,7 @@ for (const line of tree) {
   const [meta, p] = line.split('\t');
   if (!meta.startsWith('100644 ') && !meta.startsWith('100755 ')) fail(`${p} is not a plain file (a link?), and a member file is never read through one — replace it with the file itself (yad member add writes it), or delete it`);
   const k = fold(p);
-  if (folded.has(k)) fail(`${p} and ${folded.get(k)} are one file on macOS and Windows — keep one: git rm the other`);
+  if (folded.has(k)) fail(`${p} and ${folded.get(k)} are one file on macOS and Windows — keep the one named in lower case, as yad member add writes it: git rm the other`);
   folded.set(k, p);
 }
 if (rc) process.exit(rc);
@@ -111,7 +111,7 @@ if (!changed.length) { say('PASS [member-check]: no member file changed'); proce
 // Where to set it: the file the gate read, or the one `yad setup` writes when there is none (review 1).
 if (!platform) {
   const fix = !settingsFile ? 'there is no .sdlc/product.json: run yad setup in the Product, or write the file with "platform" ("github" or "gitlab")'
-    : !settings ? `${settingsFile} is not valid JSON or not an object: fix it, and set "platform" ("github" or "gitlab") in it`
+    : !settings || typeof settings !== 'object' || Array.isArray(settings) ? `${settingsFile} is not valid JSON or not an object: fix it, and set "platform" ("github" or "gitlab") in it`
       : `set "platform" ("github" or "gitlab") in ${settingsFile}`;
   say(`FAIL [member-check]: member files changed, but the Product names no platform, so nothing can be proven — ${fix}`);
   process.exit(1);
@@ -225,10 +225,18 @@ for (const p of files) {
 // it removes the well-named one (review 1).
 const named = (p) => new RegExp(`^${platform}-[^/]+\\.json$`).test(p.slice(DIR.length));
 const STALE = `remove a stale file (yad member remove <login> --reason "<why>"; git rm one not named ${platform}-<login>.json)`;
+// A misnamed file this PR adds or changes is dropped from it; one already on the base is removed with git rm,
+// in any PR (a deletion always passes) (review 3).
+const mine = new Set(changed.filter((c) => c.status !== 'D').map((c) => c.path));
 for (const [k, list] of accounts) {
   if (list.length < 2) continue;
   const odd = list.filter((p) => !named(p));
-  fail(`the account ${k} is in ${list.join(' and ')}, and one account belongs to one member — ${odd.length ? `remove ${odd.join(' and ')} (git rm) in a pull request of its own: only ${platform}-<login>.json files are member files` : STALE}`);
+  const here = odd.filter((p) => mine.has(p));
+  const there = odd.filter((p) => !mine.has(p));
+  const fix = [...(here.length ? [`drop ${here.join(' and ')} from this pull request`] : []), ...(there.length ? [`git rm ${there.join(' and ')} (any pull request may delete a member file)`] : [])];
+  // `STALE` only if no file is misnamed: two well-named files with one key are twins, refused above, so it
+  // is a guard, not a path today.
+  fail(`the account ${k} is in ${list.join(' and ')}, and one account belongs to one member — ${fix.length ? `${fix.join('; ')}. Only ${platform}-<login>.json files are member files` : STALE}`);
 }
 // On GitLab an email is never proven and never used by the count, so a shared one is not refused: refusing it
 // would let whoever listed someone's known address first block that person (review 3). The CLI pairs it
