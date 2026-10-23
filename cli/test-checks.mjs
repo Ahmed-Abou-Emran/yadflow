@@ -2316,11 +2316,27 @@ test('product-checkout: the record is read from the base, never as the PR leaves
 
 test('product-checkout: a path outside the repo, a tracked folder, or a failed clone FAILs (E120)', () => {
   const src = productSource();
-  for (const p of ['../escape', '/tmp/abs', '.', '', 'a/../../b', '.git/x']) {
+  for (const p of ['../escape', '/tmp/abs', '.', '', 'a/../../b', '.git/x', '   ', './', './.', 'a/.git', '.GIT/x']) {
     const { T, base } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}`, p) });
     const r = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
     assert.equal(r.code, 1, `${p}:\n${r.out}`);
-    assert.match(r.out, /must be a folder inside this repo/, p);
+    // It says what to change (#382). `yad check --fix` writes a missing path but keeps one that is set,
+    // and the record is read from the base, so a set path is changed and merged first.
+    if (p === '') {
+      assert.match(r.out, /names no path — run yad check --fix --push from the Product, on a machine that has this repo cloned and on its default branch; it writes path \.yad\/product to \.sdlc\/product-link\.json there\. Or set path yourself and merge that change first\.$/m, r.out);
+    } else {
+      assert.match(r.out, /must be a folder inside this repo\. Change path in \.sdlc\/product-link\.json to one, such as \.yad\/product, and merge that change first: this check reads the record from \S+, so changing it in this PR does not help\.$/m, `${p}:\n${r.out}`);
+    }
+    fs.rmSync(T, { recursive: true, force: true });
+  }
+  // A path the gate cannot read (an escape, a quote or a backslash in it) is set, so `yad check --fix` keeps it: the
+  // fix is to change it, never to run --fix again.
+  for (const p of [JSON.stringify('a\\b'), JSON.stringify('a"b'), '".yad\\/product"', '"caf\\u00e9"']) {
+    const { T, base } = renameRepo({ '.sdlc/product-link.json': `{"git_url": "file://${src}", "path": ${p}}\n` });
+    const r = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
+    assert.equal(r.code, 1, `${p}:\n${r.out}`);
+    assert.match(r.out, /names a path this check cannot read \(it is written with a JSON escape, a quote or a backslash\) — change path in \.sdlc\/product-link\.json to a plain folder such as \.yad\/product, and merge that change first: this check reads the record from \S+\.$/m, `${p}:\n${r.out}`);
+    assert.doesNotMatch(r.out, /--fix/, p);
     fs.rmSync(T, { recursive: true, force: true });
   }
   // A folder the repo tracks — on disk (review 2: it read as "already there" and passed) and not.
@@ -2329,15 +2345,42 @@ test('product-checkout: a path outside the repo, a tracked folder, or a failed c
     if (!onDisk) fs.rmSync(path.join(T, 'prod'), { recursive: true, force: true });
     const tracked = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
     assert.equal(tracked.code, 1, `${onDisk}:\n${tracked.out}`);
-    assert.match(tracked.out, /'prod' holds files this repo tracks/);
+    assert.match(tracked.out, /'prod' holds files this repo tracks — the Product cannot be checked out there\. Untrack them only if they do not belong in this repo \(git rm -r --cached -- 'prod', and add the folder to \.gitignore\), or change path in \.sdlc\/product-link\.json to an untracked folder such as \.yad\/product and merge that change first \(the record is read from \S+\)\.$/m);
+    fs.rmSync(T, { recursive: true, force: true });
+  }
+  // A git_url written with an escape: the gate reads none, so it checks nothing out and says how to fix it.
+  {
+    const { T, base } = renameRepo({ '.sdlc/product-link.json': '{"git_url": "https:\\/\\/example.com\\/org\\/p.git", "path": ".yad/product"}\n' });
+    const e = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
+    assert.equal(e.code, 0, e.out);
+    assert.match(e.out, /names a git_url this check cannot read \(it is written with a JSON escape, a quote or a backslash\) — the Product is not checked out\.\n {2}Write git_url in \.sdlc\/product-link\.json without escapes, and merge that change first\./);
+    assert.ok(!fs.existsSync(path.join(T, '.yad/product')), e.out);
+    // Without a token too: the url is the thing to fix first.
+    const n = runCheckout(T, [base], {});
+    assert.equal(n.code, 0, n.out);
+    assert.match(n.out, /names a git_url this check cannot read/);
+    fs.rmSync(T, { recursive: true, force: true });
+  }
+  // A quote in a tracked path is written the shell's way in the command to paste.
+  {
+    const { T, base } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}`, "it's"), "it's/x.txt": 'tracked\n' });
+    const q = runCheckout(T, [base], { YAD_PRODUCT_TOKEN: 't' });
+    assert.equal(q.code, 1, q.out);
+    assert.ok(q.out.includes("(git rm -r --cached -- 'it'\\''s', and add the folder to .gitignore)"), q.out);
     fs.rmSync(T, { recursive: true, force: true });
   }
   // A plain http url: the token is not sent over it.
   const { T: H, base: bh } = renameRepo({ '.sdlc/product-link.json': recordFor('http://example.com/org/product.git', '.yad/product') });
   const http = runCheckout(H, [bh], { YAD_PRODUCT_TOKEN: 't' });
   assert.equal(http.code, 1, http.out);
-  assert.match(http.out, /the token is not sent over plain http/);
+  assert.match(http.out, /the token is not sent over plain http\. Set the Product's git_url to the https url, then run yad check --fix --push from the Product, on a machine that has this repo cloned and on its default branch; it rewrites the record there\.$/m);
   fs.rmSync(H, { recursive: true, force: true });
+  // A url git cannot clone over https says how to fix it (#382): in the Product, then --fix --push.
+  const { T: F, base: bf } = renameRepo({ '.sdlc/product-link.json': recordFor('ftp://example.com/org/product.git', '.yad/product') });
+  const ftp = runCheckout(F, [bf], { YAD_PRODUCT_TOKEN: 't' });
+  assert.equal(ftp.code, 1, ftp.out);
+  assert.match(ftp.out, /has a git_url git cannot clone over https: 'ftp:\/\/example\.com\/org\/product\.git' — set the Product's git_url to an https:\/\/ or git@host:org\/repo form, then run yad check --fix --push from the Product, on a machine that has this repo cloned and on its default branch; it rewrites the record there\.$/m);
+  fs.rmSync(F, { recursive: true, force: true });
   // A symlink on the way (tracked by the PR): the clone would land where the link points (review 1).
   const { T: L, base: bl } = renameRepo({ '.sdlc/product-link.json': recordFor(`file://${src}`, '.yad/product') });
   const out = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-out-'));

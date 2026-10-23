@@ -63,30 +63,59 @@ function shippedTemplate(script) {
   return null;
 }
 
-// The record path's checks, as product-checkout.sh makes them: relative, no `..`, no `.git` part.
+// The record path's checks, as product-checkout.sh makes them: relative, no `..`, no `.git` part. A quote
+// or a backslash is refused too: the gate reads such a value as no path at all.
 function safeRecordPath(p) {
-  if (typeof p !== 'string' || !p.trim() || path.isAbsolute(p) || p.includes('\\')) return null;
+  // Only ASCII spaces count as space, as the gate's [[:space:]] does under LC_ALL=C (trim() takes NBSP too).
+  if (typeof p !== 'string' || !/[^ \t\n\v\f\r]/.test(p) || path.isAbsolute(p) || /["\\]/.test(p)) return null;
   const parts = p.split('/').filter((x) => x && x !== '.');
   if (!parts.length || parts.some((x) => x === '..' || x.toLowerCase() === '.git')) return null;
   return parts.join('/');
 }
 
+// The record on the base, read as product-checkout.sh's `field` reads it — never parsed as JSON: the raw
+// bytes (LC_ALL=C there, latin1 here) with CR and LF dropped, the last `"key": "value"` whose value holds no
+// quote and no backslash. So a value written with a JSON escape (`\/`, `\t`, `\u00e9`) reads as empty here
+// as it does in CI, and a record that does not parse, a nested key or a duplicate one reads the same in
+// both. `isSet` is the gate's own `"key": "<one character>` test. Null when the base has no record.
+function recordFields(repoRoot, base) {
+  const shown = spawnSync('git', ['show', `${base}:.sdlc/product-link.json`], { cwd: repoRoot, encoding: 'latin1' });
+  if (shown.status !== 0) return null;
+  const flat = shown.stdout.replace(/[\r\n]/g, '');
+  const field = (key) => flat.match(new RegExp(`^.*"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"([^"\\\\]*)"`, 's'))?.[1] ?? '';
+  // A NUL byte: sed reads past it, so the value loses it after the match; bash's $(…) drops it before
+  // the `isSet` test.
+  const isSet = (key) => new RegExp(`"${key}"[ \\t\\f\\v]*:[ \\t\\f\\v]*"[^"]`).test(flat.replace(/\0/g, ''));
+  return { field: (key) => Buffer.from(field(key).replace(/\0/g, ''), 'latin1').toString('utf8'), isSet };
+}
+
 // Read the record on the base and decide where the Product goes. Returns { rel, branch, record, fail? }
 // or { none: note }.
 function readRecord(repoRoot, base) {
-  const shown = git(repoRoot, ['show', `${base}:.sdlc/product-link.json`]);
-  if (!shown.ok) return { none: true };
-  let record;
-  try { record = JSON.parse(shown.stdout); } catch { record = null; }
-  const rel = safeRecordPath(record?.path);
-  if (!rel) return { fail: `.sdlc/product-link.json on ${base} names no usable path (a folder inside this repo, such as .yad/product) — CI's product-checkout fails it too when YAD_PRODUCT_TOKEN is set; run \`yad check --fix --push\` from the Product to write it again` };
+  const fields = recordFields(repoRoot, base);
+  if (!fields) return { none: true };
+  const { field, isSet } = fields;
+  const url = field('git_url');
+  const dest = field('path');
+  // No git_url it can read: CI's product-checkout clones nothing and says so before it looks at the path,
+  // so nothing is written here either, and nothing else in the record fails.
+  if (!url && isSet('git_url')) return { nothing: `.sdlc/product-link.json on ${base} names a git_url CI's product-checkout cannot read (it is written with a JSON escape, a quote or a backslash), so CI checks no Product out — write it in the record without escapes and merge that change first. Nothing is written here` };
+  if (!url) return { nothing: `.sdlc/product-link.json on ${base} names no git_url, so CI checks no Product out — nothing is written here either` };
+  const rel = safeRecordPath(dest);
+  // `yad check --fix` writes a missing path and keeps one that is set (even one of only spaces, or one
+  // written with an escape), so the fix named differs by case. It reaches only the repos cloned on that
+  // machine, on their default branch.
+  if (!rel) {
+    const ci = "CI's product-checkout fails it too when YAD_PRODUCT_TOKEN is set";
+    if (!dest && isSet('path')) return { fail: `.sdlc/product-link.json on ${base} names a path the gate cannot read (it is written with a JSON escape, a quote or a backslash) — ${ci}. Change path in it to a plain folder such as .yad/product, and merge that change first: the record is read from ${base}` };
+    if (!dest) return { fail: `.sdlc/product-link.json on ${base} names no path — ${ci}; run \`yad check --fix --push\` from the Product, on a machine that has this repo cloned and on its default branch; it writes path .yad/product to the record there. Or set path yourself and merge that change first` };
+    return { fail: `.sdlc/product-link.json on ${base} says path ${JSON.stringify(dest)}, which is not a folder inside this repo — ${ci}. Change path in it to one, such as .yad/product, and merge that change first: the record is read from ${base}, so changing it on this branch does not help` };
+  }
   // No default_branch is deliberate (cli/plan.mjs writes null when it does not know): CI then clones the
   // remote's own default branch, so placeProduct asks the Product clone's origin/HEAD for it.
-  const raw = typeof record?.default_branch === 'string' && record.default_branch ? record.default_branch : null;
+  const raw = field('default_branch') || null;
   const branch = raw === null ? null : safeBranch(raw);
   if (raw !== null && !branch) return { fail: `.sdlc/product-link.json on ${base} names a default_branch git cannot use as a branch name — run \`yad check --fix --push\` from the Product to write it again` };
-  // A record with no git_url: CI's product-checkout clones nothing, so nothing is written here either.
-  if (typeof record?.git_url !== 'string' || !record.git_url) return { nothing: `.sdlc/product-link.json on ${base} names no git_url, so CI checks no Product out — nothing is written here either` };
   // Nothing on the way may be a symlink, and nothing there may be tracked: CI's product-checkout refuses
   // both (when YAD_PRODUCT_TOKEN is set; without it, it checks nothing out).
   const parts = rel.split('/');
@@ -98,8 +127,8 @@ function readRecord(repoRoot, base) {
     if (i < parts.length && !st.isDirectory()) return { fail: `'${parts.slice(0, i).join('/')}' is a file where the Product's folder goes — move it, or point path in .sdlc/product-link.json elsewhere` };
   }
   const tracked = git(repoRoot, ['ls-files', '-z', '--', rel]);
-  if (tracked.ok && tracked.stdout) return { fail: `'${rel}' holds files this repo tracks — the Product cannot be checked out there (CI refuses it too, when YAD_PRODUCT_TOKEN is set). Point path in .sdlc/product-link.json at an untracked folder such as .yad/product` };
-  return { rel, branch, record };
+  if (tracked.ok && tracked.stdout) return { fail: `'${rel}' holds files this repo tracks — the Product cannot be checked out there (CI refuses it too, when YAD_PRODUCT_TOKEN is set). Untrack them only if they do not belong in this repo (git rm -r --cached -- '${rel.replaceAll("'", "'\\''")}', and add the folder to .gitignore), or change path in .sdlc/product-link.json to an untracked folder such as .yad/product and merge that change first (the record is read from ${base})` };
+  return { rel, branch, record: { git_url: url } };
 }
 
 // Remove a copy this run wrote: `dest` itself (it did not exist before), then each folder this run made on
@@ -311,7 +340,8 @@ export async function runChecks(dir, opts = {}) {
   }
   // Uncommitted work, but not a Product copy at the record's path (one already there gets its own note when the Product gates run).
   let recRel = null;
-  try { recRel = safeRecordPath(JSON.parse(git(repoRoot, ['show', `${base}:.sdlc/product-link.json`]).stdout)?.path); } catch { /* none */ }
+  // Read as readRecord and the gate read it, so the same folder is skipped.
+  recRel = safeRecordPath(recordFields(repoRoot, base)?.field('path') ?? '');
   const st = spawnSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], { cwd: repoRoot, encoding: 'utf8' });
   // A rename or copy is two entries, `R  new` then the old name with no status: the old one is skipped.
   const entries = (st.stdout || '').split('\0');

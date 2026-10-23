@@ -292,6 +292,105 @@ test('yad run checks: a path CI refuses fails here too, and nothing outside the 
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 
+test('yad run checks: a record CI refuses says what to change, as product-checkout does (#382)', () => {
+  const { W, backend } = workspace();
+  try {
+    const onBase = (record) => {
+      git(backend, 'checkout', '-q', 'main');
+      commitAll(backend, 'chore: change the record', { '.sdlc/product-link.json': record });
+      git(backend, 'push', '-q', 'origin', 'main');
+      git(backend, 'checkout', '-q', 'feature');
+      return yad(backend, ['run', 'checks', '--no-build']);
+    };
+    // A path that is set but outside the repo: `yad check --fix` keeps it, so it is changed and merged first.
+    let r = onBase(JSON.stringify({ git_url: 'x', path: '../elsewhere' }));
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /says path "\.\.\/elsewhere", which is not a folder inside this repo — .*\. Change path in it to one, such as \.yad\/product, and merge that change first: the record is read from origin\/main, so changing it on this branch does not help$/m);
+    // No path: `yad check --fix --push` writes one.
+    r = onBase(JSON.stringify({ git_url: 'x' }));
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /names no path — .*; run `yad check --fix --push` from the Product, on a machine that has this repo cloned and on its default branch; it writes path \.yad\/product to the record there\. Or set path yourself and merge that change first$/m);
+    // Set but not a folder (only spaces), and set but unreadable by the gate (a quote): change it.
+    r = onBase(JSON.stringify({ git_url: 'x', path: '   ' }));
+    assert.equal(r.code, 1, r.out);
+    assert.ok(r.out.includes('says path "   ", which is not a folder inside this repo'), r.out);
+    r = onBase(JSON.stringify({ git_url: 'x', path: 'a"b' }));
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /names a path the gate cannot read \(it is written with a JSON escape, a quote or a backslash\) — .*\. Change path in it to a plain folder such as \.yad\/product, and merge that change first: the record is read from origin\/main$/m);
+    // A path written with a JSON escape: the gate reads the raw text, so it cannot read this one either.
+    r = onBase('{"git_url": "x", "path": ".yad\\/product"}');
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /names a path the gate cannot read/);
+    // A git_url written with an escape: the gate reads none and checks nothing out, so nothing fails here.
+    r = onBase('{"git_url": "https:\\/\\/host\\/org\\/p.git", "path": "../elsewhere"}');
+    assert.doesNotMatch(r.out, /FAIL \[product-checkout\]/, r.out);
+    assert.match(r.out, /names a git_url CI's product-checkout cannot read \(it is written with a JSON escape, a quote or a backslash\), so CI checks no Product out — write it in the record without escapes and merge that change first\. Nothing is written here/);
+    assert.ok(!fs.existsSync(path.join(W, 'elsewhere')), r.out);
+    // An empty file, or one that does not parse with no git_url the gate can read: as in CI, a note.
+    for (const text of ['', '{"path": "../elsewhere"']) {
+      r = onBase(text);
+      assert.doesNotMatch(r.out, /FAIL \[product-checkout\]/, r.out);
+      assert.match(r.out, /names no git_url, so CI checks no Product out/);
+    }
+    // A path that is not ASCII comes back as written, and a no-break space is not a space to the gate.
+    r = onBase(JSON.stringify({ git_url: 'x', path: '../café' }));
+    assert.ok(r.out.includes('says path "../café"'), r.out);
+    r = onBase(JSON.stringify({ git_url: 'x', path: '\u00a0' }));
+    assert.doesNotMatch(r.out, /says path/, r.out);
+    assert.ok(r.out.includes('is written to \u00a0, as CI checks it out'), r.out);
+    assert.ok(!fs.existsSync(path.join(backend, '\u00a0')), 'the copy is removed after the gates');
+    // A NUL byte in the value: the gate reads past it, so the value comes back without it…
+    r = onBase('{"git_url": "x", "path": "../a\u0000b"}');
+    assert.match(r.out, /says path "\.\.\/ab"/);
+    r = onBase('{"git_url": "x", "path": ".yad/a\u0000b"}');
+    // …and one that passes the path checks reaches git with the NUL gone: the Product is written to .yad/ab.
+    assert.doesNotMatch(r.out, /ERR_INVALID_ARG_VALUE|null bytes/, r.out);
+    assert.match(r.out, /is written to \.yad\/ab, as CI checks it out/, r.out);
+    assert.ok(!fs.existsSync(path.join(backend, '.yad/ab')), 'the copy is removed after the gates');
+    // A nested key: the gate reads the last "path" in the text, wherever it sits, and so does this.
+    r = onBase('{"git_url": "x", "path": ".yad/product", "meta": {"path": "../n"}}');
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /says path "\.\.\/n", which is not a folder inside this repo/);
+    // An escaped default_branch reads as none, as in CI (which then clones the remote's default branch).
+    r = onBase('{"git_url": "x", "path": "../e", "default_branch": "ma\\/in"}');
+    assert.doesNotMatch(r.out, /default_branch git cannot use/, r.out);
+    assert.match(r.out, /says path "\.\.\/e"/);
+    // A duplicate key whose last copy is escaped: the gate reads the earlier one, and so does this.
+    r = onBase('{"git_url": "x", "path": "../a", "path": "b\\/c"}');
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /says path "\.\.\/a", which is not a folder inside this repo/);
+    // A path that is not a string: `yad check --fix` replaces it.
+    r = onBase(JSON.stringify({ git_url: 'x', path: 5 }));
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /names no path — /);
+    // A record that does not parse is read field by field, as CI reads it: its path still fails.
+    r = onBase('{"git_url": "x", "path": "../elsewhere"');
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /says path "\.\.\/elsewhere", which is not a folder inside this repo/);
+    // No git_url: CI clones nothing and says so before it reads the path, so neither fails here.
+    r = onBase(JSON.stringify({ path: '../elsewhere' }));
+    assert.doesNotMatch(r.out, /FAIL \[product-checkout\]/, r.out);
+    assert.match(r.out, /names no git_url, so CI checks no Product out/);
+    // A tracked folder: untrack it here, or move the path on the base.
+    git(backend, 'checkout', '-q', 'main');
+    commitAll(backend, 'chore: a tracked folder', { '.sdlc/product-link.json': JSON.stringify({ git_url: 'x', path: 'prod' }), 'prod/x.txt': 'x\n' });
+    git(backend, 'push', '-q', 'origin', 'main');
+    git(backend, 'checkout', '-q', 'feature');
+    git(backend, 'merge', '-q', '--no-edit', 'main');
+    r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /'prod' holds files this repo tracks — .*Untrack them only if they do not belong in this repo \(git rm -r --cached -- 'prod', and add the folder to \.gitignore\), or change path in \.sdlc\/product-link\.json to an untracked folder such as \.yad\/product and merge that change first \(the record is read from origin\/main\)$/m);
+    // A quote in the path is written the shell's way in the command to paste, as the gate writes it.
+    git(backend, 'checkout', '-q', 'main');
+    commitAll(backend, 'chore: a quoted folder', { '.sdlc/product-link.json': JSON.stringify({ git_url: 'x', path: "it's" }), "it's/x.txt": 'x\n' });
+    git(backend, 'push', '-q', 'origin', 'main');
+    git(backend, 'checkout', '-q', 'feature');
+    git(backend, 'merge', '-q', '--no-edit', 'main');
+    r = yad(backend, ['run', 'checks', '--no-build']);
+    assert.ok(r.out.includes("(git rm -r --cached -- 'it'\\''s', and add the folder to .gitignore)"), r.out);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
 test('yad run checks: an SSH signature git has no allowed-signers list for is "cannot check here", not "not signed"', { skip: spawnSync('ssh-keygen', ['-?']).error && 'needs ssh-keygen' }, () => {
   const { W, backend } = workspace();
   try {

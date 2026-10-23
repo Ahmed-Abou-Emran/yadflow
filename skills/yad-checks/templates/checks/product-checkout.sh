@@ -86,6 +86,18 @@ warn() {
   echo "WARNING [product-checkout]: $1"
   [ "${GITHUB_ACTIONS:-}" != true ] || echo "::warning title=product-checkout::$1"
 }
+# The record read whole, for the two "set, but written so field cannot read it" tests below. Matched in
+# bash (grep -q under pipefail can end the pipe early); byte by byte, as field reads it, since the script
+# runs under LC_ALL=C (above), which `yad run checks` matches.
+_raw="$(git show "${BASE}:${rec}" 2>/dev/null | tr -d '\n\r')" || _raw=""
+_is_set() { local re="\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]"; [[ "$_raw" =~ $re ]]; }
+# Before the token: a url this check cannot read is the thing to fix first, with or without a token.
+if [ -z "$url" ] && _is_set git_url; then
+  # yad check --fix compares the parsed value, so it keeps an escaped url that decodes to the same one.
+  echo "note [product-checkout]: ${rec} on ${BASE} names a git_url this check cannot read (it is written with a JSON escape, a quote or a backslash) — the Product is not checked out."
+  echo "  Write git_url in ${rec} without escapes, and merge that change first."
+  exit 0
+fi
 if [ -z "${YAD_PRODUCT_TOKEN:-}" ]; then
   # Whether this PR comes from a fork, which never gets a secret: GitHub's workflow passes YAD_PR_FORK
   # (head repo != this repo); GitLab names both projects. Outside CI nothing is known, and it is a note.
@@ -115,11 +127,38 @@ if [ -z "$url" ]; then
 fi
 # Inside the repo, and not the repo itself: CI can only place a checkout in the workspace, and the gates
 # read an UNTRACKED folder there as CI's checkout.
+_bad=false
 case "/${dest}/" in
-  //|/./|*/../*|//*|/.git/*|/.git)
-    echo "FAIL [product-checkout]: ${rec} on ${BASE} says path '${dest}' — it must be a folder inside this repo, such as .yad/product."
-    exit 1 ;;
+  //|/./|*/../*|//*|/.git/*|/.git) _bad=true ;;
 esac
+# A path of only spaces names no folder either (yad run checks refuses it too).
+case "$dest" in *[![:space:]]*) ;; *) _bad=true ;; esac
+# As yad run checks reads it: a path of only `.` parts (`./`) is the repo itself, and a `.git` part in any
+# case is the git folder on a disk that ignores case.
+_lc="$(printf '%s' "$dest" | tr '[:upper:]' '[:lower:]')"
+case "/${_lc}/" in */.git/*) _bad=true ;; esac
+_named=false
+_r="$dest"
+while [ -n "$_r" ]; do
+  _q="${_r%%/*}"
+  [ "$_q" = "$_r" ] && _r="" || _r="${_r#*/}"
+  case "$_q" in ""|.) ;; *) _named=true ;; esac
+done
+[ "$_named" = true ] || _bad=true
+if [ "$_bad" = true ]; then
+  # The record is read from the base, so a fix on the PR's branch does not count until it merges. A
+  # missing path is one `yad check --fix --push` writes; a path that is set is kept by it, so a person
+  # changes that one. `field` reads a value written with an escape, a quote or a backslash as empty:
+  # that path is set.
+  if [ -n "$dest" ]; then
+    echo "FAIL [product-checkout]: ${rec} on ${BASE} says path '${dest}' — it must be a folder inside this repo. Change path in ${rec} to one, such as .yad/product, and merge that change first: this check reads the record from ${BASE}, so changing it in this PR does not help."
+  elif _is_set path; then
+    echo "FAIL [product-checkout]: ${rec} on ${BASE} names a path this check cannot read (it is written with a JSON escape, a quote or a backslash) — change path in ${rec} to a plain folder such as .yad/product, and merge that change first: this check reads the record from ${BASE}."
+  else
+    echo "FAIL [product-checkout]: ${rec} on ${BASE} names no path — run yad check --fix --push from the Product, on a machine that has this repo cloned and on its default branch; it writes path .yad/product to ${rec} there. Or set path yourself and merge that change first."
+  fi
+  exit 1
+fi
 # And no symlink on the way (review 1): the text above is only text, and a PR can track `.yad` as a link
 # to `../elsewhere` — git clone follows it, so the clone (with the token) would land where the PR chose.
 _p=""
@@ -136,7 +175,9 @@ while [ -n "$_rest" ]; do
 done
 # Tracked first (review 2): a tracked folder is also "already there", and read that way it passed.
 if [ -n "$(git ls-files -- "$dest" 2>/dev/null | head -1)" ]; then
-  echo "FAIL [product-checkout]: '${dest}' holds files this repo tracks — the Product cannot be checked out there."
+  # The command is printed for a person to paste, so a quote in the path is written the shell's way.
+  _qd="$(printf '%s' "$dest" | sed "s/'/'\\\\''/g")"
+  echo "FAIL [product-checkout]: '${dest}' holds files this repo tracks — the Product cannot be checked out there. Untrack them only if they do not belong in this repo (git rm -r --cached -- '${_qd}', and add the folder to .gitignore), or change path in ${rec} to an untracked folder such as .yad/product and merge that change first (the record is read from ${BASE})."
   exit 1
 fi
 if [ -e "$dest" ]; then
@@ -149,8 +190,8 @@ case "$url" in
   git@*:*) _h="${url#git@}"; url="https://${_h%%:*}/${_h#*:}" ;;
   ssh://git@*) _h="${url#ssh://git@}"; _hp="${_h%%/*}"; url="https://${_hp%%:*}/${_h#*/}" ;;   # an ssh port is not the https one
   https://*|file://*) ;;
-  http://*) echo "FAIL [product-checkout]: ${rec} on ${BASE} has an http:// git_url — the token is not sent over plain http. Use the https url."; exit 1 ;;
-  *) echo "FAIL [product-checkout]: ${rec} on ${BASE} has a git_url git cannot clone over https: '${url}'."; exit 1 ;;
+  http://*) echo "FAIL [product-checkout]: ${rec} on ${BASE} has an http:// git_url — the token is not sent over plain http. Set the Product's git_url to the https url, then run yad check --fix --push from the Product, on a machine that has this repo cloned and on its default branch; it rewrites the record there."; exit 1 ;;
+  *) echo "FAIL [product-checkout]: ${rec} on ${BASE} has a git_url git cannot clone over https: '${url}' — set the Product's git_url to an https:// or git@host:org/repo form, then run yad check --fix --push from the Product, on a machine that has this repo cloned and on its default branch; it rewrites the record there."; exit 1 ;;
 esac
 # --- the token's expiry (#345) ---
 # One call to the Product host's API with the token: GitHub answers a personal access token's expiry in

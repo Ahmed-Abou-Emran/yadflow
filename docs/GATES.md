@@ -616,7 +616,9 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
 - No `YAD_PRODUCT_TOKEN` secret (GitHub) or CI/CD variable (GitLab). On a pull request from a fork this
   is a note, because a fork never gets secrets. On any other pull request it is a `WARNING`, and the
   Product-reading gates skip their Product checks.
-- The record has no `git_url`, or the folder already exists: a note.
+- The record has no `git_url`, or the folder already exists: a note. So is a `git_url` written with a JSON
+  escape (`\/`), a quote or a backslash, which this check cannot read: write it without escapes and merge
+  that first (`yad check --fix` keeps it when it decodes to the Product's own url).
 - Problems reading the token's expiry date are notes or warnings. A warning also appears 30 days before
   the token expires.
 
@@ -625,10 +627,12 @@ with `GITLAB_TOKEN` or `SDLC_API_TOKEN`).
 
 | Message (after `FAIL [product-checkout]: …`) | What to change |
 |---|---|
-| `<record> on <base> says path '<path>' — it must be a folder inside this repo, such as .yad/product.` | Fix `path` by running `yad check --fix --push` from the Product, or in its own pull request. |
+| `<record> on <base> says path '<path>' — it must be a folder inside this repo. Change path in <record> to one, such as .yad/product, and merge that change first …` | Change `path` in `.sdlc/product-link.json` to a folder inside the repo, such as `.yad/product`, in its own pull request, and merge it first. The record is read from the base, so changing it in the failing pull request does not help. `yad check --fix --push` does not help either: it keeps a `path` that is set. |
+| `<record> on <base> names no path — run yad check --fix --push from the Product …` | Run `yad check --fix --push` from the Product, on a machine that has this repo cloned and on its default branch. It writes `path` `.yad/product` to the record there. Or set `path` yourself, in its own pull request. |
+| `<record> on <base> names a path this check cannot read (it is written with a JSON escape, a quote or a backslash) …` | Change `path` to a plain folder such as `.yad/product`, in its own pull request, and merge it first. `yad check --fix` keeps it as it is. |
 | `'<path>' is a symlink … Point path in <record> at a real folder.` | As it says. |
-| `'<path>' holds files this repo tracks — the Product cannot be checked out there.` | Change `path` to an untracked folder such as `.yad/product`, in its own pull request. |
-| `<record> on <base> has an http:// git_url … Use the https url.` / `… a git_url git cannot clone over https: '<url>'.` | Set the Product's `git_url` to an `https://` or `git@host:org/repo` form, then run `yad check --fix --push` from the Product. |
+| `'<path>' holds files this repo tracks — the Product cannot be checked out there. Untrack them only if they do not belong in this repo …, or change path …` | If those files do not belong in the repo, untrack them in this pull request (`git rm -r --cached -- '<path>'`, add the folder to `.gitignore`, then commit). This deletes them from the repo for everyone once it merges. Otherwise change `path` to an untracked folder such as `.yad/product` in its own pull request, and merge it first: the record is read from the base. |
+| `<record> on <base> has an http:// git_url … Set the Product's git_url to the https url …` / `… a git_url git cannot clone over https: '<url>' — set the Product's git_url to an https:// or git@host:org/repo form …` | Set the Product's `git_url` to an `https://` or `git@host:org/repo` form, then run `yad check --fix --push` from the Product, on a machine that has this repo cloned and on its default branch. It rewrites the record there. |
 | `could not clone the Product from <url> (<branch>) into '<path>'.` | The next line says why. A rejected token (HTTP 401) has expired or been revoked: renew `YAD_PRODUCT_TOKEN`. Otherwise check that the token can read that repo, and that `git_url` and `default_branch` are right. |
 
 `yad doctor` also checks, by name only, that `YAD_PRODUCT_TOKEN` is set where CI can read it.
