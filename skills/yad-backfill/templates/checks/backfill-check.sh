@@ -92,7 +92,7 @@ elif [ "$_mt" = 1 ]; then
   echo "FAIL [backfill]: this branch does not merge cleanly into ${BASE}, so what it changes there cannot be read. Merge ${BASE} into the branch, resolve the conflicts, then push again."
   exit 1
 elif [ "$_mt" != 129 ]; then
-  echo "FAIL [backfill]: git could not build the merge of this branch into ${BASE} (git merge-tree exit ${_mt}) — check the code out with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
+  echo "FAIL [backfill]: git could not build the merge of this branch into ${BASE} (git merge-tree exit ${_mt}) — check the code out again, fresh and with full history (GitHub: actions/checkout with fetch-depth: 0; GitLab: GIT_DEPTH: \"0\"), then run again."
   exit 1
 elif [ "$_mb_count" != 1 ]; then
   echo "FAIL [backfill]: '${BASE}' and HEAD have ${_mb_count} merge bases, and this git (older than 2.38) cannot build the merge into ${BASE}. Merge ${BASE} into the branch, then push again."
