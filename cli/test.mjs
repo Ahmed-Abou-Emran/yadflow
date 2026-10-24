@@ -2765,6 +2765,15 @@ test('buildNextForRepo: an empty/missing steps array is NOT shipped (it is unkno
   assert.equal(noSteps.shipped, false);
 });
 
+test('buildNextForRepo: a null or a bare word among the steps is skipped, never a crash (#349 follow-up)', () => {
+  const r = buildNextForRepo({ currentStep: 'implement', steps: [null, 'x', 7, { id: 'spec', status: 'done' }, { id: 'tasks', status: 'done' }, { id: 'implement', status: 'in_progress' }] });
+  assert.deepEqual([r.step, r.status, r.shipped], ['implement', 'in_progress', false]);
+  assert.equal(buildNextForRepo({ currentStep: 'spec', steps: [null] }).status, 'unknown', 'no real step: not started, never shipped');
+  // A whole lane that is not an object reads the same way, through `yad next`'s reader too (review 1).
+  assert.equal(buildNextForRepo(null).status, 'unknown');
+  assert.deepEqual(buildNextActions([{ story: 'EP-x-S01', repos: { api: null } }])[0].repos.map((r) => [r.repo, r.status]), [['api', 'unknown']]);
+});
+
 test('buildNextActions: a build-state with no repos contributes no lanes (not a false all-shipped)', () => {
   const out = buildNextActions([{ story: 'EP-x-S03' }]); // repos missing
   assert.equal(out.length, 1);

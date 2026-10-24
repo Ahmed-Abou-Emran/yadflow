@@ -884,3 +884,20 @@ test('#349 review 2: an unreadable registry is "unknown, not none" for the code 
     assert.ok(St.briefLines(m).includes('  platform not read for the registered repos — PR/MR facts there are unknown, not none'));
   } finally { fs.rmSync(P, { recursive: true, force: true }); }
 });
+
+test('#349 follow-up: a git worktree of a registered repo is that repo, on the worktree\'s own branch', async () => {
+  const { P, T, api } = await statusFixture();
+  try {
+    put(path.join(T, 'epics/EP-pay/.sdlc/build-state/EP-pay-S01.json'), { story: 'EP-pay-S01', repos: { api: { currentStep: 'implement', steps: [{ id: 'spec', status: 'done' }, { id: 'tasks', status: 'done' }, { id: 'implement', status: 'in_progress' }] } } });
+    // Where an agent's worktree usually sits: inside the repo's own folder.
+    const wt = path.join(api, '.claude/worktrees/t01');
+    git(api, ['worktree', 'add', '-q', '-b', 'feat/EP-pay-S01-T01-x', wt]);
+    const h = St.buildStatus(T, { cwd: wt, fetch: false }).here;
+    assert.deepEqual([h.repo, h.story, h.task, h.step], ['api', 'EP-pay-S01', 'T01', 'implement']);
+    assert.equal(St.buildStatus(T, { cwd: api, fetch: false }).here.why, 'not a task branch', 'the main checkout keeps its own branch');
+    // The CLI finds the Product from inside the worktree, too.
+    const r = spawnSync(process.execPath, [YAD, 'status', '--no-fetch', '--json'], { cwd: wt, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(JSON.parse(r.stdout).here.repo, 'api');
+  } finally { fs.rmSync(P, { recursive: true, force: true }); }
+});

@@ -61,9 +61,18 @@ const real = (p) => { try { return fs.realpathSync(p); } catch { return path.res
 
 // The registered repo this checkout is. A monorepo registers the Product's own folder (`path: "."`), which
 // `registryEntryFor` never answers (it is a code-repo command's guard), so that one case is matched here.
+// So is a git worktree of a registered repo (agents often work in one): `registryEntryFor` refuses it on
+// purpose — a command that WRITES must not swap one checkout for another — but this view only reads, and
+// the branch it reports is the worktree's own. The worktree's main checkout names the repo.
 function repoHere(root, cwd, top) {
   const hit = registryEntryFor(root, cwd)?.meta?.name;
   if (typeof hit === 'string') return hit;
+  const common = run('git', ['rev-parse', '--git-common-dir'], { cwd });
+  const gitDir = common.ok && common.stdout ? path.resolve(cwd, common.stdout) : null;
+  if (gitDir && path.basename(gitDir) === '.git' && real(path.dirname(gitDir)) !== real(top)) {
+    const main = registryEntryFor(root, path.dirname(gitDir))?.meta?.name;
+    if (typeof main === 'string') return main;
+  }
   if (real(top) !== real(root)) return null;
   const own = readRegistry(root).registry.repos.find((r) => typeof r?.path === 'string' && typeof r.name === 'string' && real(path.resolve(root, r.path)) === real(root));
   return own?.name ?? null;
