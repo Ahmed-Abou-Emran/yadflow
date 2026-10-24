@@ -554,8 +554,9 @@ reminder, never a gate.
 ### Reopening an approved step (`yad gate reopen`, #322)
 
 `yad gate reopen EP-<slug> <step> --reason "<why>"` is the one writer that moves a `done` Shape step back.
-It is allowed only before Build starts: no Build lane has work in it (`laneStarted`) and nothing has
-shipped. The step goes to `in_progress`, and every later step that had started (`in_progress`,
+It is allowed only before Build begins: no story has a Build lane (`yad build start` writes one; a lane
+skipped whole does not count) and nothing has shipped. The parallel `test-cases` track may be reopened while
+Build runs, and keeps `currentStep` at `ready-for-build`. The step goes to `in_progress`, and every later step that had started (`in_progress`,
 `in_review`, `done`) goes to `todo`. Each loses its `closed` record. A later step that is skipped,
 deferred, `satisfied` or blocked keeps its state. `currentStep` becomes the step.
 
@@ -576,7 +577,8 @@ What it undid is kept in one list on the epic, which only grows:
 | Rule | Detail |
 |------|--------|
 | Revoked approvals | MOVED out of `approvals.json` into `revokedApprovals`, unchanged. Every reader counts only the records in `approvals.json`, so no yad version counts them, and the platform sync cannot write them back |
-| Retired review PRs | MOVED out of `product-prs.json` / `hub-prs.json` into `retiredPrs`. `yad gate sync` and `yad gate ci` never pass a gate on a retired PR/MR, or on an older one for the same artifact (numbers only grow in one repo). A fresh `yad gate open` has a higher number |
+| In order again | until the reopened step's review passes, every later review is held: `yad gate open` refuses it, and `gate sync` / `gate ci` / `gate advance` never pass it (`heldByReopen`) |
+| Retired review PRs | MOVED out of `product-prs.json` / `hub-prs.json` into `retiredPrs`, with the newest PR/MR found on each later review branch (one the ledger never recorded). `yad gate sync` and `yad gate ci` never pass a gate on a retired PR/MR, or on an older one for the same artifact (numbers only grow in one repo). A fresh `yad gate open` has a higher number |
 | `contract-lock.json` | kept; its hash at the reopen is recorded. The new architecture review re-locks it |
 | Comments and `reviews/` | kept as they are; the new review's comments continue from the next round |
 | No shape change | an older yad ignores `reopens`; nothing it reads changes meaning |

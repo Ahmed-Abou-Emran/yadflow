@@ -23,7 +23,7 @@ import { isVerifiedLedger } from './manifest.mjs';
 import {
   epicRel, epicRoot, loadLedger, findReviewStep, artifactHash, acceptedHashes, gatePredicate, printable, advanceState,
   gateRuleSum, gateRuleEnforced, legacyLogins, canonicalApprovals, canonicalComments, optionalStepsFor, writeState,
-  isPassed, stepStatus, readFrontmatter,
+  isPassed, stepStatus, readFrontmatter, heldByReopen,
 } from './epic-state.mjs';
 import { activePeople, activeSum, activeBasis } from './people.mjs';
 import { actorName } from './platform.mjs';
@@ -270,6 +270,14 @@ export async function gateAdvance(root, { epic, artifact, today, headCount = nul
     return;
   }
   if (refuseUnopened(g, { epic, artifact, verb: 'advance' })) return;
+  // After a reopen the gates pass again in order (#322).
+  const held = heldByReopen(ledger.state, step.id);
+  if (held) {
+    fail(`${step.id} waits for ${held}, which \`yad gate reopen\` walked back — nothing is written`);
+    hand(`pass ${held} first; the gates from a reopened step pass again in order`);
+    process.exitCode = 1;
+    return { epic, advanced: false, currentStep: ledger.state.currentStep ?? null, gate: null };
+  }
   const people = countPeople(root, g.productConfig, today, headCount);
   log(`  ${c.dim(activeSum(people))}`);
   note(c.dim(activeBasis(people)));
