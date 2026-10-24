@@ -57,9 +57,11 @@ staged, split it into separate commits rather than passing `--force`.
 ### Step 2 — Commit by convention
 Run the CLI from the repo root:
 ```
-yad commit --type <type> -m "<subject>" [--ai <id>] [--task <id>] [--contract-change] [--manual --reason "<why>"] [--dry-run]
+yad commit --type <type> -m "<subject>" [--body "<text>"] [--ai <id>] [--task <id>] [--contract-change] [--manual --reason "<why>"] [--dry-run]
 ```
-Use `--dry-run` first to preview the exact message (subject + trailer block) without committing. The
+`--body` adds a body between the subject and the trailers, as its own paragraph — for example the
+`Decisions:` paragraph `yad-implement` writes (#357). `yad ship` takes no body; commit first, then run
+`yad open-pr`. Use `--dry-run` first to preview the exact message (subject + trailer block) without committing. The
 CLI validates the type, rejects a trailing period, and emits the trailers in the fixed order.
 
 ### Step 3 — Stop (no auto-advance)

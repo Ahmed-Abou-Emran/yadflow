@@ -232,8 +232,8 @@ for it" table is in the [team guide §11](../TEAM-GUIDE.md).
 - **`yad-run`** — The Phase 4 orchestrator. Drives a story's Build loop (spec → tasks → implement →
   checks) on each step's advance dial, recording every run in the trust log. A clean `checks` pass on
   auto advances to engineer-review; any failure, scope overrun, or contract-surface touch HALTS for a
-  human, and so does a skill that stopped to ask its human-only questions (no trust entry then: nothing
-  was produced). Sets a step's dial through `yad dial` (nothing to earn since E34) and flips the kill switch
+  human, and so does a skill that stopped to ask its human-only questions (no trust entry then: the
+  step's output is not finished). Sets a step's dial through `yad dial` (nothing to earn since E34) and flips the kill switch
   through `yad kill` / `yad unkill`. It
   never drives a lane skipped whole with `yad skip <epic> <story> --repo <name>` (E39), and never marks a
   single Build step skipped.

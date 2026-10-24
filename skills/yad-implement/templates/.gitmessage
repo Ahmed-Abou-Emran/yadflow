@@ -3,6 +3,9 @@
 #
 # <body — what changed and why, 1–3 lines. Wrap at ~72 cols.>
 #
+# Decisions:                 # ONLY if the skill asked human-only questions first (#357) —
+# - Q: <question> → A: <answer>    #   its own paragraph, above the trailers
+#
 # --- Trailers (keep them in ONE contiguous block below, no blank lines between) ---
 # Task: is REQUIRED — it anchors the spec-link gate. Order: Task -> Contract-Change -> Co-Authored-By.
 Task: <EP-slug-S0N-T0N>

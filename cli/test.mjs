@@ -9600,9 +9600,12 @@ test('yad-spec and yad-implement ask the human-only questions first, in one batc
   // One rule in two skills: a change to one copy alone fails here.
   assert.equal(section(impl), section(spec));
   const batch = section(spec);
-  for (const kind of ['Security trade-offs', 'Secrets and tokens', 'Contract changes']) assert.ok(batch.includes(`**${kind}.**`), kind);
+  for (const kind of ['Security trade-offs', 'Secrets and tokens', 'Contract changes', 'Changes that cannot be undone']) assert.ok(batch.includes(`**${kind}.**`), kind);
   assert.match(batch, /ask\s+them all in \*\*one\*\* message/);
   assert.match(batch, /Write \*\*no\*\* trust entry/);
+  // One halt for every stop to ask, and the contract item keeps the STOP no answer can lift (#357 review 1).
+  assert.match(batch, /a stop to ask — the first batch or a later one — is its\s+own halt/);
+  assert.match(batch, /end the step with this skill's own contract STOP/);
   // The batch comes before the long work on both Spec Kit paths, and the answers land in one place.
   assert.ok(spec.includes('`/speckit.specify` → (ask the batch) → `/speckit.clarify`'));
   assert.match(spec, /draft `spec\.md` first, ask the batch, record the answers in it, and only then\s+write the rest/);
@@ -9610,8 +9613,10 @@ test('yad-spec and yad-implement ask the human-only questions first, in one batc
   // yad-implement reads those answers first, and keeps its own outside the declared files.
   assert.match(impl, /Read `spec\.md`'s `## Clarifications` first/);
   assert.match(impl, /in a `Decisions:` paragraph above the trailer\s+block/);
+  assert.match(impl, /pass the body with `yad commit --body`/);
   // The orchestrator halts on the questions without grading a run that produced nothing.
-  assert.match(read('skills/yad-run/SKILL.md'), /record no trust\s+entry/);
+  assert.match(read('skills/yad-run/SKILL.md'), /record no trust entry/);
+  assert.match(read('skills/yad-run/SKILL.md'), /skip steps 3 and 4/);
   assert.ok(read('skills/yad-run/references/run-loop.md').includes('--reason "waiting on human decisions: <the questions, short>"'));
 });
 

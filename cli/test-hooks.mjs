@@ -1024,6 +1024,23 @@ test('E49: yad ship refuses --manual and --reason rather than ignoring them', ()
   }
 });
 
+test('#357: yad commit --body writes its own paragraph above the trailers; yad ship refuses --body rather than dropping it', () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'yad-body-'));
+  try {
+    const env = { ...process.env, NO_COLOR: '1' };
+    for (const a of [['init', '-q'], ['config', 'user.email', 'a@b.c'], ['config', 'user.name', 'x']]) spawnSync('git', a, { cwd: T });
+    fs.writeFileSync(path.join(T, 'a.txt'), 'hi');
+    spawnSync('git', ['add', '-A'], { cwd: T });
+    const body = 'Decisions:\n- Q: who may read the order? → A: its owner only';
+    const r = spawnSync(process.execPath, [YAD, 'commit', '--type', 'feat', '-m', 'add the order read', '--task', 'EP-x-S01-T01', '--body', body, '--dry-run', '--json'], { cwd: T, encoding: 'utf8', env });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(JSON.parse(r.stdout).message, `feat: add the order read\n\n${body}\n\nTask: EP-x-S01-T01`);
+    const s = spawnSync(process.execPath, [YAD, 'ship', '--type', 'feat', '-m', 'x', '--body', body], { cwd: T, encoding: 'utf8', env });
+    assert.notEqual(s.status, 0);
+    assert.match(s.stdout + s.stderr, /yad ship takes no --body/);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
 test('E48 review 2: doctor says a hook without its execute bit is skipped by git — not "out of date", and no backup promised', { skip: IS_WINDOWS && 'no execute bit on Windows' }, async () => {
   const { collectDoctor } = await import('./doctor.mjs');
   const { gitHookActions, gitHookState } = await import('./plan.mjs');

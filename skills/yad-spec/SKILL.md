@@ -82,8 +82,10 @@ them all in **one** message.
 - **Secrets and tokens.** Which secret or token the work needs, who creates it, where it is kept,
   and what it may access.
 - **Contract changes.** The work needs the shared cross-repo surface (the locked `contract.md`) to
-  change. Nobody decides this here: it goes back to the architecture gate, or, on a short lane, to a
-  new epic on `classic`. Raise it in the batch so the person learns it now, not halfway through.
+  change. Nobody decides this here, and no answer lets the step go on: it goes back to the
+  architecture gate, or, on a short lane, to a new epic on `classic`. Name it in the batch so the
+  person learns it now, not halfway through. Then end the step with this skill's own contract STOP
+  (`yad-spec` Step 3, `yad-implement` Step 5), and its `contract touch` halt under `yad-run`.
 - **Changes that cannot be undone.** Deleting data, or a data migration with no way back.
 
 **How to ask:**
@@ -95,11 +97,13 @@ them all in **one** message.
 3. If nothing is open, say "no human-only decisions or open questions" and go on.
 4. If a new one still turns up later, stop, collect any others that are open at that point, and ask
    them together. In the report, say the first batch missed it.
-5. **Run by the orchestrator (`yad-run`):** open questions are the loop's `ambiguous` halt. Run
-   `yad build step <story> --repo <repo> <step> blocked --reason "waiting on human decisions: <the
-   questions, short>"` (add `--task <task>` on the implement leg). Write **no** trust entry, because
-   nothing was produced to judge. Then stop. Once a person answers, the step runs again with the
-   answers in hand.
+5. **Run by the orchestrator (`yad-run`):** a stop to ask — the first batch or a later one — is its
+   own halt, **waiting on human decisions**. Run `yad build step <story> --repo <repo> <step> blocked
+   --reason "waiting on human decisions: <the questions, short>"` (add `--task <task>` on the
+   implement leg). Write **no** trust entry: the step's output is not finished, and files already
+   drafted (such as `spec.md`) are not output to judge. Then stop. Once a person answers, the step
+   runs again and goes on from what is already drafted. That is a resume, not a re-run, so it is not
+   graded `rejected` for being run again.
 
 <!-- end: Ask the human-only questions first -->
 
@@ -159,7 +163,8 @@ as `- Q: <question> → A: <answer>` lines below a `### Session <YYYY-MM-DD>` he
 `/speckit.specify` → (ask the batch) → `/speckit.clarify` → `/speckit.plan` → `/speckit.analyze` →
 `/speckit.checklist` → `/speckit.tasks`. **Pin the feature to `<story>`** (do not accept an
 auto-slug). Seed `specify` from the story's acceptance criteria and the contract elements from Step 3.
-Answer `/speckit.clarify`'s questions from the batch answers. A question it asks that the batch did not
+On a resume after a question halt, keep the `spec.md` already drafted: do not run `/speckit.specify`
+again. Answer `/speckit.clarify`'s questions from the batch answers. A question it asks that the batch did not
 cover is a late one: ask all such questions together, as rule 4 of the batch says.
 `/speckit.constitution` and `/speckit.implement` are **out of scope for Step A** (implement is Step B).
 
@@ -193,7 +198,8 @@ verdict is **anchored to the human who accepts the spec**, never self-graded:
 - the human approves the generated `specs/<story>/` untouched → `approved-unchanged`;
 - the human edits the spec/plan/tasks before accepting → `approved-with-edits` (signal
   `human_edited_spec: true`);
-- the spec is rejected or the ceremony re-run → `rejected`.
+- the spec is rejected or the ceremony re-run → `rejected` (a resume after a question halt, #357, is
+  not a re-run).
 `yad-run` records a provisional entry when the spec is generated; this acceptance finalizes it (same
 pattern as the engineer review finalizing `implement` at `yad-engineer-review`). Finalize it with
 `yad build trust <story> --repo <repo> spec --uid <uid> --verdict <v>` — the `uid` is `closed.run` on the

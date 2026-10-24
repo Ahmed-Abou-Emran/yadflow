@@ -100,15 +100,17 @@ Walk the steps for `repo` starting at `from`/`currentStep`. For each step:
    `uid` and prints it (`ranBy: machine` if this advance was automated, else `human`) — see
    `references/run-loop.md` for the derivation. Do this for *every* step run, pass or fail; the log is the
    evidence base. Keep the `uid`: the closing record names it. **One exception (#357):** when the
-   step's skill stopped to ask its human-only questions before writing anything, record no trust
-   entry — there is nothing to judge. Halt as step 4 says, with the reason
-   `waiting on human decisions: <the questions, short>`.
+   step's skill stopped to ask its human-only questions (its first batch or a later one), the step's
+   output is not finished, and a draft is not output to judge: record no trust entry. Run
+   `yad build step <story> --repo <repo> <step> blocked [--task <task>] --reason "waiting on human
+   decisions: <the questions, short>"`, run `checkpoint`, and stop — skip steps 3 and 4.
 3. **Ask the engine for the effective dial:** `yad dial <epic> <story> --repo <repo> <step> --json`, and use
    its `advance`. It is `human` whenever the step is a gate (`why: gate` — a read never refuses one), the kill switch
    is on, or `.sdlc/automation.json` cannot be read (`automationError` says so) — so never work the dial out from the files yourself.
 4. **Decide:**
    - **HALT** if the step failed — any check FAIL, a scope overrun (`yad-implement` stopped on the
-     file-boundary rule), a contract-surface touch, or any ambiguity. Run
+     file-boundary rule), a contract-surface touch, or any ambiguity other than the human-only
+     questions step 2 already halted on. Run
      `yad build step <story> --repo <repo> <step> blocked --reason "<the halt cause>"` (it writes the
      step's `record`) — the trust entry step 2 recorded for this run is the `rejected` one, so record
      no second entry — **stop the loop**, and report what a human must resolve. The record is not decoration: since shape 7 a `blocked` step with nothing recorded

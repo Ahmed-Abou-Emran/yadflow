@@ -53,8 +53,10 @@ them all in **one** message.
 - **Secrets and tokens.** Which secret or token the work needs, who creates it, where it is kept,
   and what it may access.
 - **Contract changes.** The work needs the shared cross-repo surface (the locked `contract.md`) to
-  change. Nobody decides this here: it goes back to the architecture gate, or, on a short lane, to a
-  new epic on `classic`. Raise it in the batch so the person learns it now, not halfway through.
+  change. Nobody decides this here, and no answer lets the step go on: it goes back to the
+  architecture gate, or, on a short lane, to a new epic on `classic`. Name it in the batch so the
+  person learns it now, not halfway through. Then end the step with this skill's own contract STOP
+  (`yad-spec` Step 3, `yad-implement` Step 5), and its `contract touch` halt under `yad-run`.
 - **Changes that cannot be undone.** Deleting data, or a data migration with no way back.
 
 **How to ask:**
@@ -66,11 +68,13 @@ them all in **one** message.
 3. If nothing is open, say "no human-only decisions or open questions" and go on.
 4. If a new one still turns up later, stop, collect any others that are open at that point, and ask
    them together. In the report, say the first batch missed it.
-5. **Run by the orchestrator (`yad-run`):** open questions are the loop's `ambiguous` halt. Run
-   `yad build step <story> --repo <repo> <step> blocked --reason "waiting on human decisions: <the
-   questions, short>"` (add `--task <task>` on the implement leg). Write **no** trust entry, because
-   nothing was produced to judge. Then stop. Once a person answers, the step runs again with the
-   answers in hand.
+5. **Run by the orchestrator (`yad-run`):** a stop to ask — the first batch or a later one — is its
+   own halt, **waiting on human decisions**. Run `yad build step <story> --repo <repo> <step> blocked
+   --reason "waiting on human decisions: <the questions, short>"` (add `--task <task>` on the
+   implement leg). Write **no** trust entry: the step's output is not finished, and files already
+   drafted (such as `spec.md`) are not output to judge. Then stop. Once a person answers, the step
+   runs again and goes on from what is already drafted. That is a resume, not a re-run, so it is not
+   graded `rejected` for being run again.
 
 <!-- end: Ask the human-only questions first -->
 
@@ -152,7 +156,8 @@ A contract change means the diff alters the agreed cross-repo shape itself.
 
 ### Step 6 — Commit on the task branch
 Stage only the declared files. Commit with the convention: a conventional subject, a short body (with
-the `Decisions:` paragraph when Step 3 asked anything), and a
+the `Decisions:` paragraph when Step 3 asked anything — pass the body with `yad commit --body`, then
+run `yad open-pr`; `yad ship` takes no body), and a
 `Task: <story>-<task>` trailer (plus `Contract-Change: yes` if Step 5 applies). The human author owns the
 commit; **no `Co-Authored-By:` footer by default** — add one only when the human explicitly asks
 (`yad commit --ai <id>` / the `.gitmessage` choices from `config.yaml` `build.ai_coauthor.allowed`),
