@@ -273,7 +273,7 @@ export async function gateAdvance(root, { epic, artifact, today, headCount = nul
   // After a reopen the gates pass again in order (#322).
   const held = heldByReopen(ledger.state, step.id);
   if (held) {
-    fail(`${step.id} waits for ${held}, which \`yad gate reopen\` walked back — nothing is written`);
+    fail(`${step.id} waits for ${held}, an earlier step not passed since \`yad gate reopen\` — nothing is written`);
     hand(`pass ${held} first; the gates from a reopened step pass again in order`);
     process.exitCode = 1;
     return { epic, advanced: false, currentStep: ledger.state.currentStep ?? null, gate: null };

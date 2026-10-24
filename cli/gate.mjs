@@ -765,11 +765,11 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
       gates.push({ step: step.id, artifact: pr.artifact, pr: pr.number ?? null, merged: null, rule: null, passed: false, alreadyDone: false, retired: true, have: null, gateRule: null, cap: null, short: null, missing: ['a fresh review'], staleDropped: 0 });
       continue;
     }
-    // A held review is not read, and once the step it waits on passes again its PR is retired with every
-    // later review opened before then (`stampPassed`), so nothing given during the hold counts.
+    // A held review is not read, and once the step it waits on passes, its PR is retired with every later
+    // review opened before then (`stampPassed`), so nothing given during the hold counts.
     const holdFor = alreadyDone ? null : heldByReopen(state, step.id);
     if (holdFor) {
-      warn(`${step.id} waits for ${holdFor}, which \`yad gate reopen\` walked back — PR #${pr.number} is not read`);
+      warn(`${step.id} waits for ${holdFor}, an earlier step not passed since \`yad gate reopen\` — PR #${pr.number} is not read`);
       hand(`once ${holdFor} passes, review ${step.artifact} again on a fresh PR/MR: \`yad gate open ${epic} ${step.artifact}\``);
       gates.push({ step: step.id, artifact: pr.artifact, pr: pr.number ?? null, merged: null, rule: null, passed: false, alreadyDone: false, held: holdFor, have: null, gateRule: null, cap: null, short: null, missing: [`${holdFor} must pass first`], staleDropped: 0 });
       continue;
@@ -1116,7 +1116,7 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     // A review held behind a reopened step (#322) is not recorded either: it is retired once that step passes.
     const holdFor = !isPassed(step) ? heldByReopen(ledger.state, step.id) : null;
     if (holdFor) {
-      info(`${job.epic}: ${step.id} waits for ${holdFor}, which \`yad gate reopen\` walked back — PR #${job.pr} is not recorded, and is retired once ${holdFor} passes`);
+      info(`${job.epic}: ${step.id} waits for ${holdFor}, an earlier step not passed since \`yad gate reopen\` — PR #${job.pr} is not recorded, and is retired once ${holdFor} passes`);
       continue;
     }
 
@@ -1788,7 +1788,7 @@ export async function gateOpen(root, { epic, artifact, head, creator = createPr,
   // After a reopen the gates pass again in order (#322): no later review opens before the reopened step passes.
   const held = heldByReopen(ledger.state, step.id);
   if (held) {
-    fail(`${step.id} waits for ${held}, which \`yad gate reopen\` walked back — no review is opened`);
+    fail(`${step.id} waits for ${held}, an earlier step not passed since \`yad gate reopen\` — no review is opened`);
     hand(`pass ${held} first; the gates from a reopened step pass again in order`);
     process.exitCode = 1;
     return;

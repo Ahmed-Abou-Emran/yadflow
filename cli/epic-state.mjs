@@ -2407,11 +2407,19 @@ export function retiredPr(state, artifact, number, platform = null) {
   return top > 0 && n <= top;
 }
 
-// Is this a review some `yad gate reopen` walked back that has not passed again since (#322)? When it passes,
-// `stampPassed` retires the later reviews opened before that moment.
+// Does this review fall under a `yad gate reopen` that has no `passes[]` row for it yet (#322)? Every review
+// after the reopened step whose artifact the reopen covers (`laterArtifacts`) does — walked back or not, since
+// any of them can hold the reviews after it (`heldByReopen`). When it passes, `stampPassed` retires the later
+// reviews opened before that moment.
+const coveredBy = (state, r, reviewStepId) => {
+  const steps = Array.isArray(state?.steps) ? state.steps : [];
+  const ri = steps.findIndex((s) => s?.id === r?.step);
+  const ti = steps.findIndex((s) => s?.id === reviewStepId);
+  if (ri === -1 || ti <= ri || !isGateStep(steps[ti]) || typeof steps[ti].artifact !== 'string') return false;
+  return (Array.isArray(r.laterArtifacts) ? r.laterArtifacts : []).includes(artifactBase(steps[ti].artifact).replace(/-S\d+$/i, ''));
+};
 export function walkedBackReview(state, reviewStepId) {
-  return (Array.isArray(state?.reopens) ? state.reopens : []).some((r) => isPlainObject(r)
-    && (Array.isArray(r.steps) ? r.steps : []).some((w) => w?.id === reviewStepId)
+  return (Array.isArray(state?.reopens) ? state.reopens : []).some((r) => isPlainObject(r) && coveredBy(state, r, reviewStepId)
     && !(Array.isArray(r.passes) ? r.passes : []).some((p) => p?.step === reviewStepId));
 }
 
@@ -2427,7 +2435,7 @@ export function stampPassed(state, reviewStepId, { platform = null, number } = {
   const after = new Set(steps.slice(at + 1).filter((s) => isGateStep(s) && typeof s.artifact === 'string')
     .map((s) => artifactBase(s.artifact).replace(/-S\d+$/i, '')));
   for (const r of state.reopens) {
-    if (!isPlainObject(r) || !(Array.isArray(r.steps) ? r.steps : []).some((w) => w?.id === reviewStepId)) continue;
+    if (!isPlainObject(r) || !coveredBy(state, r, reviewStepId)) continue;
     const passes = Array.isArray(r.passes) ? r.passes : [];
     if (passes.some((p) => p?.step === reviewStepId)) continue;
     const artifacts = (Array.isArray(r.laterArtifacts) ? r.laterArtifacts : []).filter((b) => after.has(b));
@@ -2436,22 +2444,20 @@ export function stampPassed(state, reviewStepId, { platform = null, number } = {
   return true;
 }
 
-// Is this step walked back by a reopen whose review has not passed again (#322)? Then it is not set aside.
+// Is this step walked back by a reopen, and its review not passed again (#322)? Then it is not set aside. Read
+// from the review's state now, so a Product with no platform (no `passes[]` rows) is not held for ever.
 function reopenedAndOpen(state, stepId) {
   // Asked before the chain is validated, so it never reads a malformed ledger it does not need.
   if (!Array.isArray(state?.reopens) || !state.reopens.length || !Array.isArray(state.steps) || !state.steps.every(isPlainObject)) return false;
-  const steps = state.steps;
-  const review = steps.find((s) => isGateStep(s) && authorStepFor(state, s)?.id === stepId);
-  return (Array.isArray(state?.reopens) ? state.reopens : []).some((r) => isPlainObject(r)
-    && (Array.isArray(r.steps) ? r.steps : []).some((w) => w?.id === stepId || (review && w?.id === review.id))
-    && !(Array.isArray(r.passes) ? r.passes : []).some((p) => p?.step === review?.id));
+  const review = state.steps.find((s) => isGateStep(s) && authorStepFor(state, s)?.id === stepId);
+  if (review && isPassed(review)) return false;
+  return state.reopens.some((r) => isPlainObject(r) && (Array.isArray(r.steps) ? r.steps : []).some((w) => w?.id === stepId || (review && w?.id === review.id)));
 }
 
-// After `yad gate reopen` (#322) the gates from the reopened step on pass again IN ORDER: a later review may
-// not open or pass while the reopened step, or its own review, has not passed. Without this a later review
-// PR merging first (opened after the reopen, or one nobody recorded) would carry the chain past an
-// unapproved step. Returns the id of the step it waits on, or null. Read from the latest reopen only: once
-// that step's review passes, the chain is whole again.
+// After `yad gate reopen` (#322) the gates pass again IN ORDER: on an epic that has been reopened, a review may
+// not open or pass while any earlier step has not passed. Without this a later review PR merging first
+// (opened after the reopen, or one nobody recorded) would carry the chain past an unapproved step. Returns
+// the id of the step it waits on, or null.
 export function heldByReopen(state, reviewStepId) {
   const steps = Array.isArray(state?.steps) ? state.steps : [];
   if (!Array.isArray(state?.reopens) || !state.reopens.length) return null;
