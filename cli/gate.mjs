@@ -15,7 +15,7 @@ import {
   upsertProductPr, stateInvariants, repairState, DISCOVERY_FILES, FOUNDATION_REQUIRED, unwrittenSections,
   canonicalApprovals, canonicalComments, canonicalProductPrs, optionalStepsFor, isSkippableStep, writeState, routeLacksStep,
   isPassed, stepStatus, claimsSkipped, claimsInherited, DISCOVERY_EPIC, FOUNDATION_DIR, FOUNDATION_EPIC, staleFoundationGuards,
-  reopenStep, retiredPr, epicLineage, heldByReopen, walkedBackReview, stampPassed,
+  reopenStep, retiredPr, epicLineage, heldByReopen, reopenStampDue, stampPassed, isGateStep,
 } from './epic-state.mjs';
 import { readShips } from './ledger.mjs';
 import { activePeople, activeSum, activeBasis, approverCount, printTeamHint, soloTeamHint } from './people.mjs';
@@ -895,11 +895,13 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
       });
       advanced++;
       ok(`gate PASSED — ${step.id} → done; next: ${state.currentStep}`);
-      // A review a reopen walked back passed again (#322): the later reviews opened before now are retired, so
+      // A review after a reopened step passed (#322): the later reviews opened before now are retired, so
       // each is reviewed afresh. The platform's newest number bounds them; this PR's own number when the
       // platform cannot answer — said, and the CI run goes red, since a later PR above it is then not covered.
       // Not on a read-only run: nothing it records is kept.
-      if (!readOnly && walkedBackReview(state, step.id)) {
+      // Nothing to retire when no review comes after this one (`test-cases-review`): no question, no red run.
+      const laterReview = state.steps.slice(state.steps.findIndex((s) => s?.id === step.id) + 1).some((s) => isGateStep(s));
+      if (!readOnly && laterReview && reopenStampDue(state, step.id)) {
         const got = newest(platform, { cwd: root });
         if (!got?.ok) {
           warn(`could not ask the platform for its newest PR/MR (${String(got?.reason ?? 'no answer').split('\n')[0]}) — the later reviews are retired only up to #${pr.number}; close any later review PR/MR opened since by hand`);

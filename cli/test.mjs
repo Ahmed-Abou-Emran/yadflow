@@ -29424,7 +29424,7 @@ test('#322 review 1: after a reopen the gates pass again in order — a later re
     const r = await gateReopen(T, { newest: () => ({ ok: true, number: 30 }), epic: 'EP-x', step: 'architecture', reason: 'auth changed' });
     assert.deepEqual([r.retiredPrs, r.retiredUpTo], [[4, 6], 30]);
     const after = JSON.parse(fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8'));
-    assert.deepEqual(after.reopens[0].retiredUpTo, { platform: 'github', number: 30, artifacts: ['architecture', 'stories', 'test-cases'] });
+    assert.deepEqual(after.reopens[0].retiredUpTo, { platform: 'github', number: 30, artifacts: ['architecture', 'ui-design', 'stories', 'test-cases'] });
     assert.equal(retiredPr(after, 'stories/EP-x-S03.md', 29, 'github'), true, 'a story file only on its review branch is covered too');
     assert.equal(retiredPr(after, 'epic.md', 29, 'github'), false, 'a review before the step is not');
     git(T, 'add', '-A'); git(T, 'commit', '-q', '-m', 'reopen'); git(T, 'push', '-q', 'origin', 'main');
@@ -29494,7 +29494,7 @@ test('#322 review 3: a review held during the hold never counts — the reopened
     assert.match(passed, /architecture-review passed again after `yad gate reopen` — the later steps' review PRs up to #33 are retired/);
     const after = JSON.parse(fs.readFileSync(sf, 'utf8'));
     assert.equal(after.steps.find((x) => x.id === 'architecture-review').status, 'done');
-    assert.deepEqual(after.reopens[0].passes, [{ step: 'architecture-review', platform: 'github', number: 33, artifacts: ['stories', 'test-cases'] }]);
+    assert.deepEqual(after.reopens[0].passes, [{ step: 'architecture-review', platform: 'github', number: 33, artifacts: ['ui-design', 'stories', 'test-cases'] }]);
     // The held #31 is replayed after the hold (the 7-day reconcile run): retired, never read.
     git(T, 'add', '-A'); git(T, 'commit', '-q', '-m', 'arch passed'); git(T, 'push', '-q', 'origin', 'main');
     const { out: replay } = await captureConsole(() => gateCi(T, { branch: 'review/EP-x/stories-S01', pr: 31, merged: true, push: false, today: '2026-10-27', reader }));
@@ -29584,4 +29584,29 @@ test('#322 review 5: a review that was todo at the reopen still retires the late
   assert.equal(heldByReopen(b, 'stories-review'), null);
   assert.equal(retiredPr(b, 'stories/EP-x-S01.md', 65, 'github'), true);
   assert.equal(retiredPr(b, 'stories/EP-x-S01.md', 67, 'github'), false, 'a fresh one counts');
+});
+
+test('#322 review 6: a step kept at the reopen and put back later retires what it held when its review passes', () => {
+  // ui-design was deferred before the reopen of architecture.
+  const s = reopenChain(); s.steps[4] = { ...s.steps[4], status: 'deferred' }; s.steps[5] = { ...s.steps[5], status: 'deferred' };
+  const { state } = reopenStep(s, 'architecture', { reason: 'auth' });
+  const t = JSON.parse(JSON.stringify(state));
+  for (const x of t.steps) if (x.id === 'architecture' || x.id === 'architecture-review') x.status = 'done';
+  stampPassed(t, 'architecture-review', { platform: 'github', number: 60 });
+  undeferStep(t, 'ui-design');
+  assert.equal(heldByReopen(t, 'stories-review'), 'ui-design');
+  // A stories PR #65 opened by hand during that hold; ui-design-review passes on #70.
+  for (const x of t.steps) if (x.id === 'ui-design' || x.id === 'ui-design-review') x.status = 'done';
+  assert.equal(stampPassed(t, 'ui-design-review', { platform: 'github', number: 70 }), true);
+  assert.equal(retiredPr(t, 'stories/EP-x-S01.md', 65, 'github'), true);
+});
+
+test('#322 review 6: a later review kept as blocked loses its approvals and review PRs too — it is a wait, not a decision', () => {
+  const s = reopenChain();
+  s.steps[7] = { ...s.steps[7], status: 'blocked', record: { reason: 'legal', by: 'al', date: '2026-10-03' } };
+  const r = reopenStep(s, 'architecture', { reason: 'auth', approvals: reopenApprovals(), productPrs: reopenPrs(), upTo: { platform: 'github', number: 30 } });
+  assert.equal(r.state.steps[7].status, 'blocked', 'it keeps its state and record');
+  assert.ok(r.audit.revokedApprovals.some((a) => a.step === 'stories-review'));
+  assert.ok(r.audit.retiredPrs.some((p) => p.number === 6));
+  assert.ok(r.audit.retiredUpTo.artifacts.includes('stories'));
 });

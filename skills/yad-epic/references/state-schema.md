@@ -558,7 +558,8 @@ It is allowed only before Build begins: no story has a Build lane (`yad build st
 skipped whole does not count) and nothing has shipped. The parallel `test-cases` track may be reopened while
 Build runs, and keeps `currentStep` at `ready-for-build`. The step goes to `in_progress`, and every later step that had started (`in_progress`,
 `in_review`, `done`) goes to `todo`. Each loses its `closed` record. A later step that is skipped,
-deferred, `satisfied` or blocked keeps its state. `currentStep` becomes the step (the `test-cases` track
+deferred, `satisfied` or blocked keeps its state (a blocked review still loses its approvals and review PRs:
+it is a wait, not a decision that the step does not apply). `currentStep` becomes the step (the `test-cases` track
 excepted, as above).
 
 What it undid is kept in one list on the epic, which only grows:
@@ -571,7 +572,10 @@ What it undid is kept in one list on the epic, which only grows:
   "kept": [{ "id": "ui-design", "status": "skipped" }],
   "revokedApprovals": [{ "artifact": "architecture.md", "step": "architecture-review", "approver": "bo", "status": "approved" }],
   "retiredPrs": [{ "step": "architecture-review", "artifact": "architecture.md", "platform": "github", "number": 4, "branch": "review/EP-x/architecture", "url": null }],
-  "contractLock": "sha256:…"
+  "contractLock": "sha256:…",
+  "laterArtifacts": ["architecture", "ui-design", "stories", "test-cases"],
+  "retiredUpTo": { "platform": "github", "number": 30, "artifacts": ["architecture", "ui-design", "stories", "test-cases"] },
+  "passes": [{ "step": "architecture-review", "platform": "github", "number": 33, "artifacts": ["ui-design", "stories", "test-cases"] }]
 }]
 ```
 
