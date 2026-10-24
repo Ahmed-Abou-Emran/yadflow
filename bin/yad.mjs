@@ -137,6 +137,12 @@ ${c.bold('Where am I / what next')}
   yad next --all                       Every active epic's next action at once
   yad next [<epic>] --json             The same answer as a machine-readable action object (for
                                        agents/CI) — always every epic, so --all is implied
+  yad status [--brief] [--no-fetch] [--json]
+                                       Where the work stands in ~20 lines, for after a context reset:
+                                       this checkout's task and its Build step, each open epic and its
+                                       next action, your open PRs/MRs, and what is owed (debt, blockers,
+                                       hotfix debt, follow-up PRs). --brief is the only form today;
+                                       --no-fetch asks no platform
   yad skill list [--profile <p> | --epic <id>] [--json]
                                        Which skill runs which step, whether that is one route's
                                        choice, the project's or the engine's default, and whether
@@ -448,6 +454,7 @@ function parseArgs(argv) {
     // positional. `o._[0]` is the command, already pushed by the time `--check` is seen in normal use.
     else if (a === '--check') { const v = argv[i + 1]; o.check = (o._[0] === 'next' && v !== undefined && !v.startsWith('-')) ? argv[++i] : true; }
     else if (a === '--all') o.all = true;
+    else if (a === '--brief') o.brief = true;
     else if (a === '--open') o.open = true;
     else if (a === '--done') o.done = true;
     else if (a === '--undo') o.undo = true;
@@ -542,7 +549,8 @@ const PRODUCT_CMDS = new Set([
   'capture', 'claims', 'assign', 'unassign', 'owners', 'fold', 'tidy', 'index', 'history', 'repo',
   'risk-map', 'codeowners', 'docs', 'thread', 'reconcile', 'member', 'standup', 'build',
 ]);
-const REPO_CMDS = new Set(['commit', 'open-pr', 'ship', 'review', 'run']);
+// `status` reads the Product but must keep the folder it ran in: "here" is that checkout's task branch (#349).
+const REPO_CMDS = new Set(['commit', 'open-pr', 'ship', 'review', 'run', 'status']);
 // The Product commands that WRITE its files without first checking it is one. Run from a code repo they
 // wrote an epic, a dial or the module into it; they refuse instead (E80). The rest either only read, or
 // already refuse a folder that is not a Product.
@@ -650,6 +658,7 @@ async function main() {
       // The workspace folder itself, or a repo the Product does not register: no Product here, but the
       // person is one `cd` away from it — say so, rather than let "run yad setup" make a second one.
       if (PRODUCT_CMDS.has(cmd)) warn(`this folder is not in a repo the Product registers — the Product is ${shown(found.elsewhere)}: cd there, or pass --dir ${shown(found.elsewhere)}`);
+      else if (cmd === 'status') o.productElsewhere = shown(found.elsewhere);
     } else if (found?.root && REPO_CMDS.has(cmd)) o.product = found.root;
     else if (found?.root && !dirGiven && found.via !== 'here') {
       o.dir = found.root;
@@ -839,6 +848,18 @@ async function main() {
       if (action === 'unbind') { result = commands.runSkillUnbind(o.dir, { step, profile: o.profile }); break; }
       if (action === 'recommend') { result = commands.runSkillRecommend(o.dir, { step: step ?? null, json: o.json, profile: o.profile, epic: o.epic }); break; }
       refuse(`unknown skill action: ${action} (list, bind, unbind, recommend)`, 'usage: yad skill list [--profile <p> | --epic <id>] [--json] | yad skill bind <step> <skill> [<skill> ...] [--profile <p>] | yad skill unbind <step> [--profile <p>] | yad skill recommend [<step>] [--profile <p> | --epic <id>] [--json]');
+      break;
+    }
+    case 'status': {
+      if (o._[1] !== undefined) { refuse(`yad status takes no ${o._[1]}`, 'usage: yad status [--brief] [--no-fetch] [--json]'); break; }
+      const root = o.product || (commands.hasProduct(o.dir) ? o.dir : null);
+      if (!root) {
+        refuse(`no Product here (${o.dir}) — yad status reads the Product`, o.productElsewhere
+          ? `this folder is not in a repo the Product registers — the Product is ${o.productElsewhere}: cd there, or pass --dir ${o.productElsewhere}`
+          : 'run it from the Product, from inside a repo it registers, or pass --dir <the Product>; `yad new` / `yad init` start one');
+        break;
+      }
+      result = await commands.runStatus(root, { cwd: o.dir, json: o.json, fetch: !o.noFetch });
       break;
     }
     case 'next': {

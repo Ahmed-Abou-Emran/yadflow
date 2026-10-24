@@ -168,7 +168,7 @@ function wipSaves(root, env, startMs) {
 
 // The repos to read: the Product and every registered repo. `dir` is set only when git may run there
 // (judged first, E81); `gitUrl` is what the platform is asked about.
-function repoSources(root, identity, productConfig, notRead, env) {
+export function repoSources(root, identity, productConfig, notRead, env) {
   const productUrl = typeof productConfig?.git_url === 'string' && productConfig.git_url ? productConfig.git_url
     : (gitIn(root, env)(['remote', 'get-url', 'origin']).out.trim() || '');
   const out = [{ label: 'Product', dir: root, gitUrl: productUrl, platform: identity.platform }];
