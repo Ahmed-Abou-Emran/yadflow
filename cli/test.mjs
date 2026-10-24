@@ -9587,6 +9587,44 @@ test('yad-run and yad-status name the skipped Build lane, so neither drives nor 
   assert.match(review, /yad unskip <epic> <story> --repo <repo>` before recording a ship/);
 });
 
+test('yad-spec and yad-implement ask the human-only questions first, in one batch, from one shared text (#357)', () => {
+  const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
+  const section = (text) => {
+    const start = text.indexOf('## Ask the human-only questions first, in one batch');
+    const end = text.indexOf('<!-- end: Ask the human-only questions first -->');
+    assert.ok(start >= 0 && end > start, 'the section and its end marker are there');
+    return text.slice(start, end);
+  };
+  const spec = read('skills/yad-spec/SKILL.md');
+  const impl = read('skills/yad-implement/SKILL.md');
+  // One rule in two skills: a change to one copy alone fails here.
+  assert.equal(section(impl), section(spec));
+  const batch = section(spec);
+  for (const kind of ['Security trade-offs', 'Secrets and tokens', 'Contract changes', 'Changes that cannot be undone']) assert.ok(batch.includes(`**${kind}.**`), kind);
+  assert.match(batch, /ask\s+them all in \*\*one\*\* message/);
+  assert.match(batch, /Write \*\*no\*\* trust entry/);
+  // One halt for every stop to ask, and the contract item keeps the STOP no answer can lift (#357 review 1).
+  assert.match(batch, /a stop to ask — the first batch or a later one — is its\s+own halt/);
+  assert.match(batch, /end the step with this skill's own contract STOP/);
+  // The batch comes before the long work on both Spec Kit paths, and the answers land in one place.
+  assert.ok(spec.includes('`/speckit.specify` → (ask the batch) → `/speckit.clarify`'));
+  assert.match(spec, /draft `spec\.md` first, ask the batch, record the answers in it, and only then\s+write the rest/);
+  assert.ok(read('skills/yad-spec/references/spec-handoff.md').includes('`### Session <YYYY-MM-DD>` heading'));
+  // yad-implement reads those answers first, and keeps its own outside the declared files.
+  assert.match(impl, /Read `spec\.md`'s `## Clarifications` first/);
+  assert.match(impl, /in a `Decisions:` paragraph above the trailer\s+block/);
+  assert.match(impl, /pass the body with `yad commit --body`/);
+  // Step 6 never opens the PR: that waits for the checks and the open-pr dial (#357 review 2).
+  const step6 = impl.slice(impl.indexOf('### Step 6'), impl.indexOf('### Step 7'));
+  assert.ok(step6.length > 0 && !step6.includes('open-pr'), step6);
+  // The orchestrator halts on the questions without grading a run that produced nothing.
+  assert.match(read('skills/yad-run/SKILL.md'), /record no trust entry/);
+  assert.match(read('skills/yad-run/SKILL.md'), /skip steps 3 and 4/);
+  assert.match(read('skills/yad-run/SKILL.md'), /\*\*Not when the skill also hit its contract STOP\*\*/);
+  assert.match(read('skills/yad-run/references/run-loop.md'), /and did NOT hit its contract STOP/);
+  assert.ok(read('skills/yad-run/references/run-loop.md').includes('--reason "waiting on human decisions: <the questions, short>"'));
+});
+
 test('gateOpen refuses a skipped or deferred step: there is no review to open, and nothing is written (E37)', async () => {
   for (const [as, back] of [['deferred', 'undefer'], ['skipped', 'unskip']]) {
     const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-gopen-aside-'));

@@ -246,8 +246,9 @@ ${c.bold('Review gate (Shape)')}
                         --merged advances the step + flips artifact status on the default branch
 
 ${c.bold('Build helpers')}
-  yad commit --type <t> -m <subject> [--manual --reason <why>]
-                                       Commit by convention (trailers, atomic guard); --manual is
+  yad commit --type <t> -m <subject> [--body <text>] [--manual --reason <why>]
+                                       Commit by convention (trailers, atomic guard); --body adds a
+                                       body above the trailers; --manual is
                                        the door past the Product's ledger hook, reason recorded
   yad build start <story> --repo <r>   ${c.dim('(on the Product)')} Begin a story's Build lane in one repo
   yad build step <story> --repo <r> <step> in_progress|in_review|done|blocked [--reason <text>] [--run <uid>] [--via auto|human] [--task <T>]
@@ -942,7 +943,7 @@ async function main() {
       break;
     }
     case 'commit':
-      result = await commands.runCommit(o.dir, { type: o.type, message: o.message, task: o.task, ai: o.ai, contractChange: o.contractChange, dryRun: o.dryRun, force: o.force, manual: o.manual, reason: o.reason });
+      result = await commands.runCommit(o.dir, { type: o.type, message: o.message, task: o.task, ai: o.ai, contractChange: o.contractChange, dryRun: o.dryRun, force: o.force, manual: o.manual, reason: o.reason, body: o.body });
       break;
     case 'build': {
       const [, action, story, a3, a4] = o._;
@@ -985,6 +986,8 @@ async function main() {
       if (o.manual || o.reason !== undefined) { refuse('yad ship takes no --manual/--reason: commit with `yad commit --manual --reason "<why>" …`, then `yad open-pr`'); break; }
       // Opening on the standing approval follows the checks, not the commit (#356): its own command.
       if (o.via !== undefined) { refuse('yad ship takes no --via: commit, run the checks, then `yad open-pr --via auto`'); break; }
+      // A commit body (#357: the Decisions: paragraph) is written by `yad commit`; ship never drops it unseen.
+      if (o.body !== undefined) { refuse('yad ship takes no --body: commit with `yad commit --body "<text>" …`, then `yad open-pr`'); break; }
       result = await commands.runShip(o.dir, { type: o.type, message: o.message, task: o.task, ai: o.ai, contractChange: o.contractChange, dryRun: o.dryRun, force: o.force, repo: o.repo, product: o.product, platform: o.platform, base: o.base, title: o.title, risk: o.risk });
       break;
     case 'checkpoint': {

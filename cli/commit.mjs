@@ -109,6 +109,7 @@ export async function runCommit(root, opts = {}) {
       type: opts.type, subject: opts.message, task,
       contractChange: !!opts.contractChange, ai: opts.ai || 'none',
       override: opts.manual ? String(opts.reason) : null,
+      body: typeof opts.body === 'string' ? opts.body : '',
     });
   } catch (e) { fail(e.message); process.exitCode = 1; return; }
 
