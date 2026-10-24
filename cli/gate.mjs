@@ -15,7 +15,7 @@ import {
   upsertProductPr, stateInvariants, repairState, DISCOVERY_FILES, FOUNDATION_REQUIRED, unwrittenSections,
   canonicalApprovals, canonicalComments, canonicalProductPrs, optionalStepsFor, isSkippableStep, writeState, routeLacksStep,
   isPassed, stepStatus, claimsSkipped, claimsInherited, DISCOVERY_EPIC, FOUNDATION_DIR, FOUNDATION_EPIC, staleFoundationGuards,
-  reopenStep, retiredPr, epicLineage, heldByReopen,
+  reopenStep, retiredPr, epicLineage, heldByReopen, reopenOwnReview, stampPassedUpTo,
 } from './epic-state.mjs';
 import { readShips } from './ledger.mjs';
 import { activePeople, activeSum, activeBasis, approverCount, printTeamHint, soloTeamHint } from './people.mjs';
@@ -643,7 +643,7 @@ function stageIndexIfClean(root, git, commits = null) {
   return !git('diff', '--cached', '--quiet', '--', INDEX_FILE).ok;
 }
 
-export async function gateSync(root, { epic, artifact, today, reader = readPr, finder = findPrForBranch, branchOf = prBranch, poster = postComment, number = null, local = false, dryRun = false, headCount = null, probe = null } = {}) {
+export async function gateSync(root, { epic, artifact, today, reader = readPr, finder = findPrForBranch, branchOf = prBranch, poster = postComment, number = null, local = false, dryRun = false, headCount = null, probe = null, newest = newestPrNumber } = {}) {
   const { productConfig } = loadProduct(root);
   if (!productConfig?.platform) { warn(`no Product platform configured (${settingsEditHint(root)}) — local gate, nothing to sync`); return { epic, synced: 0, advanced: 0, written: false, gates: [] }; }
   const platform = productConfig.platform;
@@ -753,8 +753,9 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
     // and write nothing but the PR pointer. The step then read `done` while its approvals were all
     // stale: work proceeded on an audit trail saying the re-review never happened (issue #156).
     const alreadyDone = isPassed(step);
-    // After a reopen the gates pass again in order (#322). A held review is not even read: approvals read now
-    // were given before the reopened step was approved again, and kept, they would count once the hold lifts.
+    // After a reopen the gates pass again in order (#322). A held review is not read, and once the reopened
+    // step passes again its PR is retired with every later review opened before then (`stampPassedUpTo`), so
+    // nothing given during the hold counts.
     const holdFor = alreadyDone ? null : heldByReopen(state, step.id);
     if (holdFor) {
       warn(`${step.id} waits for ${holdFor}, which \`yad gate reopen\` walked back — PR #${pr.number} is not read`);
@@ -883,6 +884,13 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
       });
       advanced++;
       ok(`gate PASSED — ${step.id} → done; next: ${state.currentStep}`);
+      // The reopened step passed again (#322): the later reviews opened before now are retired, so each is
+      // reviewed afresh. The platform's newest number bounds them; this PR's own number when it cannot answer.
+      if (reopenOwnReview(state) === step.id) {
+        const got = newest(platform, { cwd: root });
+        const n = Math.max(got?.ok && Number.isInteger(got.number) ? got.number : 0, Number(pr.number) || 0);
+        if (stampPassedUpTo(state, step.id, { platform, number: n })) info(`${step.id} passed again after \`yad gate reopen\` — the later steps' review PRs up to #${n} are retired; review each again on a fresh PR/MR`);
+      }
     } else {
       state = markInReview(state, step, { by, date: today, pr: pr.number ?? null, hash: curHash });
       for (const m of pred.missing) hand(`still needed: ${m}`);
@@ -994,7 +1002,7 @@ export function convertProductLevel(root, productConfig, { git = (...a) => run('
   }
 }
 
-export async function gateCi(root, { branch, pr, merged = false, today, push = true, reader = readPr, branchOf = prBranch } = {}) {
+export async function gateCi(root, { branch, pr, merged = false, today, push = true, reader = readPr, branchOf = prBranch, newest = newestPrNumber } = {}) {
   const { productConfig } = loadProduct(root);
   if (!productConfig?.platform) { warn(`no Product platform configured (${settingsEditHint(root)}) — nothing to sync`); return { synced: 0, committed: false, pushed: false }; }
   const git = (...args) => run('git', args, { cwd: root });
@@ -1088,6 +1096,12 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
       info(`${job.epic}: PR #${job.pr} was retired by \`yad gate reopen\` — it does not pass ${step.id} again; a fresh review does`);
       continue;
     }
+    // A review held behind a reopened step (#322) is not recorded either: it is retired once that step passes.
+    const holdFor = !isPassed(step) ? heldByReopen(ledger.state, step.id) : null;
+    if (holdFor) {
+      info(`${job.epic}: ${step.id} waits for ${holdFor}, which \`yad gate reopen\` walked back — PR #${job.pr} is not recorded, and is retired once ${holdFor} passes`);
+      continue;
+    }
 
     // The merge event may fire before any hub-prs record exists (Path B never wrote one pre-merge) —
     // build the entry from the event itself so the advance commit carries it onto the default branch.
@@ -1170,7 +1184,7 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     try {
       // A branch event that is not a merge can never advance (the predicate requires merged), so it
       // is read-only under Path B — run it as a dry sync that persists nothing to the working tree.
-      const r = await gateSync(root, { epic: job.epic, artifact: job.artifact, today, reader, dryRun: !!branch && !merged, headCount: sweepCount });
+      const r = await gateSync(root, { epic: job.epic, artifact: job.artifact, today, reader, dryRun: !!branch && !merged, headCount: sweepCount, newest });
       synced += r.synced;
       // When the step actually ADVANCED (the merge phase, or a swept merge the schedule observed),
       // reflect it in the artifact frontmatter (draft → approved). Keyed off the advance, not the

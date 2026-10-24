@@ -578,7 +578,7 @@ What it undid is kept in one list on the epic, which only grows:
 | Rule | Detail |
 |------|--------|
 | Revoked approvals | MOVED out of `approvals.json` into `revokedApprovals`, unchanged. Every reader counts only the records in `approvals.json`, so no yad version counts them, and the platform sync cannot write them back |
-| In order again | until the reopened step's review passes, every later review is held: `yad gate open` refuses it, `gate sync` / `gate ci` do not even read its PR/MR, and `gate advance` refuses it (`heldByReopen`) |
+| In order again | until the reopened step's review passes, every later review is held: `yad gate open` refuses it, `gate sync` / `gate ci` neither read nor record its PR/MR, and `gate advance` refuses it (`heldByReopen`). When the reopened step's review passes again, `passedUpTo` (`{ platform, number, artifacts }`) retires every later review PR/MR numbered up to the platform's newest then, so each later step is reviewed afresh |
 | Retired review PRs | MOVED out of `product-prs.json` / `hub-prs.json` into `retiredPrs`. `retiredUpTo` (`{ platform, number, artifacts }`) also retires every review PR/MR of the reopened step and the later steps numbered up to the platform's newest at the reopen, so one the ledger never recorded is covered. `yad gate sync` and `yad gate ci` never pass a gate on a retired PR/MR, or on an older one for the same artifact (numbers only grow in one repo). A fresh `yad gate open` has a higher number |
 | `contract-lock.json` | kept; its hash at the reopen is recorded. The new architecture review re-locks it |
 | Comments and `reviews/` | kept as they are; the new review's comments continue from the next round |

@@ -2358,6 +2358,8 @@ export function reopenStep(state, stepId, { reason, by = null, at = null, approv
     return steps.find((s) => s?.type === 'review+approve' && typeof s.artifact === 'string' && artifactBase(s.artifact) === b)?.id ?? null;
   };
   const prs = removeProductPrs(productPrs, (p) => reviews.has(p?.step) || reviews.has(reviewOf(p?.artifact)));
+  const later = [...new Set(steps.slice(ai + 1).filter((s) => isGateStep(s) && typeof s.artifact === 'string' && !kept.some((k) => k.id === s.id))
+    .map((s) => artifactBase(s.artifact).replace(/-S\d+$/i, '')))];
   const audit = {
     step: stepId, date: at, by, reason: String(reason).trim(), from,
     steps: walked, kept, revokedApprovals: revoked,
@@ -2365,11 +2367,10 @@ export function reopenStep(state, stepId, { reason, by = null, at = null, approv
     // Every review PR of the reopened step or a later one numbered up to the platform's newest at the reopen
     // (`upTo`) is retired too: one the ledger never recorded — on a verified Product a pointer is written only
     // at merge — would otherwise merge on approvals given before the reopen.
-    ...(upTo && Number.isInteger(upTo.number) && upTo.number > 0 ? { retiredUpTo: {
-      platform: upTo.platform ?? null, number: upTo.number,
-      artifacts: [...new Set(steps.slice(ai + 1).filter((s) => isGateStep(s) && typeof s.artifact === 'string' && !kept.some((k) => k.id === s.id))
-        .map((s) => artifactBase(s.artifact).replace(/-S\d+$/i, '')))],
-    } } : {}),
+    // The artifacts whose reviews the reopen touches: the reopened step's own review and every later one not
+    // set aside. `retiredUpTo` and, once the step passes again, `passedUpTo` (`stampPassedUpTo`) cover them.
+    laterArtifacts: later,
+    ...(upTo && Number.isInteger(upTo.number) && upTo.number > 0 ? { retiredUpTo: { platform: upTo.platform ?? null, number: upTo.number, artifacts: later } } : {}),
     contractLock: contractLockHash,
   };
   next.reopens = [...(Array.isArray(next.reopens) ? next.reopens : []), audit];
@@ -2391,11 +2392,37 @@ export function retiredPr(state, artifact, number, platform = null) {
       if (platform && p.platform && p.platform !== platform) continue;
       if (Number.isInteger(p.number) && p.number > top) top = p.number;
     }
-    const u = r?.retiredUpTo;
-    if (isPlainObject(u) && Number.isInteger(u.number) && Array.isArray(u.artifacts) && u.artifacts.includes(base)
-      && !(platform && u.platform && u.platform !== platform) && u.number > top) top = u.number;
+    for (const u of [r?.retiredUpTo, r?.passedUpTo]) {
+      if (isPlainObject(u) && Number.isInteger(u.number) && Array.isArray(u.artifacts) && u.artifacts.includes(base)
+        && !(platform && u.platform && u.platform !== platform) && u.number > top) top = u.number;
+    }
   }
   return top > 0 && n <= top;
+}
+
+// The review of the step the latest `yad gate reopen` walked back, while that step has not passed again
+// (#322) — or null. The moment it passes is when `stampPassedUpTo` closes the hold.
+export function reopenOwnReview(state) {
+  const steps = Array.isArray(state?.steps) ? state.steps : [];
+  const last = Array.isArray(state?.reopens) ? state.reopens[state.reopens.length - 1] : null;
+  if (!isPlainObject(last) || typeof last.step !== 'string' || last.passedUpTo) return null;
+  const ri = steps.findIndex((s) => s?.id === last.step);
+  if (ri === -1) return null;
+  return steps.find((s, k) => k > ri && isGateStep(s) && authorStepFor(state, s)?.id === last.step)?.id ?? null;
+}
+
+// The reopened step's review passed again (#322): every review PR of a LATER step opened before now — during
+// the hold, by hand, or merged while it was held — is retired, up to the platform's newest number. Their
+// approvals were given before the step they rest on was approved again, so the later steps are reviewed
+// afresh, on new PRs/MRs. Mutates `state`; true when it stamped.
+export function stampPassedUpTo(state, reviewStepId, { platform = null, number } = {}) {
+  if (reopenOwnReview(state) !== reviewStepId || !Number.isInteger(number) || number <= 0) return false;
+  const last = state.reopens[state.reopens.length - 1];
+  const own = state.steps.find((s) => s?.id === reviewStepId);
+  const ownBase = typeof own?.artifact === 'string' ? artifactBase(own.artifact).replace(/-S\d+$/i, '') : null;
+  const artifacts = (Array.isArray(last.laterArtifacts) ? last.laterArtifacts : []).filter((b) => b !== ownBase);
+  last.passedUpTo = { platform, number, artifacts };
+  return true;
 }
 
 // After `yad gate reopen` (#322) the gates from the reopened step on pass again IN ORDER: a later review may

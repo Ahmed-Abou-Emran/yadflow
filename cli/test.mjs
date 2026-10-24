@@ -29437,8 +29437,8 @@ test('#322 review 1: after a reopen the gates pass again in order — a later re
     const { out: opened } = await captureConsole(() => gateOpen(T, { epic: 'EP-x', artifact: 'stories/', creator: () => { throw new Error('no PR may be opened'); }, hasBranch: () => true }));
     assert.equal(process.exitCode, 1);
     assert.match(opened, /stories-review waits for architecture, which `yad gate reopen` walked back/);
-    // A later review PR opened by hand after the reopen (#31, above the retired range) is held, not even read,
-    // so nothing it carries can count once the hold lifts.
+    // A later review PR opened by hand after the reopen (#31, above the retired range) is held and not read
+    // (the next test follows it across the hold).
     const { out: synced } = await captureConsole(() => gateSync(T, { epic: 'EP-x', artifact: 'stories/', today: '2026-10-25', number: 31, branchOf: () => ({ ok: true, branch: 'review/EP-x/stories' }), reader: () => { read += 1; return fullApproval; } }));
     assert.match(synced, /stories-review waits for architecture, which `yad gate reopen` walked back — PR #31 is not read/);
     assert.equal(read, 0);
@@ -29469,4 +29469,38 @@ test('#322 review 1: the CI pin is compared with the first release that knows re
   assert.equal(olderThan('4.7.0-next.1', REOPEN_SINCE), true);
   assert.equal(olderThan('4.7.0-next.2', '4.7.0-next.10'), true);
   assert.equal(olderThan('4.7.0-next.10', '4.7.0-next.2'), false);
+});
+
+test('#322 review 3: a review held during the hold never counts — the reopened step passing again retires every later review opened before', async () => {
+  const prev = process.exitCode;
+  const { T, bare, ep } = productForReopen();
+  try {
+    await gateReopen(T, { newest: () => ({ ok: true, number: 30 }), epic: 'EP-x', step: 'architecture', reason: 'auth changed' });
+    git(T, 'add', '-A'); git(T, 'commit', '-q', '-m', 'reopen'); git(T, 'push', '-q', 'origin', 'main');
+    let read = 0;
+    const reader = () => { read += 1; return fullApproval; };
+    // #31 on a later review branch merges during the hold: neither read nor recorded.
+    const { out: held } = await captureConsole(() => gateCi(T, { branch: 'review/EP-x/stories-S01', pr: 31, merged: true, push: false, today: '2026-10-25', reader, newest: () => ({ ok: true, number: 31 }) }));
+    assert.match(held, /stories-review waits for architecture.*PR #31 is not recorded, and is retired once architecture passes/);
+    assert.equal(read, 0);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(ep, '.sdlc/product-prs.json'), 'utf8')).map((p) => p.number), [2]);
+    // architecture is authored again and its fresh review #32 passes: the later reviews up to the newest (#33) retire.
+    const sf = path.join(ep, '.sdlc/state.json');
+    const st = JSON.parse(fs.readFileSync(sf, 'utf8'));
+    st.steps.find((x) => x.id === 'architecture').status = 'done';
+    st.steps.find((x) => x.id === 'architecture-review').status = 'in_review';
+    fs.writeFileSync(sf, JSON.stringify(st, null, 2));
+    const { out: passed } = await captureConsole(() => gateSync(T, { epic: 'EP-x', artifact: 'architecture.md', today: '2026-10-26', number: 32, branchOf: () => ({ ok: true, branch: 'review/EP-x/architecture' }), reader: () => fullApproval, newest: () => ({ ok: true, number: 33 }) }));
+    assert.match(passed, /architecture-review passed again after `yad gate reopen` — the later steps' review PRs up to #33 are retired/);
+    const after = JSON.parse(fs.readFileSync(sf, 'utf8'));
+    assert.equal(after.steps.find((x) => x.id === 'architecture-review').status, 'done');
+    assert.deepEqual(after.reopens[0].passedUpTo, { platform: 'github', number: 33, artifacts: ['stories', 'test-cases'] });
+    // The held #31 is replayed after the hold (the 7-day reconcile run): retired, never read.
+    git(T, 'add', '-A'); git(T, 'commit', '-q', '-m', 'arch passed'); git(T, 'push', '-q', 'origin', 'main');
+    const { out: replay } = await captureConsole(() => gateCi(T, { branch: 'review/EP-x/stories-S01', pr: 31, merged: true, push: false, today: '2026-10-27', reader }));
+    assert.match(replay, /PR #31 was retired by `yad gate reopen`/);
+    assert.equal(read, 0);
+    assert.equal(JSON.parse(fs.readFileSync(sf, 'utf8')).steps.find((x) => x.id === 'stories-review').status, 'todo');
+    assert.equal(retiredPr(after, 'stories/EP-x-S01.md', 34, 'github'), false, 'a fresh stories review counts');
+  } finally { process.exitCode = prev; fs.rmSync(T, { recursive: true, force: true }); fs.rmSync(bare, { recursive: true, force: true }); }
 });
