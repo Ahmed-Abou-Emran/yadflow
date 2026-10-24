@@ -158,7 +158,7 @@ together; the reason is one line, and one that starts with `-` is written `--rea
 refuses both), `--dry-run`. `open-pr` flags:
 `--repo`, `--risk <low\|medium\|high>`, `--contract-change`, `--base <branch>` (override the resolved
 base — only pass it deliberately; a non-default base loses the AI first pass), `--platform`,
-`--title`, `--via auto` (open on the standing approval, after the checks), `--product <path>`. `ship` takes the union of the `commit`
+`--title`, `--via auto` (open on the standing approval, after the checks). `ship` takes the union of the `commit`
 and `open-pr` flags, except `--body`, `--manual`, `--reason` and `--via`, which it refuses (it runs `open-pr` only if the commit lands).
 
 ### `--json` on every command (E1)
