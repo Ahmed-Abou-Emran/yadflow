@@ -29610,3 +29610,20 @@ test('#322 review 6: a later review kept as blocked loses its approvals and revi
   assert.ok(r.audit.retiredPrs.some((p) => p.number === 6));
   assert.ok(r.audit.retiredUpTo.artifacts.includes('stories'));
 });
+
+test('#322 review 7: a step resumed late beside finished work (E41) retires nothing when its review passes', () => {
+  const s = reopenChain(); s.steps[4] = { ...s.steps[4], status: 'deferred' }; s.steps[5] = { ...s.steps[5], status: 'deferred' };
+  const { state } = reopenStep(s, 'architecture', { reason: 'auth' });
+  const t = JSON.parse(JSON.stringify(state));
+  const pass = (id, n) => { for (const x of t.steps) if (x.id === id || x.id === id.replace(/-review$/, '')) x.status = 'done'; return stampPassed(t, id, { platform: 'github', number: n }); };
+  assert.equal(pass('architecture-review', 33), true);
+  assert.equal(pass('stories-review', 40), true);
+  // test-cases is in review on #52, held by nothing; then ui-design is undeferred late, behind finished stories.
+  t.steps.find((x) => x.id === 'test-cases').status = 'done'; t.steps.find((x) => x.id === 'test-cases-review').status = 'in_review';
+  undeferStep(t, 'ui-design');
+  assert.equal(isReopenedStep(t, 'ui-design'), true);
+  assert.equal(heldByReopen(t, 'test-cases-review'), null);
+  for (const x of t.steps) if (x.id === 'ui-design' || x.id === 'ui-design-review') x.status = 'done';
+  assert.equal(stampPassed(t, 'ui-design-review', { platform: 'github', number: 55 }), false, 'it held nothing, so it retires nothing');
+  assert.equal(retiredPr(t, 'test-cases.md', 52, 'github'), false, 'the in-flight test-cases review still counts');
+});

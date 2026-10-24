@@ -1111,7 +1111,7 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     if (!step) { warn(`${job.epic}: no review step for ${job.artifact} — skipping`); continue; }
     // A review `yad gate reopen` retired (#322) never passes its gate again. Without this the reconcile run,
     // which replays every review merged in the last days, would read the old merge and undo the reopen.
-    if (Number(job.pr) > 0 && retiredPr(ledger.state, job.artifact, Number(job.pr), productConfig.platform)) {
+    if (!isPassed(step) && Number(job.pr) > 0 && retiredPr(ledger.state, job.artifact, Number(job.pr), productConfig.platform)) {
       info(`${job.epic}: PR #${job.pr} was retired by \`yad gate reopen\` — it does not pass ${step.id} again; a fresh review does`);
       continue;
     }

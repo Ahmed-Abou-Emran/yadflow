@@ -2282,7 +2282,8 @@ export function unblockStep(state, stepId) {
 // `ready-for-build`; see below), and every later step that has STARTED here
 // (`in_progress`, `in_review`, `done`) goes back to `todo`, its review included. A later step SET ASIDE —
 // skipped, deferred, satisfied (inherited) or blocked — keeps its state and its record: it is a person's
-// decision, not work built on the step, and it is listed as `kept`. `debt` stays on every step.
+// decision, not work built on the step, and it is listed as `kept`. A kept BLOCKED review still loses its
+// approvals and review PRs: blocked is a wait, not a decision that the step does not apply. `debt` stays on every step.
 // `currentStep` becomes the step — from `ready-for-build` too, since that claim rested on the approvals now
 // withdrawn — except for the parallel `test-cases` track, which runs beside Build. Returns `{ state, approvals, productPrs, audit }`; the inputs are not changed.
 export function reopenStep(state, stepId, { reason, by = null, at = null, approvals = [], productPrs = [], buildStates = [], shipped = [], contractLockHash = null, upTo = null } = {}) {
@@ -2377,9 +2378,8 @@ export function reopenStep(state, stepId, { reason, by = null, at = null, approv
     // Every review PR of the reopened step or a later one numbered up to the platform's newest at the reopen
     // (`upTo`) is retired too: one the ledger never recorded — on a verified Product a pointer is written only
     // at merge — would otherwise merge on approvals given before the reopen.
-    // The artifacts whose reviews the reopen touches: the reopened step's own review and every later one not
-    // set aside. `retiredUpTo` and, each time a walked-back review passes again, `passes[]` (`stampPassed`)
-    // cover them.
+    // The artifacts whose reviews the reopen touches: the reopened step's own review and every later one, set
+    // aside or not. `retiredUpTo` and, each time a later review passes, `passes[]` (`stampPassed`) cover them.
     laterArtifacts: later,
     ...(upTo && Number.isInteger(upTo.number) && upTo.number > 0 ? { retiredUpTo: { platform: upTo.platform ?? null, number: upTo.number, artifacts: later } } : {}),
     contractLock: contractLockHash,
@@ -2412,14 +2412,17 @@ export function retiredPr(state, artifact, number, platform = null) {
 }
 
 // Does this review come after the step a `yad gate reopen` reopened, with no `passes[]` row for it yet (#322)?
-// EVERY review after the reopened step does — walked back, todo at the reopen, or kept and put back later —
+// Every review after the reopened step does — walked back, todo at the reopen, or kept and put back later —
 // because any of them can hold the reviews after it (`heldByReopen`). When it passes, `stampPassed` retires
-// the later reviews opened before that moment.
+// the later reviews opened before that moment. Except a review whose author step was resumed BEHIND finished
+// work (E41): it runs beside the chain, held nothing, and its pass must not re-open that work.
 const coveredBy = (state, r, reviewStepId) => {
   const steps = Array.isArray(state?.steps) ? state.steps : [];
   const ri = steps.findIndex((s) => s?.id === r?.step);
   const ti = steps.findIndex((s) => s?.id === reviewStepId);
-  return ri !== -1 && ti > ri && isGateStep(steps[ti]) && typeof steps[ti].artifact === 'string';
+  if (ri === -1 || ti <= ri || !isGateStep(steps[ti]) || typeof steps[ti].artifact !== 'string') return false;
+  const ai = steps.findIndex((s) => s?.id === authorStepFor(state, steps[ti])?.id);
+  return !(ai !== -1 && behindFinishedWork(steps, ai));
 };
 export function reopenStampDue(state, reviewStepId) {
   return (Array.isArray(state?.reopens) ? state.reopens : []).some((r) => isPlainObject(r) && coveredBy(state, r, reviewStepId)
