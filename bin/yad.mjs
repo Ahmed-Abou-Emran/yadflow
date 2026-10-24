@@ -658,6 +658,7 @@ async function main() {
       // The workspace folder itself, or a repo the Product does not register: no Product here, but the
       // person is one `cd` away from it — say so, rather than let "run yad setup" make a second one.
       if (PRODUCT_CMDS.has(cmd)) warn(`this folder is not in a repo the Product registers — the Product is ${shown(found.elsewhere)}: cd there, or pass --dir ${shown(found.elsewhere)}`);
+      else if (cmd === 'status') o.productElsewhere = shown(found.elsewhere);
     } else if (found?.root && REPO_CMDS.has(cmd)) o.product = found.root;
     else if (found?.root && !dirGiven && found.via !== 'here') {
       o.dir = found.root;
@@ -852,7 +853,12 @@ async function main() {
     case 'status': {
       if (o._[1] !== undefined) { refuse(`yad status takes no ${o._[1]}`, 'usage: yad status [--brief] [--no-fetch] [--json]'); break; }
       const root = o.product || (commands.hasProduct(o.dir) ? o.dir : null);
-      if (!root) { refuse(`no Product here (${o.dir}) — yad status reads the Product`, 'run it from the Product, from inside a repo it registers, or pass --dir <the Product>; `yad new` / `yad init` start one'); break; }
+      if (!root) {
+        refuse(`no Product here (${o.dir}) — yad status reads the Product`, o.productElsewhere
+          ? `this folder is not in a repo the Product registers — the Product is ${o.productElsewhere}: cd there, or pass --dir ${o.productElsewhere}`
+          : 'run it from the Product, from inside a repo it registers, or pass --dir <the Product>; `yad new` / `yad init` start one');
+        break;
+      }
       result = await commands.runStatus(root, { cwd: o.dir, json: o.json, fetch: !o.noFetch });
       break;
     }

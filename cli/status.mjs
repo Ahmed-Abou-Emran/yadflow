@@ -11,10 +11,11 @@
 //   prs     your open PRs/MRs on the Product and every registered repo (asked of the platform)
 //   owed    steps deferred as debt, recorded blockers (Shape and Build), open hotfix debt, open
 //           follow-up PRs/MRs (fix/<story>-<task>-followup-…)
+import fs from 'node:fs';
 import path from 'node:path';
 import { c, log, info, hand, readJSON, exists, forTerminal, stripAnsi, run } from './lib.mjs';
 import { isVerifiedLedger, productConfigPath, PROJECT_FILES } from './manifest.mjs';
-import { epicRoot, loadLedger, loadSkillBindings, buildNextForRepo, stepStatus, isValidEpicId, PRODUCT_DONE, PRODUCT_EPICS } from './epic-state.mjs';
+import { epicRoot, epicStories, featureStatus, loadLedger, loadSkillBindings, buildNextForRepo, stepStatus, isValidEpicId, PRODUCT_DONE, PRODUCT_EPICS } from './epic-state.mjs';
 import { listEpics, epicAction, actionLine, soloOf } from './next.mjs';
 import { repoSources } from './standup.mjs';
 import { listPrs, prTarget } from './pr-list.mjs';
@@ -24,6 +25,7 @@ import { taskFromBranch } from './commit.mjs';
 import { isFollowUpBranch, storyEpic } from './build.mjs';
 import { loadDebt } from './thread.mjs';
 import { registryEntryFor } from './find-product.mjs';
+import { readRegistry } from './workspace.mjs';
 
 // How many rows each section shows before "+N more": the whole view stays near 20 lines (#349).
 export const BUDGET = { epics: 5, prs: 4, owed: 4 };
@@ -39,21 +41,38 @@ export function followUpTask(branch) {
   return story && isFollowUpBranch(branch, story, task) ? `${story}-${task}` : null;
 }
 
-// Finished epics are counted, not listed: the view is for what is still moving.
-function finished(a) {
-  if (PRODUCT_DONE.includes(a.kind)) return true;
-  if (a.kind !== 'build' || !a.builds?.length) return false;
-  const lanes = a.builds.flatMap((b) => b.repos || []);
-  return lanes.length > 0 && lanes.every((r) => r.shipped || r.status === 'skipped') && lanes.some((r) => r.shipped);
+// Finished epics are counted, not listed: the view is for what is still moving. "Shipped" is the engine's
+// own rule (`featureStatus`: every story has every lane it declares, all shipped), never the lanes on disk
+// alone — a story that has not begun Build has none. A shipped epic whose parallel test-cases track is
+// still open is not finished, and a documented brownfield anchor is.
+function finished(root, id, ledger, a) {
+  if (PRODUCT_DONE.includes(a.kind) || a.kind === 'backfill-done') return true;
+  if (a.kind !== 'build' || a.parallel) return false;
+  return featureStatus(ledger, { stories: epicStories(epicRoot(root, id)) }) === 'shipped';
+}
+// A lane's steps, only when they are a list of steps with an id (build-state is advisory: a bad file is
+// skipped, never a crash — `loadBuildStates`).
+const laneSteps = (lane) => (Array.isArray(lane?.steps) ? lane.steps.filter((s) => s && typeof s.id === 'string') : []);
+const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+
+// The registered repo this checkout is. A monorepo registers the Product's own folder (`path: "."`), which
+// `registryEntryFor` never answers (it is a code-repo command's guard), so that one case is matched here.
+function repoHere(root, cwd, top) {
+  const hit = registryEntryFor(root, cwd)?.meta?.name;
+  if (typeof hit === 'string') return hit;
+  if (real(top) !== real(root)) return null;
+  const own = readRegistry(root).registry.repos.find((r) => typeof r?.path === 'string' && typeof r.name === 'string' && real(path.resolve(root, r.path)) === real(root));
+  return own?.name ?? null;
 }
 
 // The checkout this was run in: its branch, and — on a task branch — the story's lane in this repo.
 function hereOf(root, cwd, ledgers) {
   const top = run('git', ['rev-parse', '--show-toplevel'], { cwd });
   if (!top.ok) return { branch: null, task: null, why: 'not inside a git repo' };
-  const head = run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
-  const branch = head.ok && head.stdout && head.stdout !== 'HEAD' ? head.stdout : null;
-  const repo = registryEntryFor(root, cwd)?.meta?.name ?? null;
+  // `symbolic-ref` names the branch on a repo with no commit yet too; a detached HEAD has none.
+  const head = run('git', ['symbolic-ref', '--short', '-q', 'HEAD'], { cwd });
+  const branch = head.ok && head.stdout ? head.stdout : null;
+  const repo = repoHere(root, cwd, top.stdout);
   const id = branch ? taskFromBranch(branch) : null;
   const m = id ? /^(EP-[a-z0-9-]+-S\d+)-(T\d+)$/i.exec(id) : null;
   if (!m) return { branch, task: null, repo, why: branch ? 'not a task branch' : 'no branch checked out' };
@@ -63,9 +82,11 @@ function hereOf(root, cwd, ledgers) {
   if (!repo) return { ...here, why: 'this checkout is not a repo the Product registers' };
   const bs = (ledgers.get(epic)?.buildStates || []).find((b) => b?.story === story);
   const lane = bs?.repos?.[repo];
-  if (!lane) return { ...here, why: `${story} has no Build lane in ${repo} yet` };
+  if (!lane || typeof lane !== 'object') return { ...here, why: `${story} has no Build lane in ${repo} yet` };
   const next = buildNextForRepo(lane);
-  const active = (lane.steps || []).find((s) => s?.id === next.step);
+  if (next.status === 'skipped') return { ...here, why: `the lane is skipped in ${repo}${next.record?.reason ? ` — ${next.record.reason}` : ''}` };
+  if (next.status === 'unknown') return { ...here, why: `the lane in ${repo} has no steps yet` };
+  const active = laneSteps(lane).find((s) => s.id === next.step);
   return { ...here, step: next.step, status: next.status, shipped: !!next.shipped, skill: next.skill ?? null,
     reason: stepStatus(active) === 'blocked' ? active?.record?.reason ?? null : null };
 }
@@ -75,13 +96,13 @@ function owedOf(root, id, ledger, action) {
   const out = [];
   for (const d of action.debt || []) out.push({ kind: 'debt', epic: id, step: d.step, status: d.status, reason: d.record?.reason ?? null });
   // A blocker is `blocked` WITH a record (E38); a bare `blocked` is the old spelling of `todo`.
-  for (const s of ledger?.state?.steps || []) {
-    if (stepStatus(s) === 'blocked') out.push({ kind: 'blocked', epic: id, step: s.id, reason: s.record?.reason ?? null });
+  for (const s of Array.isArray(ledger?.state?.steps) ? ledger.state.steps : []) {
+    if (s && typeof s.id === 'string' && stepStatus(s) === 'blocked') out.push({ kind: 'blocked', epic: id, step: s.id, reason: s.record?.reason ?? null });
   }
   for (const bs of ledger?.buildStates || []) {
     for (const [repo, lane] of Object.entries(bs?.repos || {})) {
       if (lane?.status === 'skipped') continue;
-      for (const s of lane?.steps || []) {
+      for (const s of laneSteps(lane)) {
         if (stepStatus(s) === 'blocked') out.push({ kind: 'blocked', epic: id, story: bs.story ?? null, repo, step: s.id, reason: s.record?.reason ?? null });
       }
     }
@@ -119,9 +140,10 @@ function prsOf(root, { env, runner }) {
   const known = read.length > 0 && read.every((p) => p.login);
   return {
     asked: true,
-    // Yours, when every platform said who you are; else every open one, and the view says so.
-    mine: known ? all.filter((p) => p.mine) : all,
-    whose: known ? 'yours' : 'all',
+    // Yours, when every platform said who you are; else every open one, and the view says so. `none` when
+    // no repo answered at all: the count is unknown, not 0.
+    listed: known ? all.filter((p) => p.mine) : all,
+    whose: !read.length ? 'none' : known ? 'yours' : 'all',
     others: known ? all.filter((p) => !p.mine).length : 0,
     followUps: all.filter((p) => followUpTask(p.branch)).map((p) => ({ ...p, task: followUpTask(p.branch) })),
     partial: read.filter((p) => p.partial).map((p) => p.label),
@@ -148,7 +170,7 @@ export function buildStatus(root, { cwd = root, fetch = true, env = process.env,
     ledgers.set(id, ledger);
     const { action, view } = epicAction(root, id, undefined, bindings);
     owed.push(...owedOf(root, id, ledger, action));
-    if (finished(action)) { finishedCount += 1; continue; }
+    if (finished(root, id, ledger, action)) { finishedCount += 1; continue; }
     epics.push({ epic: id, product: PRODUCT_EPICS.includes(id), kind: action.kind, step: action.step ?? null, status: action.status ?? null,
       next: stripAnsi(actionLine(action, { solo, bindings: view, verified })) });
   }
@@ -178,19 +200,24 @@ export function briefLines(m) {
   const p = m.prs;
   if (!p.asked) out.push('open PRs/MRs: not asked (--no-fetch)');
   else {
-    out.push(`open PRs/MRs (${p.whose}): ${p.mine.length}${p.whose === 'yours' && p.others ? ` — ${p.others} by others` : ''}${p.whose === 'all' ? ' — who you are on the platform is not known, so every open one is listed' : ''}`);
-    for (const x of p.mine.slice(0, BUDGET.prs)) {
+    if (p.whose === 'none') out.push('open PRs/MRs: unknown — no repo could be read');
+    else out.push(`open PRs/MRs (${p.whose}): ${p.listed.length}${p.whose === 'yours' && p.others ? ` — ${p.others} by others` : ''}${p.whose === 'all' ? ' — who you are on the platform is not known, so every open one is listed' : ''}`);
+    for (const x of p.listed.slice(0, BUDGET.prs)) {
       const facts = [x.draft ? 'draft' : null, x.checks ? `checks ${x.checks}` : null, x.review ? `review ${x.review}` : null].filter(Boolean);
       out.push(`  ${safe(x.repo)} ${prWord(x.platform)}${x.number}${x.task ? ` ${x.task}` : ''}${facts.length ? ` — ${facts.join(', ')}` : ''}`);
     }
-    out.push(...more(p.mine.length - BUDGET.prs, 'yad standup'));
+    out.push(...more(p.listed.length - BUDGET.prs, 'yad standup'));
+    // Only one page of open PRs/MRs is read per repo: the counts above are then too low, and say so.
+    if (p.partial.length) out.push(`  more open PRs/MRs than one page holds in ${p.partial.map(safe).join(', ')} — only the newest were read`);
     // One line for every repo not read, so a team with many repos offline does not fill the view.
     if (p.notRead.length) out.push(`  platform not read for ${p.notRead.map((n) => safe(n.label)).join(', ')} — PR/MR facts there are unknown, not none`);
   }
   out.push(`owed: ${m.owed.length ? m.owed.length : 'nothing'}`);
   for (const o of m.owed.slice(0, BUDGET.owed)) out.push(`  ${owedLine(o)}`);
-  out.push(...more(m.owed.length - BUDGET.owed, 'yad next --all'));
-  return out;
+  out.push(...more(m.owed.length - BUDGET.owed, 'yad next --all, yad reconcile check, yad standup'));
+  // Every line is made safe at the end, in one place: values from shared files and from the platform (a
+  // branch name, a record's author, a skill name) reach the terminal only as plain text.
+  return out.map(forTerminal);
 }
 
 function owedLine(o) {

@@ -747,7 +747,7 @@ test('#349 yad status: your open PRs from the platform, follow-up PRs as owed, a
     } });
     const m = St.buildStatus(T, { fetch: true, env: statusEnv, runner });
     assert.equal(m.prs.whose, 'yours');
-    assert.deepEqual(m.prs.mine.map((p) => [p.repo, p.number, p.task]), [['api', 7, 'EP-pay-S01-T02']]);
+    assert.deepEqual(m.prs.listed.map((p) => [p.repo, p.number, p.task]), [['api', 7, 'EP-pay-S01-T02']]);
     assert.equal(m.prs.others, 2);
     assert.deepEqual(m.owed.filter((o) => o.kind === 'follow-up-pr').map((o) => [o.repo, o.number, o.task]), [['api', 9, 'EP-pay-S01-T01']]);
     const lines = St.briefLines(m);
@@ -761,6 +761,9 @@ test('#349 yad status: your open PRs from the platform, follow-up PRs as owed, a
     // The platform not read: unknown, not none.
     const off = St.buildStatus(T, { fetch: true, env: { ...statusEnv, YAD_PLATFORM_READ: '0' }, runner });
     assert.ok(St.briefLines(off).includes('  platform not read for Product, api — PR/MR facts there are unknown, not none'));
+    // Nothing read at all: the count is unknown, not 0 (review 1).
+    assert.equal(off.prs.whose, 'none');
+    assert.ok(St.briefLines(off).includes('open PRs/MRs: unknown — no repo could be read'));
   } finally { fs.rmSync(P, { recursive: true, force: true }); }
 });
 
@@ -768,7 +771,7 @@ test('#349 yad status: the view stays near 20 lines however much there is', () =
   const m = {
     setUp: true, here: { branch: 'main', task: null, why: 'not a task branch' }, finished: 3,
     epics: Array.from({ length: 30 }, (_, i) => ({ epic: `EP-e${i}`, step: 'epic', status: 'in_progress', next: 'invoke yad-epic' })),
-    prs: { asked: true, whose: 'yours', others: 0, partial: [], followUps: [], mine: Array.from({ length: 30 }, (_, i) => ({ repo: 'api', platform: 'github', number: i, task: null })), notRead: Array.from({ length: 5 }, (_, i) => ({ label: `r${i}` })) },
+    prs: { asked: true, whose: 'yours', others: 0, partial: [], followUps: [], listed: Array.from({ length: 30 }, (_, i) => ({ repo: 'api', platform: 'github', number: i, task: null })), notRead: Array.from({ length: 5 }, (_, i) => ({ label: `r${i}` })) },
     owed: Array.from({ length: 30 }, (_, i) => ({ kind: 'hotfix-debt', epic: `EP-e${i}`, count: 1 })),
   };
   const lines = St.briefLines(m);
@@ -795,4 +798,53 @@ test('#349 yad status: the CLI finds the Product from a registered repo, keeps -
     assert.notEqual(none.status, 0);
     assert.match(none.stdout + none.stderr, /no Product here/);
   } finally { fs.rmSync(P, { recursive: true, force: true }); }
+});
+
+test('#349 review 1: finished is the engine\'s shipped rule, a bad lane is skipped not a crash, a skipped lane says so, and every line is plain text', async () => {
+  const { P, T, api } = await statusFixture();
+  try {
+    const dir = path.join(T, 'epics/EP-pay');
+    const f = path.join(dir, '.sdlc/state.json');
+    const st = JSON.parse(fs.readFileSync(f, 'utf8'));
+    st.steps = st.steps.map((s) => ({ ...s, status: 'done' }));
+    st.currentStep = 'ready-for-build';
+    put(f, st);
+    put(path.join(dir, 'stories/EP-pay-S01.md'), '---\nid: EP-pay-S01\nrepos: [api]\n---\n');
+    put(path.join(dir, 'stories/EP-pay-S02.md'), '---\nid: EP-pay-S02\nrepos: [api]\n---\n');
+    const shipped = { currentStep: 'engineer-review', steps: ['spec', 'tasks', 'implement', 'checks', 'engineer-review'].map((id) => ({ id, status: 'done' })) };
+    put(path.join(dir, '.sdlc/build-state/EP-pay-S01.json'), { story: 'EP-pay-S01', repos: { api: shipped } });
+    // S02 has not begun Build: the epic is not finished, though every lane on disk shipped.
+    const open = St.buildStatus(T, { fetch: false });
+    assert.deepEqual([open.epics.map((e) => e.epic), open.finished], [['EP-pay'], 0]);
+    put(path.join(dir, '.sdlc/build-state/EP-pay-S02.json'), { story: 'EP-pay-S02', repos: { api: shipped } });
+    assert.deepEqual([St.buildStatus(T, { fetch: false }).epics.length, St.buildStatus(T, { fetch: false }).finished], [0, 1]);
+    // A lane whose steps are not a list is skipped, as `yad next` skips it — never a crash.
+    put(path.join(dir, '.sdlc/build-state/EP-pay-S02.json'), { story: 'EP-pay-S02', repos: { api: { steps: {} }, web: { steps: 'x' } } });
+    git(api, ['checkout', '-q', '-b', 'feat/EP-pay-S02-T01-a']);
+    assert.equal(St.buildStatus(T, { cwd: api, fetch: false }).here.why, 'the lane in api has no steps yet');
+    put(path.join(dir, '.sdlc/build-state/EP-pay-S02.json'), { story: 'EP-pay-S02', repos: { api: { status: 'skipped', record: { reason: 'no API change' } } } });
+    assert.equal(St.briefLines(St.buildStatus(T, { cwd: api, fetch: false }))[0], 'here: EP-pay-S02 T01 in api — the lane is skipped in api — no API change');
+    // A value from a shared file with a control character reaches the terminal as plain text.
+    put(path.join(dir, '.sdlc/build-state/EP-pay-S02.json'), { story: 'EP-pay-S02', repos: { api: { currentStep: 'spec', steps: [{ id: 'spec', status: 'blocked', record: { reason: 'wait\u001b]0;owned\u0007\u009b31m' } }] } } });
+    const lines = St.briefLines(St.buildStatus(T, { cwd: api, fetch: false }));
+    // eslint-disable-next-line no-control-regex -- finding a control character is the point
+    assert.ok(lines.every((l) => !/[\u0000-\u001f\u007f-\u009f]/.test(l)), JSON.stringify(lines));
+  } finally { fs.rmSync(P, { recursive: true, force: true }); }
+});
+
+test('#349 review 1: a monorepo that registers the Product folder itself finds its lane', async () => {
+  const { P, T } = await statusFixture();
+  try {
+    put(path.join(T, '.sdlc/repos.json'), { repos: [{ name: 'app', path: '.', git_url: 'git@github.com:acme/product.git', platform: 'github' }] });
+    put(path.join(T, 'epics/EP-pay/.sdlc/build-state/EP-pay-S01.json'), { story: 'EP-pay-S01', repos: { app: { currentStep: 'implement', steps: [{ id: 'spec', status: 'done' }, { id: 'tasks', status: 'done' }, { id: 'implement', status: 'in_progress' }] } } });
+    git(T, ['checkout', '-q', '-b', 'feat/EP-pay-S01-T01-a']);
+    const h = St.buildStatus(T, { cwd: T, fetch: false }).here;
+    assert.deepEqual([h.repo, h.step, h.status], ['app', 'implement', 'in_progress']);
+  } finally { fs.rmSync(P, { recursive: true, force: true }); }
+});
+
+test('#349 review 1: more open PRs than one page holds is said, not hidden', () => {
+  const m = { setUp: true, here: { branch: null, task: null, why: 'no branch checked out' }, finished: 0, epics: [], owed: [],
+    prs: { asked: true, whose: 'yours', others: 0, partial: ['api'], followUps: [], listed: [], notRead: [] } };
+  assert.ok(St.briefLines(m).includes('  more open PRs/MRs than one page holds in api — only the newest were read'));
 });
