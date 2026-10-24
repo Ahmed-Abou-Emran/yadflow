@@ -38,7 +38,7 @@ const FOLLOW_UP_ID = /(?:^|[/_])(EP-[a-z0-9-]+-S\d+-T\d+)-followup(?=$|[-_/])/;
 export function followUpTask(branch) {
   const m = FOLLOW_UP_ID.exec(branch || '');
   if (!m) return null;
-  const [, story, task] = /^(.+)-(T\d+)$/i.exec(m[1]) || [];
+  const [, story, task] = /^(.+)-(T\d+)$/.exec(m[1]) || [];
   return story && isFollowUpBranch(branch, story, task) ? `${story}-${task}` : null;
 }
 
@@ -184,9 +184,15 @@ export function buildStatus(root, { cwd = root, fetch = true, env = process.env,
     if (finished(root, id, ledger, action)) { finishedCount += 1; continue; }
     // The same words `yad next` prints, with the parallel test-cases track and any re-opened step beside
     // the chain's own action — they are what keeps a shipped epic open.
+    const named = new Set([action.parallel?.step, ...(action.reopened || []).map((l) => l?.step)].filter(Boolean));
     const also = [
       ...(action.parallel ? [`parallel: invoke ${skillPhrase(action.parallel)}`] : []),
       ...(action.reopened || []).map((l) => `re-opened: ${actionLine({ ...l, epicId: id }, { solo, bindings: view, verified })}`),
+      // In Build, any other Shape step not yet passed (a test-cases review still in review, say) is what
+      // keeps the epic open, so it is named too — the Build line alone would read "every lane shipped".
+      ...(action.kind === 'build' ? (Array.isArray(ledger?.state?.steps) ? ledger.state.steps : [])
+        .filter((s) => s && typeof s.id === 'string' && !isPassed(s) && !named.has(s.id))
+        .map((s) => `open: ${s.id} (${stepStatus(s) ?? s.status ?? 'no status'})`) : []),
     ];
     epics.push({ epic: id, product: PRODUCT_EPICS.includes(id), kind: action.kind, step: action.step ?? null, status: action.status ?? null,
       next: stripAnsi([actionLine(action, { solo, bindings: view, verified }), ...also].join(' · ')) });

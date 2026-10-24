@@ -857,11 +857,11 @@ test('#349 review 2: a re-opened step or an open test-cases track keeps a shippe
     const base = JSON.parse(fs.readFileSync(f, 'utf8'));
     put(path.join(dir, 'stories/EP-pay-S01.md'), '---\nid: EP-pay-S01\nrepos: [api]\n---\n');
     put(path.join(dir, '.sdlc/build-state/EP-pay-S01.json'), { story: 'EP-pay-S01', repos: { api: { currentStep: 'engineer-review', steps: ['spec', 'tasks', 'implement', 'checks', 'engineer-review'].map((id) => ({ id, status: 'done' })) } } });
-    for (const [open, word] of [['ui-design', /re-opened: invoke the yad-ui skill/], ['test-cases', /parallel: invoke the yad-test-cases skill/], ['test-cases-review', null]]) {
+    for (const [open, word] of [['ui-design', /re-opened: invoke the yad-ui skill/], ['test-cases', /parallel: invoke the yad-test-cases skill/], ['test-cases-review', /open: test-cases-review \(in_progress\)/]]) {
       put(f, { ...base, currentStep: 'ready-for-build', steps: base.steps.map((s) => ({ ...s, status: s.id === open ? 'in_progress' : 'done' })) });
       const m = St.buildStatus(T, { fetch: false });
       assert.deepEqual([m.epics.map((e) => e.epic), m.finished], [['EP-pay'], 0], open);
-      if (word) assert.match(m.epics[0].next, word);
+      assert.match(m.epics[0].next, word);
     }
     // The skill a project binds is the one "here" names, as `yad next` does (review 3).
     put(f, { ...base, currentStep: 'ready-for-build', steps: base.steps.map((s) => ({ ...s, status: 'done' })) });
