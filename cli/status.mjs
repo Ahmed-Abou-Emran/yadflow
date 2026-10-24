@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { c, log, info, hand, readJSON, exists, forTerminal, stripAnsi, run } from './lib.mjs';
 import { isVerifiedLedger, productConfigPath, PROJECT_FILES } from './manifest.mjs';
-import { epicRoot, epicStories, featureStatus, loadLedger, loadSkillBindings, buildNextForRepo, stepStatus, isValidEpicId, PRODUCT_DONE, PRODUCT_EPICS } from './epic-state.mjs';
+import { epicRoot, epicStories, featureStatus, isPassed, loadLedger, loadSkillBindings, buildNextForRepo, stepStatus, isValidEpicId, PRODUCT_DONE, PRODUCT_EPICS } from './epic-state.mjs';
 import { listEpics, epicAction, actionLine, skillPhrase, soloOf } from './next.mjs';
 import { repoSources } from './standup.mjs';
 import { listPrs, prTarget } from './pr-list.mjs';
@@ -33,7 +33,8 @@ export const BUDGET = { epics: 5, prs: 4, owed: 4 };
 const safe = (v) => forTerminal(String(v ?? ''));
 const prWord = (platform) => (platform === 'gitlab' ? 'MR !' : 'PR #');
 // A task id inside any follow-up branch name; `isFollowUpBranch` (#350's one rule) then confirms it.
-const FOLLOW_UP_ID = /(?:^|[/_])(EP-[a-z0-9-]+-S\d+-T\d+)-followup(?=$|[-_/])/i;
+// Case-sensitive, as a story id is (E117) — the same rule the task branch above is read by.
+const FOLLOW_UP_ID = /(?:^|[/_])(EP-[a-z0-9-]+-S\d+-T\d+)-followup(?=$|[-_/])/;
 export function followUpTask(branch) {
   const m = FOLLOW_UP_ID.exec(branch || '');
   if (!m) return null;
@@ -44,11 +45,13 @@ export function followUpTask(branch) {
 // Finished epics are counted, not listed: the view is for what is still moving. "Shipped" is the engine's
 // own rule (`featureStatus`: every story has every lane it declares, all shipped), never the lanes on disk
 // alone — a story that has not begun Build has none. A shipped epic whose parallel test-cases track is
-// still open is not finished, nor is one with a step re-opened behind it (E41); a documented brownfield
+// still open is not finished, nor is one with a step re-opened behind it (E41), nor one with any Shape
+// step not yet passed (a test-cases review still in review is not on `parallel`); a documented brownfield
 // anchor is.
 function finished(root, id, ledger, a) {
   if (PRODUCT_DONE.includes(a.kind) || a.kind === 'backfill-done') return true;
   if (a.kind !== 'build' || a.parallel || a.reopened?.length) return false;
+  if ((Array.isArray(ledger?.state?.steps) ? ledger.state.steps : []).some((s) => s && !isPassed(s))) return false;
   return featureStatus(ledger, { stories: epicStories(epicRoot(root, id)) }) === 'shipped';
 }
 // A lane's steps, only when they are a list of steps with an id (build-state is advisory: a bad file is
@@ -67,7 +70,7 @@ function repoHere(root, cwd, top) {
 }
 
 // The checkout this was run in: its branch, and — on a task branch — the story's lane in this repo.
-function hereOf(root, cwd, ledgers) {
+function hereOf(root, cwd, ledgers, views) {
   const top = run('git', ['rev-parse', '--show-toplevel'], { cwd });
   if (!top.ok) return { branch: null, task: null, why: 'not inside a git repo' };
   // `symbolic-ref` names the branch on a repo with no commit yet too; a detached HEAD has none.
@@ -86,7 +89,8 @@ function hereOf(root, cwd, ledgers) {
   const lane = bs?.repos?.[repo];
   if (!lane || typeof lane !== 'object') return { ...here, why: `${story} has no Build lane in ${repo} yet` };
   // Only the steps that are steps: a `null` or a bare word in the list is not one (build-state is advisory).
-  const next = buildNextForRepo({ ...lane, steps: laneSteps(lane) });
+  // With the epic's own skill bindings, as `yad next` reads the lane — a project may bind another skill.
+  const next = buildNextForRepo({ ...lane, steps: laneSteps(lane) }, { bindings: views.get(epic) ?? null });
   if (next.status === 'skipped') return { ...here, why: `the lane is skipped in ${repo}${next.record?.reason ? ` — ${next.record.reason}` : ''}` };
   if (next.status === 'unknown') return { ...here, why: `the lane in ${repo} has no steps yet` };
   const active = laneSteps(lane).find((s) => s.id === next.step);
@@ -165,6 +169,7 @@ export function buildStatus(root, { cwd = root, fetch = true, env = process.env,
   const solo = soloOf(productConfig);
   const verified = isVerifiedLedger(productConfig);
   const ledgers = new Map();
+  const views = new Map();
   const epics = [];
   const owed = [];
   let finishedCount = 0;
@@ -174,6 +179,7 @@ export function buildStatus(root, { cwd = root, fetch = true, env = process.env,
     try { ledger = loadLedger(epicRoot(root, id)); } catch { epics.push({ epic: id, problem: 'its ledger does not load — run `yad doctor`' }); continue; }
     ledgers.set(id, ledger);
     const { action, view } = epicAction(root, id, undefined, bindings);
+    views.set(id, view);
     owed.push(...owedOf(root, id, ledger, action));
     if (finished(root, id, ledger, action)) { finishedCount += 1; continue; }
     // The same words `yad next` prints, with the parallel test-cases track and any re-opened step beside
@@ -185,7 +191,7 @@ export function buildStatus(root, { cwd = root, fetch = true, env = process.env,
     epics.push({ epic: id, product: PRODUCT_EPICS.includes(id), kind: action.kind, step: action.step ?? null, status: action.status ?? null,
       next: stripAnsi([actionLine(action, { solo, bindings: view, verified }), ...also].join(' · ')) });
   }
-  const here = hereOf(root, cwd, ledgers);
+  const here = hereOf(root, cwd, ledgers, views);
   const prs = fetch ? prsOf(root, { env, runner }) : { asked: false };
   for (const f of prs.followUps || []) owed.push({ kind: 'follow-up-pr', repo: f.repo, platform: f.platform, number: f.number, task: f.task });
   return { setUp: true, here, epics, finished: finishedCount, prs, owed };

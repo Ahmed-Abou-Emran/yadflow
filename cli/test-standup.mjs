@@ -850,19 +850,25 @@ test('#349 review 1: more open PRs than one page holds is said, not hidden', () 
 });
 
 test('#349 review 2: a re-opened step or an open test-cases track keeps a shipped epic listed, and says what is open', async () => {
-  const { P, T } = await statusFixture();
+  const { P, T, api } = await statusFixture();
   try {
     const dir = path.join(T, 'epics/EP-pay');
     const f = path.join(dir, '.sdlc/state.json');
     const base = JSON.parse(fs.readFileSync(f, 'utf8'));
     put(path.join(dir, 'stories/EP-pay-S01.md'), '---\nid: EP-pay-S01\nrepos: [api]\n---\n');
     put(path.join(dir, '.sdlc/build-state/EP-pay-S01.json'), { story: 'EP-pay-S01', repos: { api: { currentStep: 'engineer-review', steps: ['spec', 'tasks', 'implement', 'checks', 'engineer-review'].map((id) => ({ id, status: 'done' })) } } });
-    for (const [open, word] of [['ui-design', /re-opened: invoke the yad-ui skill/], ['test-cases', /parallel: invoke the yad-test-cases skill/]]) {
+    for (const [open, word] of [['ui-design', /re-opened: invoke the yad-ui skill/], ['test-cases', /parallel: invoke the yad-test-cases skill/], ['test-cases-review', null]]) {
       put(f, { ...base, currentStep: 'ready-for-build', steps: base.steps.map((s) => ({ ...s, status: s.id === open ? 'in_progress' : 'done' })) });
       const m = St.buildStatus(T, { fetch: false });
       assert.deepEqual([m.epics.map((e) => e.epic), m.finished], [['EP-pay'], 0], open);
-      assert.match(m.epics[0].next, word);
+      if (word) assert.match(m.epics[0].next, word);
     }
+    // The skill a project binds is the one "here" names, as `yad next` does (review 3).
+    put(f, { ...base, currentStep: 'ready-for-build', steps: base.steps.map((s) => ({ ...s, status: 'done' })) });
+    put(path.join(T, '.sdlc/skills.json'), { steps: { implement: 'my-impl' } });
+    put(path.join(dir, '.sdlc/build-state/EP-pay-S01.json'), { story: 'EP-pay-S01', repos: { api: { currentStep: 'implement', steps: [{ id: 'spec', status: 'done' }, { id: 'tasks', status: 'done' }, { id: 'implement', status: 'in_progress' }] } } });
+    git(api, ['checkout', '-q', '-b', 'feat/EP-pay-S01-T01-x']);
+    assert.equal(St.buildStatus(T, { cwd: api, fetch: false }).here.skill, 'my-impl');
   } finally { fs.rmSync(P, { recursive: true, force: true }); }
 });
 
