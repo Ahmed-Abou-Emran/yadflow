@@ -894,16 +894,16 @@ test('E48: doctor reports this clone\'s git hook — missing, installed, someone
   } finally { cleanup(T); }
 });
 
-test('E48: yad\'s own ledger commits (gate ci/sync, gate repair) tell the git hook they are the owning command', async () => {
+test('E48: yad\'s own ledger commits (gate ci/sync, gate repair, gate reopen) tell the git hook they are the owning command', async () => {
   const { OWNING_COMMIT_ENV } = await import('./hook.mjs');
   assert.equal(OWNING_COMMIT_ENV().YAD_HOOK_DISABLE, '1');
   // Every commit gate.mjs makes writes the ledger, and each must pass the hook the refusal points at it.
   // The e2e drives `gate ci --merged` in a clone that has the hook; this pins that no commit was missed.
   const src = fs.readFileSync(path.join(ROOT, 'cli/gate.mjs'), 'utf8');
   const commits = src.match(/\['commit',[^\n]*|git\('commit'/g) || [];
-  assert.equal(commits.length, 2, commits.join('\n'));
+  assert.equal(commits.length, 3, commits.join('\n'));
   assert.ok(commits.every((c) => c.startsWith("['commit'")), 'no commit through the plain git helper');
-  assert.equal((src.match(/env: OWNING_COMMIT_ENV\(\)/g) || []).length, 2);
+  assert.equal((src.match(/env: OWNING_COMMIT_ENV\(\)/g) || []).length, 3);
 });
 
 test('E48 review 1: the line for a foreign hook fails open under `sh -e` — only a refusal stops the commit', { skip: IS_WINDOWS && 'sh is Git for Windows\' own there; the line is the same' }, async () => {

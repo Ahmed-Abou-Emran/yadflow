@@ -9198,7 +9198,7 @@ test('E112 CLI: the three verbs parse their flags, answer --json under their own
   const { T, read } = localEpic();
   try {
     const bad = yadRun(T, 'gate', 'frobnicate', 'EP-test');
-    assert.match(bad.out, /\(open\|sync\|comments\|status\|repair\|review\|walkthrough\|trailer\|ci\|approve\|comment\|advance\)/);
+    assert.match(bad.out, /\(open\|sync\|comments\|status\|repair\|reopen\|review\|walkthrough\|trailer\|ci\|approve\|comment\|advance\)/);
     const c1 = yadRun(T, 'gate', 'comment', 'EP-test', 'epic.md', '--by', 'bob', '--count', '2', '--new-round');
     assert.equal(c1.code, 0, c1.out);
     assert.equal(read('comments.json')[0].count, 2);
@@ -25148,7 +25148,8 @@ test('PR270: every key of an answer is always present', async () => {
     assert.deepEqual(keys(search), ['command', 'items', 'jsonVersion', 'ok', 'query', 'summaryOnly', 'threadBroken', 'unlisted', 'unreadable', 'version', 'warnings']);
     assert.deepEqual(keys(search.items[0].matches[0]), ['field', 'step', 'value']);
     const show = JSON.parse(await grabStdout(() => runHistory(T, { action: 'show', args: ['EP-new'], json: true })));
-    assert.deepEqual(keys(show), ['approvalsWhy', 'command', 'item', 'jsonVersion', 'ok', 'productConfigWhy', 'steps', 'stepsWhy', 'thread', 'version', 'warnings']);
+    assert.deepEqual(keys(show), ['approvalsWhy', 'command', 'item', 'jsonVersion', 'ok', 'productConfigWhy', 'reopens', 'steps', 'stepsWhy', 'thread', 'version', 'warnings']);
+    assert.deepEqual(show.reopens, [], 'every `yad gate reopen` of the item (#322); none here');
     assert.deepEqual(keys(show.steps[0]), ['approvals', 'closed', 'debt', 'id', 'inheritedFrom', 'known', 'notAStep', 'record', 'staleUnknown', 'state', 'type']);
     assert.equal(show.item.shapeDone, false);
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
@@ -29175,9 +29176,9 @@ test('#345 doctor: an on-disk repo is skipped when it is the Product\'s own repo
 const { reopenStep, retiredPr } = await import('./epic-state.mjs');
 const { gateReopen, buildReopenMessage, olderThan, REOPEN_SINCE } = await import('./gate.mjs');
 const { heldByReopen } = await import('./epic-state.mjs');
-// The platform answer when no review PR is open on a branch — every gateReopen here gets a finder, so no test
-// asks a real `gh`.
-const noPr = (platform, branch) => ({ ok: false, reason: `no pull request found for head branch ${branch}` });
+// The platform's answer for a repo with no PR yet — every gateReopen here is given one, so no test asks a
+// real `gh`.
+const noNewer = () => ({ ok: true, number: null });
 
 // A classic chain at ready-for-build: epic, architecture and stories approved, ui-design skipped, the
 // parallel test-cases track open.
@@ -29319,10 +29320,10 @@ test('#322 gate reopen: writes the walk-back, lowers the artifact statuses, and 
   const { T, bare, ep } = productForReopen();
   try {
     const before = fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8');
-    const dry = await gateReopen(T, { finder: noPr, epic: 'EP-x', step: 'architecture', reason: 'auth changed', dryRun: true, today: '2026-10-24' });
+    const dry = await gateReopen(T, { newest: noNewer, epic: 'EP-x', step: 'architecture', reason: 'auth changed', dryRun: true, today: '2026-10-24' });
     assert.equal(fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8'), before);
     assert.deepEqual([dry.dryRun, dry.written, dry.revoked, dry.retiredPrs], [true, [], 2, [4, 6]]);
-    const r = await gateReopen(T, { finder: noPr, epic: 'EP-x', step: 'architecture', reason: 'auth changed', today: '2026-10-24' });
+    const r = await gateReopen(T, { newest: noNewer, epic: 'EP-x', step: 'architecture', reason: 'auth changed', today: '2026-10-24' });
     assert.deepEqual([r.currentStep, r.walkedBack[0], r.kept, r.committed], ['architecture', 'architecture', ['ui-design', 'ui-design-review'], false]);
     const state = JSON.parse(fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8'));
     assert.equal(state.reopens.length, 1);
@@ -29340,7 +29341,7 @@ test('#322 gate reopen: writes the walk-back, lowers the artifact statuses, and 
     const story = H.itemHistory(T, { id: 'EP-x', repos: [] });
     assert.deepEqual(story.reopens.map((x) => [x.step, x.walkedBack.length, x.revoked.map((a) => a.step)]), [['architecture', 5, ['architecture-review', 'stories-review']]]);
     // A second run refuses: the step is no longer approved.
-    await assert.rejects(() => gateReopen(T, { finder: noPr, epic: 'EP-x', step: 'architecture', reason: 'again' }), /has not been approved yet/);
+    await assert.rejects(() => gateReopen(T, { newest: noNewer, epic: 'EP-x', step: 'architecture', reason: 'again' }), /has not been approved yet/);
   } finally { process.exitCode = prev; fs.rmSync(T, { recursive: true, force: true }); fs.rmSync(bare, { recursive: true, force: true }); }
 });
 
@@ -29352,17 +29353,17 @@ test('#322 gate reopen --push commits exactly what it wrote, on a verified Produ
     git(T, 'add', '-A'); git(T, 'commit', '-q', '-m', 'old pin'); git(T, 'push', '-q', 'origin', 'main');
     const before = fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8');
     process.exitCode = 0;
-    await gateReopen(T, { finder: noPr, epic: 'EP-x', step: 'architecture', reason: 'auth changed', push: true });
+    await gateReopen(T, { newest: noNewer, epic: 'EP-x', step: 'architecture', reason: 'auth changed', push: true });
     assert.equal(process.exitCode, 1, 'CI pinned to an older yadflow would replay the retired review');
     assert.equal(fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8'), before);
     fs.rmSync(path.join(T, '.sdlc/cli-version.json'));
     git(T, 'add', '-A'); git(T, 'commit', '-q', '-m', 'unpin'); git(T, 'push', '-q', 'origin', 'main');
     process.exitCode = 0;
-    await gateReopen(T, { finder: noPr, epic: 'EP-x', step: 'architecture', reason: 'auth changed' });
+    await gateReopen(T, { newest: noNewer, epic: 'EP-x', step: 'architecture', reason: 'auth changed' });
     assert.equal(process.exitCode, 1, 'verified without --push is refused');
     assert.equal(fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8'), before, 'and writes nothing');
     process.exitCode = 0;
-    const r = await gateReopen(T, { finder: noPr, epic: 'EP-x', step: 'architecture', reason: 'auth changed', push: true });
+    const r = await gateReopen(T, { newest: noNewer, epic: 'EP-x', step: 'architecture', reason: 'auth changed', push: true });
     assert.equal(process.exitCode, 0);
     assert.deepEqual([r.committed, r.pushed], [true, true]);
     assert.match(git(T, 'log', '-1', '--format=%s').toString().trim(), /^chore\(gate\): reopen EP-x\/architecture — auth changed \[skip ci\]$/);
@@ -29376,7 +29377,7 @@ test('#322 a retired review PR never passes its gate again: not found by sync, n
   const prev = process.exitCode;
   const { T, bare, ep } = productForReopen();
   try {
-    await gateReopen(T, { finder: noPr, epic: 'EP-x', step: 'architecture', reason: 'auth changed' });
+    await gateReopen(T, { newest: noNewer, epic: 'EP-x', step: 'architecture', reason: 'auth changed' });
     let read = 0;
     const reader = () => { read += 1; return fullApproval; };
     const stepOf = () => JSON.parse(fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8')).steps.find((s) => s.id === 'architecture-review').status;
@@ -29418,10 +29419,14 @@ test('#322 review 1: after a reopen the gates pass again in order — a later re
   const prev = process.exitCode;
   const { T, bare, ep } = productForReopen();
   try {
-    // A stories review PR the ledger never recorded is open on the platform: the reopen retires it too.
-    const finder = (platform, branch) => (branch === 'review/EP-x/stories-S01' ? { ok: true, number: 30, url: 'u' } : noPr(platform, branch));
-    const r = await gateReopen(T, { finder, epic: 'EP-x', step: 'architecture', reason: 'auth changed' });
-    assert.deepEqual(r.retiredPrs, [4, 6, 30]);
+    // A stories review PR the ledger never recorded is open on the platform (#30, the newest number): the
+    // reopen retires every review of a later step up to it.
+    const r = await gateReopen(T, { newest: () => ({ ok: true, number: 30 }), epic: 'EP-x', step: 'architecture', reason: 'auth changed' });
+    assert.deepEqual([r.retiredPrs, r.retiredUpTo], [[4, 6], 30]);
+    const after = JSON.parse(fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8'));
+    assert.deepEqual(after.reopens[0].retiredUpTo, { platform: 'github', number: 30, artifacts: ['architecture', 'stories', 'test-cases'] });
+    assert.equal(retiredPr(after, 'stories/EP-x-S03.md', 29, 'github'), true, 'a story file only on its review branch is covered too');
+    assert.equal(retiredPr(after, 'epic.md', 29, 'github'), false, 'a review before the step is not');
     git(T, 'add', '-A'); git(T, 'commit', '-q', '-m', 'reopen'); git(T, 'push', '-q', 'origin', 'main');
     let read = 0;
     const { out } = await captureConsole(() => gateCi(T, { branch: 'review/EP-x/stories-S01', pr: 30, merged: true, push: false, today: '2026-10-25', reader: () => { read += 1; return fullApproval; } }));
@@ -29432,8 +29437,14 @@ test('#322 review 1: after a reopen the gates pass again in order — a later re
     const { out: opened } = await captureConsole(() => gateOpen(T, { epic: 'EP-x', artifact: 'stories/', creator: () => { throw new Error('no PR may be opened'); }, hasBranch: () => true }));
     assert.equal(process.exitCode, 1);
     assert.match(opened, /stories-review waits for architecture, which `yad gate reopen` walked back/);
+    // A later review PR opened by hand after the reopen (#31, above the retired range) is held, not even read,
+    // so nothing it carries can count once the hold lifts.
+    const { out: synced } = await captureConsole(() => gateSync(T, { epic: 'EP-x', artifact: 'stories/', today: '2026-10-25', number: 31, branchOf: () => ({ ok: true, branch: 'review/EP-x/stories' }), reader: () => { read += 1; return fullApproval; } }));
+    assert.match(synced, /stories-review waits for architecture, which `yad gate reopen` walked back — PR #31 is not read/);
+    assert.equal(read, 0);
     const st = JSON.parse(fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8'));
     assert.deepEqual([st.currentStep, st.steps.find((x) => x.id === 'stories-review').status], ['architecture', 'todo']);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(ep, '.sdlc/approvals.json'), 'utf8')).filter((x) => x.step === 'stories-review').length, 0);
   } finally { process.exitCode = prev; fs.rmSync(T, { recursive: true, force: true }); fs.rmSync(bare, { recursive: true, force: true }); }
 });
 
@@ -29443,9 +29454,9 @@ test('#322 review 1: on a verified Product a platform that cannot say which late
   try {
     const before = fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8');
     process.exitCode = 0;
-    const { out } = await captureConsole(() => gateReopen(T, { finder: () => ({ ok: false, reason: 'gh not available' }), epic: 'EP-x', step: 'architecture', reason: 'x', push: true }));
+    const { out } = await captureConsole(() => gateReopen(T, { newest: () => ({ ok: false, reason: 'gh not available' }), epic: 'EP-x', step: 'architecture', reason: 'x', push: true }));
     assert.equal(process.exitCode, 1);
-    assert.match(out, /the platform could not say which review PRs are open on review\/EP-x\/architecture \(gh not available\), .*review\/EP-x\/stories-S01 \(gh not available\)/);
+    assert.match(out, /the platform could not say which review PRs were opened before now \(gh not available\)/);
     assert.equal(fs.readFileSync(path.join(ep, '.sdlc/state.json'), 'utf8'), before);
   } finally { process.exitCode = prev; fs.rmSync(T, { recursive: true, force: true }); fs.rmSync(bare, { recursive: true, force: true }); }
 });

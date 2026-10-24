@@ -2272,13 +2272,14 @@ export function unblockStep(state, stepId) {
 // The same for their review PR pointers (`product-prs.json`): they are RETIRED, so a later sync or the CI
 // reconcile replay cannot read the old merged PR and pass the gate again (`retiredPr`).
 //
-// What moves: the author step goes back to `in_progress`, and every later step that has STARTED here
+// What moves: the author step goes back to `in_progress` (the parallel `test-cases` track keeps the epic at
+// `ready-for-build`; see below), and every later step that has STARTED here
 // (`in_progress`, `in_review`, `done`) goes back to `todo`, its review included. A later step SET ASIDE —
 // skipped, deferred, satisfied (inherited) or blocked — keeps its state and its record: it is a person's
 // decision, not work built on the step, and it is listed as `kept`. `debt` stays on every step.
-// `currentStep` becomes the step — from `ready-for-build` too: that claim rested on the approvals now
-// withdrawn. Returns `{ state, approvals, productPrs, audit }`; the inputs are not changed.
-export function reopenStep(state, stepId, { reason, by = null, at = null, approvals = [], productPrs = [], buildStates = [], shipped = [], contractLockHash = null, alsoRetired = [] } = {}) {
+// `currentStep` becomes the step — from `ready-for-build` too, since that claim rested on the approvals now
+// withdrawn — except for the parallel `test-cases` track, which runs beside Build. Returns `{ state, approvals, productPrs, audit }`; the inputs are not changed.
+export function reopenStep(state, stepId, { reason, by = null, at = null, approvals = [], productPrs = [], buildStates = [], shipped = [], contractLockHash = null, upTo = null } = {}) {
   const fail = (msg, hint) => { throw err('YAD-STATE-004', msg, hint); };
   requireChain(state, 'reopen a step in');
   if (isProductLevel(state)) fail('the Foundation is not reopened with this command', 'it runs once per product; change it through its own review');
@@ -2360,11 +2361,15 @@ export function reopenStep(state, stepId, { reason, by = null, at = null, approv
   const audit = {
     step: stepId, date: at, by, reason: String(reason).trim(), from,
     steps: walked, kept, revokedApprovals: revoked,
-    // The pointers taken out, and any review PR the caller found open on a later review branch that the
-    // ledger never recorded (on a verified Product a pointer is written only at merge).
-    retiredPrs: [...prs.taken, ...(Array.isArray(alsoRetired) ? alsoRetired : [])]
-      .map((p) => ({ step: p.step ?? null, artifact: p.artifact ?? null, platform: p.platform ?? null, number: p.number ?? null, branch: p.branch ?? null, url: p.url ?? null }))
-      .filter((p, i, all) => all.findIndex((q) => q.number === p.number && q.artifact === p.artifact && q.platform === p.platform) === i),
+    retiredPrs: prs.taken.map((p) => ({ step: p.step ?? null, artifact: p.artifact ?? null, platform: p.platform ?? null, number: p.number ?? null, branch: p.branch ?? null, url: p.url ?? null })),
+    // Every review PR of the reopened step or a later one numbered up to the platform's newest at the reopen
+    // (`upTo`) is retired too: one the ledger never recorded — on a verified Product a pointer is written only
+    // at merge — would otherwise merge on approvals given before the reopen.
+    ...(upTo && Number.isInteger(upTo.number) && upTo.number > 0 ? { retiredUpTo: {
+      platform: upTo.platform ?? null, number: upTo.number,
+      artifacts: [...new Set(steps.slice(ai + 1).filter((s) => isGateStep(s) && typeof s.artifact === 'string' && !kept.some((k) => k.id === s.id))
+        .map((s) => artifactBase(s.artifact).replace(/-S\d+$/i, '')))],
+    } } : {}),
     contractLock: contractLockHash,
   };
   next.reopens = [...(Array.isArray(next.reopens) ? next.reopens : []), audit];
@@ -2386,6 +2391,9 @@ export function retiredPr(state, artifact, number, platform = null) {
       if (platform && p.platform && p.platform !== platform) continue;
       if (Number.isInteger(p.number) && p.number > top) top = p.number;
     }
+    const u = r?.retiredUpTo;
+    if (isPlainObject(u) && Number.isInteger(u.number) && Array.isArray(u.artifacts) && u.artifacts.includes(base)
+      && !(platform && u.platform && u.platform !== platform) && u.number > top) top = u.number;
   }
   return top > 0 && n <= top;
 }
