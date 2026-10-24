@@ -40,6 +40,11 @@ if task and bs.currentStep == "engineer-review" and task has no close on impleme
 while step is a Build step (not engineer-review):
     result = run_step_skill(step)                     # the skill(s) `yad next --json` names for this lane
 
+    if result stopped to ask human-only questions before writing anything (#357):
+        # nothing was produced, so there is no trust entry to record — only the halt
+        yad build step <story> --repo <repo> <step> blocked [--task <T>] --reason "waiting on human decisions: <the questions, short>"
+        checkpoint; STOP and report the questions
+
     signals = derive_signals(step, result)            # see "Deriving signals"
     verdict = derive_verdict(signals)                 # rejected | approved-with-edits | approved-unchanged
     uid = `yad build trust <story> --repo <repo> <step> --verdict <verdict> --signal <name>=<value> …

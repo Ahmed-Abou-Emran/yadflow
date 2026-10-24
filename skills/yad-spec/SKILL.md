@@ -68,6 +68,41 @@ Tell the person which tools you used and which fallbacks, and why.
 - `repo`  — one entry from that story's `repos` (the ONE repo to spec; ask if the story lists more
   than one).
 
+## Ask the human-only questions first, in one batch
+
+<!-- The same section is in yad-spec and yad-implement: a test holds the two copies equal (#357). -->
+
+Some decisions belong to the human alone. If one turns up late, the long work stops and waits for it.
+So before the long work starts, list every such decision together with every open question, and ask
+them all in **one** message.
+
+**Human-only decisions** — never decide these yourself, and never pick a default just to keep going:
+- **Security trade-offs.** Who may call or see what, what data is stored, logged or shown, how
+  people sign in, and any check made weaker on purpose.
+- **Secrets and tokens.** Which secret or token the work needs, who creates it, where it is kept,
+  and what it may access.
+- **Contract changes.** The work needs the shared cross-repo surface (the locked `contract.md`) to
+  change. Nobody decides this here: it goes back to the architecture gate, or, on a short lane, to a
+  new epic on `classic`. Raise it in the batch so the person learns it now, not halfway through.
+- **Changes that cannot be undone.** Deleting data, or a data migration with no way back.
+
+**How to ask:**
+1. Number each item. For each one, say what must be decided, why only a human can decide it, and the
+   options, with your recommendation where a safe one exists.
+2. Wait for the answers, then record them where the step below says, so no later step asks again.
+   `yad-implement` first reads the answers `yad-spec` recorded in `spec.md`, and asks only what is
+   still open.
+3. If nothing is open, say "no human-only decisions or open questions" and go on.
+4. If a new one still turns up later, stop, collect any others that are open at that point, and ask
+   them together. In the report, say the first batch missed it.
+5. **Run by the orchestrator (`yad-run`):** open questions are the loop's `ambiguous` halt. Run
+   `yad build step <story> --repo <repo> <step> blocked --reason "waiting on human decisions: <the
+   questions, short>"` (add `--task <task>` on the implement leg). Write **no** trust entry, because
+   nothing was produced to judge. Then stop. Once a person answers, the step runs again with the
+   answers in hand.
+
+<!-- end: Ask the human-only questions first -->
+
 ## On Activation
 
 ### Step 1 — Resolve the story and check readiness
@@ -114,13 +149,22 @@ missing** says. If yad cannot answer, check for `/speckit.*` slash-commands and/
 frontmatter (`speckit: installed | not-installed`).
 
 ### Step 5 — Run the heavy ceremony ONCE (or degrade)
+**Ask first (#357).** Before the long part of the ceremony, ask the batch that **Ask the human-only
+questions first** above describes. Its items come from the story, `epic.md`, the contract read in
+Step 3, and the first draft of `spec.md`. Record the answers in `spec.md`, under `## Clarifications`,
+as `- Q: <question> → A: <answer>` lines below a `### Session <YYYY-MM-DD>` heading. This is the format
+`/speckit.clarify` writes, and both paths below leave the answers there.
+
 **Used** — from inside `demo-repos/<repo>/`, drive, in order:
-`/speckit.specify` → `/speckit.clarify` → `/speckit.plan` → `/speckit.analyze` →
+`/speckit.specify` → (ask the batch) → `/speckit.clarify` → `/speckit.plan` → `/speckit.analyze` →
 `/speckit.checklist` → `/speckit.tasks`. **Pin the feature to `<story>`** (do not accept an
 auto-slug). Seed `specify` from the story's acceptance criteria and the contract elements from Step 3.
+Answer `/speckit.clarify`'s questions from the batch answers. A question it asks that the batch did not
+cover is a late one: ask all such questions together, as rule 4 of the batch says.
 `/speckit.constitution` and `/speckit.implement` are **out of scope for Step A** (implement is Step B).
 
-**Not used (degrade)** — hand-author the identical files in Spec Kit's layout under
+**Not used (degrade)** — draft `spec.md` first, ask the batch, record the answers in it, and only then
+write the rest. Hand-author the identical files in Spec Kit's layout under
 `demo-repos/<repo>/specs/<story>/`: `spec.md`, `research.md`, `data-model.md`, `contracts/`,
 `plan.md`, `tasks.md`. The content is what a real Spec Kit run would produce, traceable to the story's
 acceptance criteria and the locked contract surface. `tasks.md` MUST be numbered atomic tasks (`T01…`),
@@ -165,6 +209,8 @@ whatever the team sets with `yad dial`, and this step never changes it.
 - **Per-repo spec, shared contract.** Spec/plan/tasks live in the code repo; the contract stays
   singular in the product repo. Never widen the contract surface from here.
 - **Nothing auto-advances.** Step A generates files and stops; no state machine is advanced.
+- **Human-only decisions are asked first, in one batch** (#357), before the long work — never decided
+  by the agent.
 
 ## Reference
 - Command list, output map, degradation rules, link.md template: `references/spec-handoff.md`.

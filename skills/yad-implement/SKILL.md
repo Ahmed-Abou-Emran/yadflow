@@ -39,6 +39,41 @@ declares; it does not redesign, does not widen the contract, and does not pick u
 - `repo`  — the code repo the story's spec lives in (one of the story's `repos`).
 - `task`  — the ONE atomic task ID to implement, e.g. `T01` (ask if not provided).
 
+## Ask the human-only questions first, in one batch
+
+<!-- The same section is in yad-spec and yad-implement: a test holds the two copies equal (#357). -->
+
+Some decisions belong to the human alone. If one turns up late, the long work stops and waits for it.
+So before the long work starts, list every such decision together with every open question, and ask
+them all in **one** message.
+
+**Human-only decisions** — never decide these yourself, and never pick a default just to keep going:
+- **Security trade-offs.** Who may call or see what, what data is stored, logged or shown, how
+  people sign in, and any check made weaker on purpose.
+- **Secrets and tokens.** Which secret or token the work needs, who creates it, where it is kept,
+  and what it may access.
+- **Contract changes.** The work needs the shared cross-repo surface (the locked `contract.md`) to
+  change. Nobody decides this here: it goes back to the architecture gate, or, on a short lane, to a
+  new epic on `classic`. Raise it in the batch so the person learns it now, not halfway through.
+- **Changes that cannot be undone.** Deleting data, or a data migration with no way back.
+
+**How to ask:**
+1. Number each item. For each one, say what must be decided, why only a human can decide it, and the
+   options, with your recommendation where a safe one exists.
+2. Wait for the answers, then record them where the step below says, so no later step asks again.
+   `yad-implement` first reads the answers `yad-spec` recorded in `spec.md`, and asks only what is
+   still open.
+3. If nothing is open, say "no human-only decisions or open questions" and go on.
+4. If a new one still turns up later, stop, collect any others that are open at that point, and ask
+   them together. In the report, say the first batch missed it.
+5. **Run by the orchestrator (`yad-run`):** open questions are the loop's `ambiguous` halt. Run
+   `yad build step <story> --repo <repo> <step> blocked --reason "waiting on human decisions: <the
+   questions, short>"` (add `--task <task>` on the implement leg). Write **no** trust entry, because
+   nothing was produced to judge. Then stop. Once a person answers, the step runs again with the
+   answers in hand.
+
+<!-- end: Ask the human-only questions first -->
+
 ## On Activation
 
 ### Step 1 — Resolve the spec and the task
@@ -62,6 +97,14 @@ already configured.
 Read the story's `spec.md`, `plan.md`, `data-model.md`, and `contracts/` for this task's context. The
 contract slice is **quoted** from the product repo's locked `contract.md` — implement to it, never
 change it here.
+
+**Then ask the batch (#357)** that **Ask the human-only questions first** above describes, before
+writing any code. Read `spec.md`'s `## Clarifications` first: `yad-spec` recorded its answers there.
+Ask only what is still open for THIS task, from its block in `tasks.md`, `plan.md` and the contract
+slice. Record the answers in the commit body (Step 6), in a `Decisions:` paragraph above the trailer
+block — not in `spec.md`, which is outside the task's declared files. If an answer changes what
+`spec.md`, `plan.md` or `tasks.md` says, that is a spec gap: STOP and re-run `yad-spec`, as for a file
+outside the declared list in Step 4.
 
 ### Step 4 — Implement the task (dev lens), inside the declared files ONLY
 Adopt the **dev** lens. Implement the task's goal so it satisfies its acceptance criterion, touching
@@ -108,7 +151,8 @@ A contract change means the diff alters the agreed cross-repo shape itself.
   to a human**: the work belongs to a new epic on `classic`.
 
 ### Step 6 — Commit on the task branch
-Stage only the declared files. Commit with the convention: a conventional subject, a short body, and a
+Stage only the declared files. Commit with the convention: a conventional subject, a short body (with
+the `Decisions:` paragraph when Step 3 asked anything), and a
 `Task: <story>-<task>` trailer (plus `Contract-Change: yes` if Step 5 applies). The human author owns the
 commit; **no `Co-Authored-By:` footer by default** — add one only when the human explicitly asks
 (`yad commit --ai <id>` / the `.gitmessage` choices from `config.yaml` `build.ai_coauthor.allowed`),
@@ -151,6 +195,8 @@ at the engineer review in `yad-engineer-review`: merged as authored → `approve
   warns when a group is over it.
 - **Light loop per task.** Do not re-run the heavy spec ceremony; that already ran once in Step A.
 - **Never widen the contract here.** Surface changes go back to the architecture gate (Step 5).
+- **Human-only decisions are asked first, in one batch** (#357), before any code — never decided by
+  the agent.
 - **The step never advances itself.** A scope overrun or contract touch always halts. The
   `implement → checks` hand-off advances only when the orchestrator's `implement` dial is
   `advance: auto` (`yad dial`) — and never past the engineer review, which is always human.

@@ -25,11 +25,17 @@ for the same task.
 
 <body — what and why, 1–3 lines>
 
+[Decisions:
+- Q: <question> → A: <answer>]
+
 Task: <story-id>-<task-id>
 [Contract-Change: yes]
 [Co-Authored-By: <AI name> <email>]
 ```
 
+- **`Decisions:`** (#357) holds the answers to the human-only questions the skill asked before any
+  code (`yad-implement` Step 3). Leave it out when nothing was asked. It is its own paragraph, above
+  the trailers, so git never reads it as a trailer.
 - The **`<type>` is lowercase** (`feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`,
   `chore`, `revert`) and the **`<subject>` starts lowercase**, is **imperative**, and has **no trailing
   period** — Conventional Commits (see `CONTRIBUTING.md` and `config.yaml` `build.commit_subject_style`).

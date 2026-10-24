@@ -172,11 +172,15 @@ for it" table is in the [team guide §11](../TEAM-GUIDE.md).
 
 - **`yad-spec`** — Step A. For one ready-for-build story and one of its repos, run the Spec Kit ceremony
   once (specify → clarify → plan → analyze → checklist → tasks) → `specs/<story-id>/`. Drives `/speckit.*`
-  when installed; references the locked contract — never re-invents the surface.
+  when installed; references the locked contract — never re-invents the surface. Before the long work,
+  it asks every human-only decision (security trade-offs, secrets and tokens, contract changes, changes
+  that cannot be undone) and every open question in one batch, and records the answers in `spec.md`
+  (#357).
 - **`yad-implement`** — Step B. With the dev lens, implement **one** atomic task as a small diff
   (≤3 files) on its own branch. The diff stays inside the files the task declared (flag and STOP if it
   would grow). Commit ends with the task ID; `Contract-Change: yes` only if it touches the locked
-  contract surface.
+  contract surface. Before any code, it asks in one batch the human-only decisions `spec.md` has not
+  answered yet (#357).
 - **`yad-checks`** — Step C, the production-safety gates. Wire and run the CI gates: **spec-link**
   (every change links a real story/spec), **contract-check** (a contract-surface diff without a
   re-locked contract FAILS), **build/test/lint**, **verified-commits** (every commit platform-signed),
@@ -228,7 +232,8 @@ for it" table is in the [team guide §11](../TEAM-GUIDE.md).
 - **`yad-run`** — The Phase 4 orchestrator. Drives a story's Build loop (spec → tasks → implement →
   checks) on each step's advance dial, recording every run in the trust log. A clean `checks` pass on
   auto advances to engineer-review; any failure, scope overrun, or contract-surface touch HALTS for a
-  human. Sets a step's dial through `yad dial` (nothing to earn since E34) and flips the kill switch
+  human, and so does a skill that stopped to ask its human-only questions (no trust entry then: nothing
+  was produced). Sets a step's dial through `yad dial` (nothing to earn since E34) and flips the kill switch
   through `yad kill` / `yad unkill`. It
   never drives a lane skipped whole with `yad skip <epic> <story> --repo <name>` (E39), and never marks a
   single Build step skipped.

@@ -99,7 +99,10 @@ Walk the steps for `repo` starting at `from`/`currentStep`. For each step:
    --signal <name>=<value> … --ran-by <machine|human> --json` writes the entry to its own shard with a fresh
    `uid` and prints it (`ranBy: machine` if this advance was automated, else `human`) — see
    `references/run-loop.md` for the derivation. Do this for *every* step run, pass or fail; the log is the
-   evidence base. Keep the `uid`: the closing record names it.
+   evidence base. Keep the `uid`: the closing record names it. **One exception (#357):** when the
+   step's skill stopped to ask its human-only questions before writing anything, record no trust
+   entry — there is nothing to judge. Halt as step 4 says, with the reason
+   `waiting on human decisions: <the questions, short>`.
 3. **Ask the engine for the effective dial:** `yad dial <epic> <story> --repo <repo> <step> --json`, and use
    its `advance`. It is `human` whenever the step is a gate (`why: gate` — a read never refuses one), the kill switch
    is on, or `.sdlc/automation.json` cannot be read (`automationError` says so) — so never work the dial out from the files yourself.
