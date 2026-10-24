@@ -15,7 +15,7 @@ import {
   upsertProductPr, stateInvariants, repairState, DISCOVERY_FILES, FOUNDATION_REQUIRED, unwrittenSections,
   canonicalApprovals, canonicalComments, canonicalProductPrs, optionalStepsFor, isSkippableStep, writeState, routeLacksStep,
   isPassed, stepStatus, claimsSkipped, claimsInherited, DISCOVERY_EPIC, FOUNDATION_DIR, FOUNDATION_EPIC, staleFoundationGuards,
-  reopenStep, retiredPr, epicLineage, heldByReopen, reopenOwnReview, stampPassedUpTo,
+  reopenStep, retiredPr, epicLineage, heldByReopen, walkedBackReview, stampPassed,
 } from './epic-state.mjs';
 import { readShips } from './ledger.mjs';
 import { activePeople, activeSum, activeBasis, approverCount, printTeamHint, soloTeamHint } from './people.mjs';
@@ -719,7 +719,11 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
   // A pointer resolved from the platform is adopted into the ledger on the WRITER path only. In
   // verified mode this run is advisory and writes nothing, so the human never ends up with a gate-state
   // file in their working tree for the ledger-guard check to reject.
-  if (resolved.discovered && !readOnly) productPrs = upsertProductPr(productPrs, targets[0]);
+  // Not for a review held behind a reopen (#322): a pointer recorded during the hold would be read once it lifts.
+  if (resolved.discovered && !readOnly) {
+    const held = findReviewStep(state, targets[0].artifact);
+    if (!held || isPassed(held) || !heldByReopen(state, held.id)) productPrs = upsertProductPr(productPrs, targets[0]);
+  }
 
   let synced = 0;
   let advanced = 0;
@@ -753,9 +757,16 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
     // and write nothing but the PR pointer. The step then read `done` while its approvals were all
     // stale: work proceeded on an audit trail saying the re-review never happened (issue #156).
     const alreadyDone = isPassed(step);
-    // After a reopen the gates pass again in order (#322). A held review is not read, and once the reopened
-    // step passes again its PR is retired with every later review opened before then (`stampPassedUpTo`), so
-    // nothing given during the hold counts.
+    // After a reopen the gates pass again in order (#322). Asked of the LIVE state on every pass: an earlier
+    // target in this same run may have just passed a walked-back review and retired this PR (`stampPassed`).
+    if (!alreadyDone && retiredPr(state, pr.artifact, pr.number, platform)) {
+      info(`${step.id}: PR #${pr.number} was retired by \`yad gate reopen\` — not read; review ${pr.artifact} again on a fresh PR/MR: \`yad gate open ${epic} ${step.artifact}\``);
+      productPrs = canonicalProductPrs(productPrs.filter((p) => !(p.artifact === pr.artifact && p.number === pr.number)));
+      gates.push({ step: step.id, artifact: pr.artifact, pr: pr.number ?? null, merged: null, rule: null, passed: false, alreadyDone: false, retired: true, have: null, gateRule: null, cap: null, short: null, missing: ['a fresh review'], staleDropped: 0 });
+      continue;
+    }
+    // A held review is not read, and once the step it waits on passes again its PR is retired with every
+    // later review opened before then (`stampPassed`), so nothing given during the hold counts.
     const holdFor = alreadyDone ? null : heldByReopen(state, step.id);
     if (holdFor) {
       warn(`${step.id} waits for ${holdFor}, which \`yad gate reopen\` walked back — PR #${pr.number} is not read`);
@@ -884,12 +895,18 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
       });
       advanced++;
       ok(`gate PASSED — ${step.id} → done; next: ${state.currentStep}`);
-      // The reopened step passed again (#322): the later reviews opened before now are retired, so each is
-      // reviewed afresh. The platform's newest number bounds them; this PR's own number when it cannot answer.
-      if (reopenOwnReview(state) === step.id) {
+      // A review a reopen walked back passed again (#322): the later reviews opened before now are retired, so
+      // each is reviewed afresh. The platform's newest number bounds them; this PR's own number when the
+      // platform cannot answer — said, and the CI run goes red, since a later PR above it is then not covered.
+      // Not on a read-only run: nothing it records is kept.
+      if (!readOnly && walkedBackReview(state, step.id)) {
         const got = newest(platform, { cwd: root });
+        if (!got?.ok) {
+          warn(`could not ask the platform for its newest PR/MR (${String(got?.reason ?? 'no answer').split('\n')[0]}) — the later reviews are retired only up to #${pr.number}; close any later review PR/MR opened since by hand`);
+          if (!local) process.exitCode = 1;
+        }
         const n = Math.max(got?.ok && Number.isInteger(got.number) ? got.number : 0, Number(pr.number) || 0);
-        if (stampPassedUpTo(state, step.id, { platform, number: n })) info(`${step.id} passed again after \`yad gate reopen\` — the later steps' review PRs up to #${n} are retired; review each again on a fresh PR/MR`);
+        if (stampPassed(state, step.id, { platform, number: n })) info(`${step.id} passed again after \`yad gate reopen\` — the later steps' review PRs up to #${n} are retired; review each again on a fresh PR/MR`);
       }
     } else {
       state = markInReview(state, step, { by, date: today, pr: pr.number ?? null, hash: curHash });

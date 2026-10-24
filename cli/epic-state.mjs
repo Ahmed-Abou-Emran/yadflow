@@ -2039,6 +2039,12 @@ const otherWay = (as) => (as === 'skipped' ? 'deferred' : 'skipped');
 // worded. The gate itself is not waived: `gatePredicate` still reports a deferred step's review as owed.
 function setAsideStep(state, stepId, as, { reason, by = null, at = null, debt = false, profiles = LIFECYCLE_PROFILES } = {}) {
   const V = SET_ASIDE[as];
+  // A step `yad gate reopen` walked back (#322) is reviewed again before it is set aside: setting it aside
+  // would lift the hold on the later reviews without retiring the PRs opened during it.
+  if (reopenedAndOpen(state, stepId)) {
+    throw err('YAD-STATE-004', `${stepId} was reopened with \`yad gate reopen\` and has not passed its review again`,
+      'pass its review again first; or, if the change makes the step not apply, thread it as a change epic with the yad-change skill');
+  }
   // DEBT IS OWED WORK, and a skip says the step does not apply (E36/E37), so nothing is owed back. Asked
   // first, before any chain question: it is a wrong command, whatever state the chain is in.
   if (debt && !V.carriesDebt) {
@@ -2368,7 +2374,8 @@ export function reopenStep(state, stepId, { reason, by = null, at = null, approv
     // (`upTo`) is retired too: one the ledger never recorded — on a verified Product a pointer is written only
     // at merge — would otherwise merge on approvals given before the reopen.
     // The artifacts whose reviews the reopen touches: the reopened step's own review and every later one not
-    // set aside. `retiredUpTo` and, once the step passes again, `passedUpTo` (`stampPassedUpTo`) cover them.
+    // set aside. `retiredUpTo` and, each time a walked-back review passes again, `passes[]` (`stampPassed`)
+    // cover them.
     laterArtifacts: later,
     ...(upTo && Number.isInteger(upTo.number) && upTo.number > 0 ? { retiredUpTo: { platform: upTo.platform ?? null, number: upTo.number, artifacts: later } } : {}),
     contractLock: contractLockHash,
@@ -2392,7 +2399,7 @@ export function retiredPr(state, artifact, number, platform = null) {
       if (platform && p.platform && p.platform !== platform) continue;
       if (Number.isInteger(p.number) && p.number > top) top = p.number;
     }
-    for (const u of [r?.retiredUpTo, r?.passedUpTo]) {
+    for (const u of [r?.retiredUpTo, ...(Array.isArray(r?.passes) ? r.passes : [])]) {
       if (isPlainObject(u) && Number.isInteger(u.number) && Array.isArray(u.artifacts) && u.artifacts.includes(base)
         && !(platform && u.platform && u.platform !== platform) && u.number > top) top = u.number;
     }
@@ -2400,29 +2407,44 @@ export function retiredPr(state, artifact, number, platform = null) {
   return top > 0 && n <= top;
 }
 
-// The review of the step the latest `yad gate reopen` walked back, while that step has not passed again
-// (#322) — or null. The moment it passes is when `stampPassedUpTo` closes the hold.
-export function reopenOwnReview(state) {
-  const steps = Array.isArray(state?.steps) ? state.steps : [];
-  const last = Array.isArray(state?.reopens) ? state.reopens[state.reopens.length - 1] : null;
-  if (!isPlainObject(last) || typeof last.step !== 'string' || last.passedUpTo) return null;
-  const ri = steps.findIndex((s) => s?.id === last.step);
-  if (ri === -1) return null;
-  return steps.find((s, k) => k > ri && isGateStep(s) && authorStepFor(state, s)?.id === last.step)?.id ?? null;
+// Is this a review some `yad gate reopen` walked back that has not passed again since (#322)? When it passes,
+// `stampPassed` retires the later reviews opened before that moment.
+export function walkedBackReview(state, reviewStepId) {
+  return (Array.isArray(state?.reopens) ? state.reopens : []).some((r) => isPlainObject(r)
+    && (Array.isArray(r.steps) ? r.steps : []).some((w) => w?.id === reviewStepId)
+    && !(Array.isArray(r.passes) ? r.passes : []).some((p) => p?.step === reviewStepId));
 }
 
-// The reopened step's review passed again (#322): every review PR of a LATER step opened before now — during
+// A review a reopen walked back passed again (#322): every review PR of a LATER step opened before now — during
 // the hold, by hand, or merged while it was held — is retired, up to the platform's newest number. Their
-// approvals were given before the step they rest on was approved again, so the later steps are reviewed
-// afresh, on new PRs/MRs. Mutates `state`; true when it stamped.
-export function stampPassedUpTo(state, reviewStepId, { platform = null, number } = {}) {
-  if (reopenOwnReview(state) !== reviewStepId || !Number.isInteger(number) || number <= 0) return false;
-  const last = state.reopens[state.reopens.length - 1];
-  const own = state.steps.find((s) => s?.id === reviewStepId);
-  const ownBase = typeof own?.artifact === 'string' ? artifactBase(own.artifact).replace(/-S\d+$/i, '') : null;
-  const artifacts = (Array.isArray(last.laterArtifacts) ? last.laterArtifacts : []).filter((b) => b !== ownBase);
-  last.passedUpTo = { platform, number, artifacts };
+// approvals were given before the step they rest on was approved again, so each later step is reviewed afresh,
+// on a new PR/MR. Recorded per walked-back review (`passes[]`), so a reopen of `epic` closes its hold step by
+// step. Mutates `state`; true when it recorded one.
+export function stampPassed(state, reviewStepId, { platform = null, number } = {}) {
+  if (!walkedBackReview(state, reviewStepId) || !Number.isInteger(number) || number <= 0) return false;
+  const steps = state.steps;
+  const at = steps.findIndex((s) => s?.id === reviewStepId);
+  const after = new Set(steps.slice(at + 1).filter((s) => isGateStep(s) && typeof s.artifact === 'string')
+    .map((s) => artifactBase(s.artifact).replace(/-S\d+$/i, '')));
+  for (const r of state.reopens) {
+    if (!isPlainObject(r) || !(Array.isArray(r.steps) ? r.steps : []).some((w) => w?.id === reviewStepId)) continue;
+    const passes = Array.isArray(r.passes) ? r.passes : [];
+    if (passes.some((p) => p?.step === reviewStepId)) continue;
+    const artifacts = (Array.isArray(r.laterArtifacts) ? r.laterArtifacts : []).filter((b) => after.has(b));
+    r.passes = [...passes, { step: reviewStepId, platform, number, artifacts }];
+  }
   return true;
+}
+
+// Is this step walked back by a reopen whose review has not passed again (#322)? Then it is not set aside.
+function reopenedAndOpen(state, stepId) {
+  // Asked before the chain is validated, so it never reads a malformed ledger it does not need.
+  if (!Array.isArray(state?.reopens) || !state.reopens.length || !Array.isArray(state.steps) || !state.steps.every(isPlainObject)) return false;
+  const steps = state.steps;
+  const review = steps.find((s) => isGateStep(s) && authorStepFor(state, s)?.id === stepId);
+  return (Array.isArray(state?.reopens) ? state.reopens : []).some((r) => isPlainObject(r)
+    && (Array.isArray(r.steps) ? r.steps : []).some((w) => w?.id === stepId || (review && w?.id === review.id))
+    && !(Array.isArray(r.passes) ? r.passes : []).some((p) => p?.step === review?.id));
 }
 
 // After `yad gate reopen` (#322) the gates from the reopened step on pass again IN ORDER: a later review may
@@ -2432,14 +2454,14 @@ export function stampPassedUpTo(state, reviewStepId, { platform = null, number }
 // that step's review passes, the chain is whole again.
 export function heldByReopen(state, reviewStepId) {
   const steps = Array.isArray(state?.steps) ? state.steps : [];
-  const last = Array.isArray(state?.reopens) ? state.reopens[state.reopens.length - 1] : null;
-  if (!isPlainObject(last) || typeof last.step !== 'string') return null;
-  const ri = steps.findIndex((s) => s?.id === last.step);
+  if (!Array.isArray(state?.reopens) || !state.reopens.length) return null;
   const ti = steps.findIndex((s) => s?.id === reviewStepId);
-  if (ri === -1 || ti <= ri) return null;
-  const own = steps.find((s, k) => k > ri && isGateStep(s) && authorStepFor(state, s)?.id === last.step) || null;
-  if (own && own.id === reviewStepId) return null;
-  const waiting = [steps[ri], own].find((s) => s && !isPassed(s));
+  if (ti === -1) return null;
+  // EVERY earlier step must have passed — not only the reopened one: a reopen of `epic` walks `architecture`
+  // back too, and stacked reopens walk back more. Its own author step is not counted (on a verified Product it
+  // closes only when this review passes), nor a step re-opened beside finished work (E41), which runs aside.
+  const author = authorStepFor(state, steps[ti]);
+  const waiting = steps.slice(0, ti).find((s) => isPlainObject(s) && s.id !== author?.id && !isPassed(s) && !isReopenedStep(state, s.id));
   return waiting ? waiting.id : null;
 }
 
