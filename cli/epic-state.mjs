@@ -3168,7 +3168,9 @@ export function buildNextForRepo(repoState = {}, { bindings = null } = {}) {
     return { step: null, status: 'skipped', shipped: false, skill: null, automation: null, locked: false, chain: [],
       ...(isPlainObject(repoState.record) ? { record: repoState.record } : {}) };
   }
-  const steps = Array.isArray(repoState.steps) ? repoState.steps : [];
+  // Only entries that are steps: build-state is advisory, and a `null` or a bare word in a hand-edited list
+  // must not stop `yad next` (a valid file reads exactly as before).
+  const steps = Array.isArray(repoState.steps) ? repoState.steps.filter((s) => isPlainObject(s)) : [];
   const byId = new Map(steps.map((s) => [s.id, s]));
   // Empty/half-seeded file ⇒ unknown (not-started), NEVER shipped. Every step done ⇒ shipped.
   if (!steps.length) {
