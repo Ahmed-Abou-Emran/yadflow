@@ -9614,9 +9614,13 @@ test('yad-spec and yad-implement ask the human-only questions first, in one batc
   assert.match(impl, /Read `spec\.md`'s `## Clarifications` first/);
   assert.match(impl, /in a `Decisions:` paragraph above the trailer\s+block/);
   assert.match(impl, /pass the body with `yad commit --body`/);
+  // Step 6 never opens the PR: that waits for the checks and the open-pr dial (#357 review 2).
+  assert.doesNotMatch(impl, /--body`, then\s+run `yad open-pr`/);
   // The orchestrator halts on the questions without grading a run that produced nothing.
   assert.match(read('skills/yad-run/SKILL.md'), /record no trust entry/);
   assert.match(read('skills/yad-run/SKILL.md'), /skip steps 3 and 4/);
+  assert.match(read('skills/yad-run/SKILL.md'), /\*\*Not when the skill also hit its contract STOP\*\*/);
+  assert.match(read('skills/yad-run/references/run-loop.md'), /and did NOT hit its contract STOP/);
   assert.ok(read('skills/yad-run/references/run-loop.md').includes('--reason "waiting on human decisions: <the questions, short>"'));
 });
 

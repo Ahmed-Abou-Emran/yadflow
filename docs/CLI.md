@@ -152,13 +152,14 @@ bypasses the commit atomic guard) — it never reaches a `modified` managed file
 replaces those (see below). Commit flags: `--type`, `-m/--message`, `--task` (a
 `<story>-T<NN>` id, the story an `EP-<slug>-S<n>` with a lowercase slug — an explicit value is
 validated against the spec-link gate and `yad commit` fails locally if it is malformed), `--ai
-<claude\|copilot\|cursor\|coderabbit\|none>`, `--contract-change`, `--manual --reason <why>` (always
+<claude\|copilot\|cursor\|coderabbit\|none>`, `--contract-change`, `--body <text>` (a body above the
+trailers; `yad ship` refuses it), `--manual --reason <why>` (always
 together; the reason is one line, and one that starts with `-` is written `--reason=-…`; `yad ship`
 refuses both), `--dry-run`. `open-pr` flags:
 `--repo`, `--risk <low\|medium\|high>`, `--contract-change`, `--base <branch>` (override the resolved
 base — only pass it deliberately; a non-default base loses the AI first pass), `--platform`,
 `--title`. `ship` takes the union of the `commit`
-and `open-pr` flags (it runs `open-pr` only if the commit lands).
+and `open-pr` flags, except `--body`, `--manual` and `--reason` (it runs `open-pr` only if the commit lands).
 
 ### `--json` on every command (E1)
 

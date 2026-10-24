@@ -106,7 +106,9 @@ change it here.
 writing any code. Read `spec.md`'s `## Clarifications` first: `yad-spec` recorded its answers there.
 Ask only what is still open for THIS task, from its block in `tasks.md`, `plan.md` and the contract
 slice. Record the answers in the commit body (Step 6), in a `Decisions:` paragraph above the trailer
-block — not in `spec.md`, which is outside the task's declared files. If an answer changes what
+block — not in `spec.md`, which is outside the task's declared files. Until that commit they are on
+no disk, so after a question halt the person gives the answers to the resumed run, which uses them
+and does not ask again. If an answer changes what
 `spec.md`, `plan.md` or `tasks.md` says, that is a spec gap: STOP and re-run `yad-spec`, as for a file
 outside the declared list in Step 4.
 
@@ -156,8 +158,8 @@ A contract change means the diff alters the agreed cross-repo shape itself.
 
 ### Step 6 — Commit on the task branch
 Stage only the declared files. Commit with the convention: a conventional subject, a short body (with
-the `Decisions:` paragraph when Step 3 asked anything — pass the body with `yad commit --body`, then
-run `yad open-pr`; `yad ship` takes no body), and a
+the `Decisions:` paragraph when Step 3 asked anything — pass the body with `yad commit --body`, as
+`yad ship` takes no body), and a
 `Task: <story>-<task>` trailer (plus `Contract-Change: yes` if Step 5 applies). The human author owns the
 commit; **no `Co-Authored-By:` footer by default** — add one only when the human explicitly asks
 (`yad commit --ai <id>` / the `.gitmessage` choices from `config.yaml` `build.ai_coauthor.allowed`),

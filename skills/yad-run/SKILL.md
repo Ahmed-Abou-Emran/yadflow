@@ -103,7 +103,9 @@ Walk the steps for `repo` starting at `from`/`currentStep`. For each step:
    step's skill stopped to ask its human-only questions (its first batch or a later one), the step's
    output is not finished, and a draft is not output to judge: record no trust entry. Run
    `yad build step <story> --repo <repo> <step> blocked [--task <task>] --reason "waiting on human
-   decisions: <the questions, short>"`, run `checkpoint`, and stop — skip steps 3 and 4.
+   decisions: <the questions, short>"`, run `yad checkpoint --push`, and stop — skip steps 3 and 4.
+   **Not when the skill also hit its contract STOP** (a contract-change item in its batch): no answer
+   lifts that, so it is the step-4 contract-touch halt, with its trust entry, as before.
 3. **Ask the engine for the effective dial:** `yad dial <epic> <story> --repo <repo> <step> --json`, and use
    its `advance`. It is `human` whenever the step is a gate (`why: gate` — a read never refuses one), the kill switch
    is on, or `.sdlc/automation.json` cannot be read (`automationError` says so) — so never work the dial out from the files yourself.
