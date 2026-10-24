@@ -336,6 +336,10 @@ write path.
   whether approvals arrive manually or via `sync`. With no Product platform / no CLI, the gate runs local
   with no error: `yad gate approve`, `yad gate comment` and `yad gate advance` record the review in the
   engine (E112).
+- **A passed gate is taken back only by `yad gate reopen`** (#322), and only before Build starts:
+  `yad gate reopen <epic> <step> --reason "<why>"` walks the chain back to the step and revokes the
+  later reviews' approvals, so each gate runs again. Never edit `state.json` or `approvals.json` by hand
+  to do it.
 
 ## Reference
 - Gating details and worked example: `references/gating.md`.

@@ -240,6 +240,11 @@ ${c.bold('Review gate (Shape)')}
                                        No platform only: record who commented, and how often, this round
   yad gate advance <epic> <artifact>   No platform only: pass the gate when its approvals hold
   yad gate repair <epic> [--push]      Close an author step stranded behind a passed review gate
+  yad gate reopen <epic> <step> --reason <why> [--push] [--dry-run]
+                                       Reopen an approved Shape step before Build starts: it and every
+                                       later step go back, their approvals are revoked (kept in
+                                       state.json reopens[]), and every gate from it is required again.
+                                       --push commits it to the default branch (needed when verified)
                                        (YAD-STATE-005); --push commits state.json to the default branch
   yad gate review <epic> [artifact]    Print the grounding bundle for the review companion
                                        (artifact + risk + contract + PR + code-maps) — fun, easy review
@@ -525,7 +530,7 @@ const ACTIONS = {
   epic: { known: ['new'] },
   foundation: { known: ['new', 'status'] },
   skill: { known: ['list', 'bind', 'unbind', 'recommend'], default: 'list' },
-  gate: { known: ['open', 'sync', 'comments', 'status', 'repair', 'review', 'walkthrough', 'trailer', 'ci', 'approve', 'comment', 'advance'] },
+  gate: { known: ['open', 'sync', 'comments', 'status', 'repair', 'reopen', 'review', 'walkthrough', 'trailer', 'ci', 'approve', 'comment', 'advance'] },
   review: { known: ['trailer', 'context', 'chat', 'cards', 'walkthrough', 'nudge', 'reconcile'] },
   tidy: { known: ['up'] },
   history: { known: ['list', 'show', 'search'], default: 'list' },
@@ -928,7 +933,7 @@ async function main() {
       const [, action, epic, artifact] = o._;
       // `gate ci` takes no positionals — epic/artifact come from --branch (or a sweep of all PRs).
       if (action === 'ci') { result = await commands.gateCi(o.dir, { branch: o.branch, pr: o.pr, merged: o.merged, push: !o.noPush, today }); break; }
-      if (!epic) { refuse('usage: yad gate <open|sync|comments|status|repair|review|walkthrough|trailer|ci|approve|comment|advance> <epic> [artifact]'); break; }
+      if (!epic) { refuse('usage: yad gate <open|sync|comments|status|repair|reopen|review|walkthrough|trailer|ci|approve|comment|advance> <epic> [artifact]'); break; }
       // The epic id becomes a path segment under epics/ — reject anything but EP-<slug> outright.
       if (!commands.isValidEpicId(epic)) { refuse(`invalid epic id: ${epic} (expected EP-<slug>, [a-z0-9-] only)`); break; }
       // In verified mode CI is the sole ledger writer: `open` only opens the PR, and local `sync` is
@@ -939,6 +944,8 @@ async function main() {
       else if (action === 'comments') result = await commands.gateComments(o.dir, { epic, artifact, today });
       else if (action === 'status') result = await commands.gateStatus(o.dir, { epic });
       else if (action === 'repair') result = await commands.gateRepair(o.dir, { epic, push: o.push, allowBranch: o.allowBranch, dryRun: o.dryRun, today });
+      // The third word is a STEP here (`architecture`), not an artifact file.
+      else if (action === 'reopen') result = await commands.gateReopen(o.dir, { epic, step: artifact, reason: o.reason, push: o.push, allowBranch: o.allowBranch, dryRun: o.dryRun, today });
       else if (action === 'review') result = await commands.gateReview(o.dir, { epic, artifact });
       else if (action === 'walkthrough') result = await commands.gateWalkthrough(o.dir, { epic, artifact });
       else if (action === 'trailer') result = await commands.gateTrailer(o.dir, { epic, artifact, body: o.body || o.message, number: o.pr });
@@ -946,7 +953,7 @@ async function main() {
       else if (action === 'approve') result = await commands.gateApprove(o.dir, { epic, artifact, by: o.by, engagement: o.engagement ?? null, today });
       else if (action === 'comment') result = await commands.gateComment(o.dir, { epic, artifact, by: o.by, count: o.count ?? null, newRound: !!o.newRound, today });
       else if (action === 'advance') result = await commands.gateAdvance(o.dir, { epic, artifact, today });
-      else { refuse(`unknown gate action: ${action} (open|sync|comments|status|repair|review|walkthrough|trailer|ci|approve|comment|advance)`); }
+      else { refuse(`unknown gate action: ${action} (open|sync|comments|status|repair|reopen|review|walkthrough|trailer|ci|approve|comment|advance)`); }
       break;
     }
     case 'review': {

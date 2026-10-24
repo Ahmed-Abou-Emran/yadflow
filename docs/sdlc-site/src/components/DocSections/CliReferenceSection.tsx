@@ -63,6 +63,7 @@ const GROUPS = [
       'yad gate comment <epic> <artifact> --by <name> [--count <n>] [--new-round] — no platform only: record who commented this round',
       'yad gate advance <epic> <artifact> — no platform only: pass the gate when its approvals hold',
       'yad gate repair <epic> — close an author step stranded behind a passed gate (YAD-STATE-005)',
+      'yad gate reopen <epic> <step> --reason <why> [--push] — reopen an approved Shape step before Build starts; later steps walk back, their approvals are revoked (kept in state.json) and every gate from it is required again',
       'yad capture [--no-push] — snapshot every changed artifact onto your private yad/wip/<you>/<epic> branches (a hook runs it after each agent edit)',
       'yad claims [<epic>] [--no-fetch] — who else is editing which artifact, read from everyone\'s capture branches; advice, not a lock; ends 4 h after the last save or once merged (E46)',
       'yad fold <epic> <step> — end an authoring step with ONE commit of its files, docs(<epic>): author <step>; with ledger: local the epic\'s ledger rides along; the drafts stay on yad/wip (E44)',

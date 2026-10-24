@@ -133,7 +133,7 @@ const fold = (s) => s.normalize('NFKC').toLowerCase();
 //     and a digit or two does not match half the hashes in the Product.
 // Only text is matched, and a PR only as a whole number: `String()` of any other value would match text
 // that is not in the file (`[object Object]`).
-export function searchMatches(item, steps, text) {
+export function searchMatches(item, steps, text, reopens = null) {
   const needle = fold(String(text).trim());
   // `12`, `#12`, `PR 12`, `pr12` and `PR #12` all name PR 12.
   const prWanted = needle.replace(/^(pr\s*#?|#)\s*/, '');
@@ -155,6 +155,13 @@ export function searchMatches(item, steps, text) {
     const pr = prText(k.pr);
     if (pr !== null && prQuery !== null && Number(pr) === prQuery) hit('closed.pr', pr, id);
     if (typeof k.commit === 'string' && needle.length >= 4 && fold(k.commit).startsWith(needle)) hit('closed.commit', k.commit, id);
+  }
+  // A reopen (#322) is found by its reason and by who made it.
+  for (const r of Array.isArray(reopens) ? reopens : []) {
+    if (!isPlainObject(r)) continue;
+    const step = typeof r.step === 'string' ? r.step : null;
+    words('reopen.reason', r.reason, step);
+    words('reopen.by', r.by, step);
   }
   return hits;
 }
@@ -322,8 +329,17 @@ export function itemHistory(root, item, { productConfig = null, productConfigWhy
       thread = { root: null, broken: `the thread could not be walked (${e.code || e.message})` };
     }
   }
+  // Each `yad gate reopen` (#322): what walked back, and the approvals it revoked — kept here, no longer counted.
+  const reopens = (Array.isArray(stateRead.state?.reopens) ? stateRead.state.reopens : []).filter(isPlainObject).map((x) => ({
+    step: typeof x.step === 'string' ? x.step : null, date: typeof x.date === 'string' ? x.date : null,
+    by: typeof x.by === 'string' ? x.by : null, reason: typeof x.reason === 'string' ? x.reason : null,
+    walkedBack: (Array.isArray(x.steps) ? x.steps : []).map((w) => (typeof w?.id === 'string' ? w.id : null)).filter(Boolean),
+    revoked: (Array.isArray(x.revokedApprovals) ? x.revokedApprovals : []).filter(isPlainObject)
+      .map((a) => ({ step: typeof a.step === 'string' ? a.step : null, approver: typeof a.approver === 'string' ? a.approver : null })),
+  }));
   return {
     thread,
+    reopens,
     steps: stateRead.steps ? out : null,
     stepsWhy: stateRead.steps ? null : stateRead.why,
     approvalsWhy,
@@ -426,7 +442,7 @@ function searchCmd(root, read, keep, text, { json, thread, threadNote }) {
   for (const item of newestFirst(read.items.filter(keep))) {
     const r = readState(root, item.id);
     if (!r.steps) summaryOnly.push({ id: item.id, why: r.why });
-    const matches = searchMatches(item, r.steps || null, text);
+    const matches = searchMatches(item, r.steps || null, text, r.state?.reopens ?? null);
     if (matches.length) found.push({ ...withShapeDone(item), matches });
   }
   if (json) {
@@ -492,6 +508,10 @@ function showCmd(root, read, id, { json }) {
     if (s.record && !s.closed) log(`      ${c.dim(recordLine(s))}`);
     for (const a of s.approvals || []) log(`      ${c.dim(approvalLine(a))}`);
     if (s.staleUnknown) log(`      ${c.dim(`whether these approvals are stale cannot be told — ${printable(s.staleUnknown)}`)}`);
+  }
+  for (const x of story.reopens || []) {
+    log(`    ${c.dim(`reopened ${printable(x.step) ?? '?'}${x.date ? ` on ${printable(x.date)}` : ''}${x.by ? ` by ${printable(x.by)}` : ''}${x.reason ? ` — ${printable(x.reason)}` : ''}`)}`);
+    log(`      ${c.dim(`walked back: ${x.walkedBack.map((id) => printable(id)).join(', ') || 'none'}; revoked (not counted): ${x.revoked.length ? x.revoked.map((a) => `${printable(a.approver) ?? '?'} on ${printable(a.step) ?? '?'}`).join(', ') : 'none'}`)}`);
   }
   const closedCount = story.steps.filter((s) => s.closed).length;
   info(`${plural(closedCount, 'step')} of ${story.steps.length} ${closedCount === 1 ? 'has' : 'have'} a closing record`);

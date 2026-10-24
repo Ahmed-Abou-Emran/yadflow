@@ -257,6 +257,9 @@ again. Unbound, that command names `yad-architecture` for a contract-surface cha
 ## Hard rules
 
 - **Never mutate a locked artifact.** A change is a new threaded epic, not an edit to a shipped one.
+  The one exception is BEFORE Build starts — no Build lane has work in it and nothing has shipped: then
+  reopen the approved step with `yad gate reopen <epic> <step> --reason "<why>"` (#322) instead of
+  threading a change epic; every gate from that step is approved again.
 - **A change MUST thread to a real parent.** Validate the parent + thread first; STOP on a broken lineage.
 - **Inherit by reference, never copy.** `yad epic new --parent` carries inherited steps as `satisfied` with
   `inherited: true` + a `boundHash`; the pointer-lock carries the owner's hash verbatim. The gate never

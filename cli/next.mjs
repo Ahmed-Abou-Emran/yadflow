@@ -11,7 +11,7 @@
 //   yad next --all            every active epic's next action at once
 //   yad next [<epic>] --json  the same answer as an action object, for an agent or CI
 import path from 'node:path';
-import { c, log, ok, info, warn, hand, fail, readJSON, exists, emitJSON } from './lib.mjs';
+import { c, log, ok, info, warn, hand, fail, readJSON, exists, emitJSON, forTerminal } from './lib.mjs';
 import { PROJECT_FILES, isVerifiedLedger, productConfigPath, stepAdvance } from './manifest.mjs';
 import { printTeamHint, soloTeamHint } from './people.mjs';
 import { OWNER_STEPS, liveOwner, readState as loadLedgerState } from './owners.mjs';
@@ -291,6 +291,11 @@ function printAction(a, { solo, theme: tag = null, bindings = null, automation =
   // DEBT is reminded on every run until it is paid (E41). The line says what is owed and the one command
   // that starts paying it — or, once that has started, what finishes it.
   for (const d of a.debt || []) warn(debtLine(a.epicId, d, verified));
+  // Why the chain walked back, when it did (#322). Read from a file a person can edit: plain text only.
+  if (a.lastReopen) {
+    const r = a.lastReopen;
+    info(c.dim(forTerminal(`reopened ${r.step ?? '?'}${r.date ? ` on ${r.date}` : ''}${r.by ? ` by ${r.by}` : ''}${r.reason ? ` — ${r.reason}` : ''} (\`yad gate reopen\`); every gate from it is required again`)));
+  }
   phaseLine(a);
 }
 

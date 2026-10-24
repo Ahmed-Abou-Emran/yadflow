@@ -551,6 +551,36 @@ Step debt is **not** `reconcile-debt.json`. That file is a hotfix's whole change
 thread and is enforced by the `reconcile-debt` CI gate. Step debt is one step of one epic, and it is a
 reminder, never a gate.
 
+### Reopening an approved step (`yad gate reopen`, #322)
+
+`yad gate reopen EP-<slug> <step> --reason "<why>"` is the one writer that moves a `done` Shape step back.
+It is allowed only before Build starts: no Build lane has work in it (`laneStarted`) and nothing has
+shipped. The step goes to `in_progress`, and every later step that had started (`in_progress`,
+`in_review`, `done`) goes to `todo`. Each loses its `closed` record. A later step that is skipped,
+deferred, `satisfied` or blocked keeps its state. `currentStep` becomes the step.
+
+What it undid is kept in one list on the epic, which only grows:
+
+```json
+"reopens": [{
+  "step": "architecture", "date": "2026-10-24", "by": "@al", "reason": "auth model changed",
+  "from": "ready-for-build",
+  "steps": [{ "id": "architecture-review", "status": "done", "closed": { "by": "@al", "via": "merge", "pr": 4 } }],
+  "kept": [{ "id": "ui-design", "status": "skipped" }],
+  "revokedApprovals": [{ "artifact": "architecture.md", "step": "architecture-review", "approver": "bo", "status": "approved" }],
+  "retiredPrs": [{ "step": "architecture-review", "artifact": "architecture.md", "platform": "github", "number": 4, "branch": "review/EP-x/architecture", "url": null }],
+  "contractLock": "sha256:…"
+}]
+```
+
+| Rule | Detail |
+|------|--------|
+| Revoked approvals | MOVED out of `approvals.json` into `revokedApprovals`, unchanged. Every reader counts only the records in `approvals.json`, so no yad version counts them, and the platform sync cannot write them back |
+| Retired review PRs | MOVED out of `product-prs.json` / `hub-prs.json` into `retiredPrs`. `yad gate sync` and `yad gate ci` never pass a gate on a retired PR/MR, or on an older one for the same artifact (numbers only grow in one repo). A fresh `yad gate open` has a higher number |
+| `contract-lock.json` | kept; its hash at the reopen is recorded. The new architecture review re-locks it |
+| Comments and `reviews/` | kept as they are; the new review's comments continue from the next round |
+| No shape change | an older yad ignores `reopens`; nothing it reads changes meaning |
+
 ### `test-cases` is a parallel, non-blocking track
 
 `test-cases` (and its `test-cases-review` gate) sit in `steps[]` after `stories-review`, but they are a
@@ -599,7 +629,8 @@ gate the ledger is already on the default branch: cut the review branch from the
 artifact only, and leave `.sdlc/{state,approvals,comments,product-prs,hub-prs}.json` and `reviews/*.md` to CI.
 
 ## `approvals.json`
-Append-only ledger (an array). Each entry:
+Append-only ledger (an array) — except that `yad gate reopen` (#322) moves the records of the reviews it
+walks back into `state.json`'s `reopens[]`, where they are kept and no longer counted. Each entry:
 
 ```json
 { "artifact": "epic.md", "step": "epic-review", "approver": "<platform login>", "status": "approved", "date": "<YYYY-MM-DD>", "source": "<bridge, optional>" }
@@ -659,7 +690,8 @@ PR/MR opened on the Product (sibling of `approvals.json`, so the locked `state.j
 The same array is written under two names, with identical bytes: `product-prs.json` (the name from shape 3,
 read first) and `hub-prs.json` (the old name, written until v5 and read only when `product-prs.json` is
 absent — E122). `yad gate sync` may add `nudged`, the logins it has already asked to
-use the review companion, so it never asks them twice.
+use the review companion, so it never asks them twice. `yad gate reopen` (#322) moves the entries of the
+reviews it walks back into `state.json`'s `reopens[].retiredPrs`; a retired PR/MR never passes its gate again.
 
 ## `design-links.json`
 Present only when the `ui-design` step materialized the design in a connected design tool
