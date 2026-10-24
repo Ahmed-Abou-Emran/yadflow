@@ -16,7 +16,7 @@ import path from 'node:path';
 import { c, log, info, hand, readJSON, exists, forTerminal, stripAnsi, run } from './lib.mjs';
 import { isVerifiedLedger, productConfigPath, PROJECT_FILES } from './manifest.mjs';
 import { epicRoot, epicStories, featureStatus, loadLedger, loadSkillBindings, buildNextForRepo, stepStatus, isValidEpicId, PRODUCT_DONE, PRODUCT_EPICS } from './epic-state.mjs';
-import { listEpics, epicAction, actionLine, soloOf } from './next.mjs';
+import { listEpics, epicAction, actionLine, skillPhrase, soloOf } from './next.mjs';
 import { repoSources } from './standup.mjs';
 import { listPrs, prTarget } from './pr-list.mjs';
 import { platformLogin } from './platform.mjs';
@@ -44,10 +44,11 @@ export function followUpTask(branch) {
 // Finished epics are counted, not listed: the view is for what is still moving. "Shipped" is the engine's
 // own rule (`featureStatus`: every story has every lane it declares, all shipped), never the lanes on disk
 // alone — a story that has not begun Build has none. A shipped epic whose parallel test-cases track is
-// still open is not finished, and a documented brownfield anchor is.
+// still open is not finished, nor is one with a step re-opened behind it (E41); a documented brownfield
+// anchor is.
 function finished(root, id, ledger, a) {
   if (PRODUCT_DONE.includes(a.kind) || a.kind === 'backfill-done') return true;
-  if (a.kind !== 'build' || a.parallel) return false;
+  if (a.kind !== 'build' || a.parallel || a.reopened?.length) return false;
   return featureStatus(ledger, { stories: epicStories(epicRoot(root, id)) }) === 'shipped';
 }
 // A lane's steps, only when they are a list of steps with an id (build-state is advisory: a bad file is
@@ -74,7 +75,8 @@ function hereOf(root, cwd, ledgers) {
   const branch = head.ok && head.stdout ? head.stdout : null;
   const repo = repoHere(root, cwd, top.stdout);
   const id = branch ? taskFromBranch(branch) : null;
-  const m = id ? /^(EP-[a-z0-9-]+-S\d+)-(T\d+)$/i.exec(id) : null;
+  // Case-sensitive, as story ids are (E117): `feat/ep-pay-s01-t02` names no story, so it is not a task branch.
+  const m = id ? /^(EP-[a-z0-9-]+-S\d+)-(T\d+)$/.exec(id) : null;
   if (!m) return { branch, task: null, repo, why: branch ? 'not a task branch' : 'no branch checked out' };
   const [, story, task] = m;
   const epic = storyEpic(story);
@@ -83,7 +85,8 @@ function hereOf(root, cwd, ledgers) {
   const bs = (ledgers.get(epic)?.buildStates || []).find((b) => b?.story === story);
   const lane = bs?.repos?.[repo];
   if (!lane || typeof lane !== 'object') return { ...here, why: `${story} has no Build lane in ${repo} yet` };
-  const next = buildNextForRepo(lane);
+  // Only the steps that are steps: a `null` or a bare word in the list is not one (build-state is advisory).
+  const next = buildNextForRepo({ ...lane, steps: laneSteps(lane) });
   if (next.status === 'skipped') return { ...here, why: `the lane is skipped in ${repo}${next.record?.reason ? ` — ${next.record.reason}` : ''}` };
   if (next.status === 'unknown') return { ...here, why: `the lane in ${repo} has no steps yet` };
   const active = laneSteps(lane).find((s) => s.id === next.step);
@@ -118,11 +121,13 @@ function prsOf(root, { env, runner }) {
   const identity = productIdentity(root, { productConfig, ...(runner ? { runner } : {}) });
   const notRead = [];
   const sources = repoSources(root, identity, productConfig, notRead, env);
+  // An unreadable registry means no code repo was asked at all: their PRs/MRs are unknown, not none.
+  const registry = readRegistry(root);
+  const missing = registry.problem ? [{ label: 'the registered repos', why: registry.problem }] : [];
   const seen = new Set();
   const authCache = new Map();
   const logins = new Map();
   const read = [];
-  const missing = [];
   for (const s of sources) {
     const target = prTarget({ platform: s.platform, gitUrl: s.gitUrl }, { env, authCache, ...(runner ? { runner } : {}) });
     const key = target.host && target.repo ? `${target.host}/${target.repo}`.toLowerCase() : null;
@@ -171,8 +176,14 @@ export function buildStatus(root, { cwd = root, fetch = true, env = process.env,
     const { action, view } = epicAction(root, id, undefined, bindings);
     owed.push(...owedOf(root, id, ledger, action));
     if (finished(root, id, ledger, action)) { finishedCount += 1; continue; }
+    // The same words `yad next` prints, with the parallel test-cases track and any re-opened step beside
+    // the chain's own action — they are what keeps a shipped epic open.
+    const also = [
+      ...(action.parallel ? [`parallel: invoke ${skillPhrase(action.parallel)}`] : []),
+      ...(action.reopened || []).map((l) => `re-opened: ${actionLine({ ...l, epicId: id }, { solo, bindings: view, verified })}`),
+    ];
     epics.push({ epic: id, product: PRODUCT_EPICS.includes(id), kind: action.kind, step: action.step ?? null, status: action.status ?? null,
-      next: stripAnsi(actionLine(action, { solo, bindings: view, verified })) });
+      next: stripAnsi([actionLine(action, { solo, bindings: view, verified }), ...also].join(' · ')) });
   }
   const here = hereOf(root, cwd, ledgers);
   const prs = fetch ? prsOf(root, { env, runner }) : { asked: false };

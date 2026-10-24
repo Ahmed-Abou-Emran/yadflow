@@ -138,7 +138,7 @@ const skillList = (a) => a?.skills || (a?.skill ? [a.skill] : []);
 // "the yad-architecture skill", or for a bound chain "the shape-it skill, then yad-stories". Closed
 // decision 7: several skills on one step are a CHAIN, not a panel — they run in the order given, each
 // seeing what the one before it produced, and the last output is the artifact.
-function skillPhrase(a, fallback = null) {
+export function skillPhrase(a, fallback = null) {
   const ids = skillList(a);
   if (!ids.length) return `the ${c.bold(fallback || '(no skill)')} skill`;
   const [first, ...rest] = ids;

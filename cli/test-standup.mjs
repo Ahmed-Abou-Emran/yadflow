@@ -848,3 +848,30 @@ test('#349 review 1: more open PRs than one page holds is said, not hidden', () 
     prs: { asked: true, whose: 'yours', others: 0, partial: ['api'], followUps: [], listed: [], notRead: [] } };
   assert.ok(St.briefLines(m).includes('  more open PRs/MRs than one page holds in api — only the newest were read'));
 });
+
+test('#349 review 2: a re-opened step or an open test-cases track keeps a shipped epic listed, and says what is open', async () => {
+  const { P, T } = await statusFixture();
+  try {
+    const dir = path.join(T, 'epics/EP-pay');
+    const f = path.join(dir, '.sdlc/state.json');
+    const base = JSON.parse(fs.readFileSync(f, 'utf8'));
+    put(path.join(dir, 'stories/EP-pay-S01.md'), '---\nid: EP-pay-S01\nrepos: [api]\n---\n');
+    put(path.join(dir, '.sdlc/build-state/EP-pay-S01.json'), { story: 'EP-pay-S01', repos: { api: { currentStep: 'engineer-review', steps: ['spec', 'tasks', 'implement', 'checks', 'engineer-review'].map((id) => ({ id, status: 'done' })) } } });
+    for (const [open, word] of [['ui-design', /re-opened: invoke the yad-ui skill/], ['test-cases', /parallel: invoke the yad-test-cases skill/]]) {
+      put(f, { ...base, currentStep: 'ready-for-build', steps: base.steps.map((s) => ({ ...s, status: s.id === open ? 'in_progress' : 'done' })) });
+      const m = St.buildStatus(T, { fetch: false });
+      assert.deepEqual([m.epics.map((e) => e.epic), m.finished], [['EP-pay'], 0], open);
+      assert.match(m.epics[0].next, word);
+    }
+  } finally { fs.rmSync(P, { recursive: true, force: true }); }
+});
+
+test('#349 review 2: an unreadable registry is "unknown, not none" for the code repos', async () => {
+  const { P, T } = await statusFixture();
+  try {
+    put(path.join(T, '.sdlc/repos.json'), '<<<<<<< HEAD\n{');
+    const m = St.buildStatus(T, { fetch: true, env: statusEnv, runner: statusRunner() });
+    assert.deepEqual(m.prs.notRead.map((n) => n.label), ['the registered repos']);
+    assert.ok(St.briefLines(m).includes('  platform not read for the registered repos — PR/MR facts there are unknown, not none'));
+  } finally { fs.rmSync(P, { recursive: true, force: true }); }
+});
