@@ -3159,6 +3159,8 @@ export function dedupeConsecutive(skills) {
 // `shipped: true` only when there ARE steps and every one is `done`; an empty/missing steps array is
 // `unknown` (not-started), NEVER shipped — otherwise a half-seeded file would render a false "shipped ✓".
 export function buildNextForRepo(repoState = {}, { bindings = null } = {}) {
+  // A lane that is not an object (`null` in a hand-edited file) reads as a lane with no steps, never a crash.
+  if (!isPlainObject(repoState)) repoState = {};
   // A whole lane SKIPPED (E39): nothing to drive and nothing shipped. A lane on disk carries a `status` only
   // when it is skipped; this RESULT always has a `status`, so the skip reuses that key, and `record` is added
   // ONLY here, which keeps a frozen v3 lane's output byte-identical. The word is honoured only over a lane
