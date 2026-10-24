@@ -239,6 +239,7 @@ for it" table is in the [team guide §11](../TEAM-GUIDE.md).
   single Build step skipped.
 - **`yad-status`** — Read-only view of an epic: the current step, each step's dials (driver/advance) and status, which approvals are still required, per-story Build run records (as advice),
   the kill switch and the Shape dials from `.sdlc/automation.json`, and a fleet roll-up across epics.
+  It starts from `yad status --brief` (#349), the ~20-line view of where the work stands.
 - **`yad-report`** — Self issue reporter. When a `yad` flow breaks, files a bug in the upstream
   yadflow repo with **auto-scrubbed** diagnostics — only the yadflow/node/os version, tool
   present+authenticated booleans, the Product platform enum, the error code/hint, a path-scrubbed

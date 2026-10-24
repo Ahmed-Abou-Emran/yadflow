@@ -18,6 +18,13 @@ reads `.sdlc/` and `reviews/` and reports.
 This skill reports on epics. For people — what each team member did since the previous working day,
 what they are working on and what is waiting — point to `yad standup` (E132) instead of rebuilding it.
 
+**Start from `yad status --brief` (#349).** It prints, in about 20 lines, where the work stands: the
+task branch this checkout is on and its Build step, each open epic and its next action, your open
+PRs/MRs, and what is owed (debt, recorded blockers, hotfix debt, open follow-up PRs). After a context
+reset — a summary, a new session — run it first, and act on what it prints rather than on what you
+remember. Read the files below only for the detail it leaves out. `--json` gives the same view as data;
+`--no-fetch` asks no platform.
+
 ### Step 1 — Resolve the epic
 If no `EP-<slug>` was given, list the epics under `{project-root}/epics/` and ask which one (or
 report all if the user asked for an overview).

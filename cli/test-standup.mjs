@@ -658,3 +658,141 @@ test('E132 review 4: a Windows path is cut at a backslash, in any case; a name i
   assert.equal(S.scrubPaths('C:\\Users\\ada\\work\\productive stays', places), 'C:\\Users\\ada\\work\\productive stays', 'a longer folder name is not cut');
   assert.equal(S.scrubPaths('/Users/x/api is a shallow clone', places), '<$&> is a shallow clone', 'a repo named `$&` never writes the path back');
 });
+
+// ---- yad status --brief (#349) ---------------------------------------------------------------------
+
+const St = await import('./status.mjs');
+
+// A Product beside one code repo it registers (`api`), so "here" can be a task branch in that repo.
+async function statusFixture() {
+  const P = tmp();
+  const T = path.join(P, 'product');
+  const api = path.join(P, 'api');
+  for (const d of [T, api]) {
+    fs.mkdirSync(d, { recursive: true });
+    git(d, ['init', '-q', '-b', 'main']);
+    git(d, ['config', 'user.name', 'Alice Smith']);
+    git(d, ['config', 'user.email', 'alice@work.com']);
+    git(d, ['config', 'commit.gpgsign', 'false']);
+    git(d, ['commit', '-q', '--allow-empty', '-m', 'chore: start']);
+  }
+  put(path.join(T, '.sdlc/product.json'), { platform: 'github', git_url: 'git@github.com:acme/product.git', default_branch: 'main' });
+  put(path.join(T, '.sdlc/repos.json'), { repos: [{ name: 'api', path: '../api', git_url: 'git@github.com:acme/api.git', platform: 'github' }] });
+  put(path.join(P, '.yad-workspace.json'), { version: 1, product: 'product' });
+  await runEpicNew(T, { slug: 'pay', today: '2026-09-20' });
+  return { P, T, api };
+}
+// A fake gh: logged in as `login`; each repo answers its own open PRs (with their head branches).
+function statusRunner({ login = 'alice', open = {} } = {}) {
+  return (cmd, args) => {
+    if (cmd === 'which' || cmd === 'where' || args[0] === 'auth') return { ok: true, stdout: '' };
+    if (cmd === 'git') return { ok: false, stdout: '' };
+    if (args.includes('user')) return login ? { ok: true, stdout: login } : { ok: false, stdout: '' };
+    if (args.includes('graphql')) {
+      const name = args.find((a) => a.startsWith('name=')).slice(5);
+      const nodes = (open[name] || []).map((p) => ({ number: p.number, isDraft: false, headRefName: p.branch, author: { __typename: 'User', login: p.author }, reviewDecision: null, reviews: { totalCount: 0 }, latestOpinionatedReviews: { nodes: [] }, commits: { nodes: [] } }));
+      return { ok: true, stdout: JSON.stringify({ data: { repository: { open: { totalCount: nodes.length, nodes }, merged: { nodes: [] } } } }) };
+    }
+    return { ok: false, stdout: '', stderr: 'gh: Not Found (HTTP 404)' };
+  };
+}
+const statusEnv = { ...ON, YAD_PLATFORM_LOGIN: '' };
+
+test('#349 yad status: a project not set up says so', () => {
+  const T = tmp();
+  try {
+    assert.deepEqual(St.buildStatus(T, { fetch: false }), { setUp: false });
+    assert.deepEqual(St.briefLines({ setUp: false }), ['Project not set up yet — run yad setup']);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('#349 yad status: here is the task branch and its lane step; owed lists recorded blockers, debt and hotfix debt — a bare blocked is not one', async () => {
+  const { P, T, api } = await statusFixture();
+  try {
+    const f = path.join(T, 'epics/EP-pay/.sdlc/state.json');
+    const st = JSON.parse(fs.readFileSync(f, 'utf8'));
+    st.steps[0] = { ...st.steps[0], status: 'blocked', record: { reason: 'waiting on legal', by: 'alice', date: '2026-10-01' } };
+    put(f, st);
+    put(path.join(T, 'epics/EP-pay/.sdlc/reconcile-debt.json'), [{ status: 'open', reason: 'hotfix' }, { status: 'paid' }]);
+    put(path.join(T, 'epics/EP-pay/.sdlc/build-state/EP-pay-S01.json'), { story: 'EP-pay-S01', repos: {
+      api: { currentStep: 'implement', steps: [{ id: 'spec', status: 'done' }, { id: 'tasks', status: 'done' }, { id: 'implement', status: 'blocked', record: { reason: 'waiting on human decisions: token scope' } }, { id: 'checks', status: 'todo' }] },
+      web: { currentStep: 'spec', steps: [{ id: 'spec', status: 'blocked' }] },
+    } });
+    git(api, ['checkout', '-q', '-b', 'feat/EP-pay-S01-T02-refund']);
+    const m = St.buildStatus(T, { cwd: api, fetch: false });
+    assert.equal(m.here.story, 'EP-pay-S01');
+    assert.equal(m.here.task, 'T02');
+    assert.equal(m.here.repo, 'api');
+    assert.equal(m.here.step, 'implement');
+    assert.equal(m.here.reason, 'waiting on human decisions: token scope');
+    assert.deepEqual(m.owed.map((o) => [o.kind, o.step ?? o.count, o.repo ?? null]), [
+      ['blocked', 'epic', null], ['blocked', 'implement', 'api'], ['hotfix-debt', 1, null],
+    ], 'the bare blocked spec in web is the old spelling of todo, not a blocker');
+    const lines = St.briefLines(m);
+    assert.equal(lines[0], 'here: EP-pay-S01 T02 in api — implement (blocked) — blocked: waiting on human decisions: token scope');
+    assert.ok(lines.includes('open PRs/MRs: not asked (--no-fetch)'));
+    assert.ok(lines.includes('  EP-pay: epic blocked — waiting on legal'));
+    assert.ok(lines.includes('  EP-pay: 1 open hotfix debt — yad reconcile check'));
+    // On the Product's own checkout, on a branch that is not a task's: said, never guessed.
+    assert.equal(St.buildStatus(T, { cwd: T, fetch: false }).here.why, 'not a task branch');
+  } finally { fs.rmSync(P, { recursive: true, force: true }); }
+});
+
+test('#349 yad status: your open PRs from the platform, follow-up PRs as owed, and a repo not read is "unknown, not none"', async () => {
+  const { P, T } = await statusFixture();
+  try {
+    const runner = statusRunner({ open: {
+      product: [{ number: 4, author: 'bob', branch: 'review/EP-pay-epic' }],
+      api: [{ number: 7, author: 'alice', branch: 'feat/EP-pay-S01-T02-refund' }, { number: 9, author: 'bob', branch: 'fix/EP-pay-S01-T01-followup-null-check' }],
+    } });
+    const m = St.buildStatus(T, { fetch: true, env: statusEnv, runner });
+    assert.equal(m.prs.whose, 'yours');
+    assert.deepEqual(m.prs.mine.map((p) => [p.repo, p.number, p.task]), [['api', 7, 'EP-pay-S01-T02']]);
+    assert.equal(m.prs.others, 2);
+    assert.deepEqual(m.owed.filter((o) => o.kind === 'follow-up-pr').map((o) => [o.repo, o.number, o.task]), [['api', 9, 'EP-pay-S01-T01']]);
+    const lines = St.briefLines(m);
+    assert.ok(lines.includes('open PRs/MRs (yours): 1 — 2 by others'), lines.join('\n'));
+    assert.ok(lines.includes('  api PR #7 EP-pay-S01-T02 — checks none, review none'), lines.join('\n'));
+    assert.ok(lines.includes('  api PR #9: open follow-up of EP-pay-S01-T01'), lines.join('\n'));
+    // No login known: every open PR is listed, and the line says why — never a silent filter.
+    const all = St.buildStatus(T, { fetch: true, env: statusEnv, runner: statusRunner({ login: null, open: { api: [{ number: 7, author: 'alice', branch: 'x' }] } }) });
+    assert.equal(all.prs.whose, 'all');
+    assert.match(St.briefLines(all).find((l) => l.startsWith('open PRs')), /who you are on the platform is not known, so every open one is listed/);
+    // The platform not read: unknown, not none.
+    const off = St.buildStatus(T, { fetch: true, env: { ...statusEnv, YAD_PLATFORM_READ: '0' }, runner });
+    assert.ok(St.briefLines(off).includes('  platform not read for Product, api — PR/MR facts there are unknown, not none'));
+  } finally { fs.rmSync(P, { recursive: true, force: true }); }
+});
+
+test('#349 yad status: the view stays near 20 lines however much there is', () => {
+  const m = {
+    setUp: true, here: { branch: 'main', task: null, why: 'not a task branch' }, finished: 3,
+    epics: Array.from({ length: 30 }, (_, i) => ({ epic: `EP-e${i}`, step: 'epic', status: 'in_progress', next: 'invoke yad-epic' })),
+    prs: { asked: true, whose: 'yours', others: 0, partial: [], followUps: [], mine: Array.from({ length: 30 }, (_, i) => ({ repo: 'api', platform: 'github', number: i, task: null })), notRead: Array.from({ length: 5 }, (_, i) => ({ label: `r${i}` })) },
+    owed: Array.from({ length: 30 }, (_, i) => ({ kind: 'hotfix-debt', epic: `EP-e${i}`, count: 1 })),
+  };
+  const lines = St.briefLines(m);
+  assert.ok(lines.length <= 22, `${lines.length} lines`);
+  assert.ok(lines.includes('  … +25 more — yad next --all'));
+  assert.ok(lines.includes('  … +26 more — yad standup'));
+  assert.ok(lines.includes('  platform not read for r0, r1, r2, r3, r4 — PR/MR facts there are unknown, not none'));
+});
+
+test('#349 yad status: the CLI finds the Product from a registered repo, keeps --brief and --json, and refuses with no Product', async () => {
+  const { P, T, api } = await statusFixture();
+  try {
+    const env = { ...process.env, NO_COLOR: '1' };
+    const r = spawnSync(process.execPath, [YAD, 'status', '--brief', '--no-fetch', '--json'], { cwd: api, encoding: 'utf8', env });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.command, 'status');
+    assert.equal(j.here.repo, 'api');
+    assert.deepEqual(j.epics.map((e) => e.epic), ['EP-pay']);
+    const plain = spawnSync(process.execPath, [YAD, 'status', '--no-fetch'], { cwd: T, encoding: 'utf8', env });
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.match(plain.stdout, /epics: 1 open/);
+    const none = spawnSync(process.execPath, [YAD, 'status', '--no-fetch'], { cwd: os.tmpdir(), encoding: 'utf8', env });
+    assert.notEqual(none.status, 0);
+    assert.match(none.stdout + none.stderr, /no Product here/);
+  } finally { fs.rmSync(P, { recursive: true, force: true }); }
+});

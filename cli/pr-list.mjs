@@ -19,7 +19,7 @@ import { api, httpStatus, loggedIn, repoPathFromGitUrl, shown, whyFailed, PAGE, 
 const GH_CHECKS = { SUCCESS: 'passing', FAILURE: 'failing', ERROR: 'failing', PENDING: 'running', EXPECTED: 'running' };
 
 const GH_QUERY = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){
-open:pullRequests(states:OPEN,first:${PAGE},orderBy:{field:CREATED_AT,direction:DESC}){totalCount nodes{number isDraft author{__typename login} reviewDecision reviews{totalCount} latestOpinionatedReviews(first:100){nodes{state}} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}
+open:pullRequests(states:OPEN,first:${PAGE},orderBy:{field:CREATED_AT,direction:DESC}){totalCount nodes{number isDraft headRefName author{__typename login} reviewDecision reviews{totalCount} latestOpinionatedReviews(first:100){nodes{state}} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}
 merged:pullRequests(states:MERGED,first:${PAGE},orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number mergedAt updatedAt author{__typename login}}}}}`;
 
 // GitHub's review state, in the words the standup prints. `none` = no review of any kind yet.
@@ -64,7 +64,8 @@ export function prTarget({ platform = null, gitUrl = '' } = {}, { runner = run, 
 // The PRs/MRs of one repo: `{ ok: true, open: [...], merged: [...], openPartial, mergedPartial }` or
 // `{ ok: false, kind, why }`. `sinceMs` bounds the merged list (epoch milliseconds).
 //   open:   { number, author, draft, checks: passing|failing|running|none|null, review: none|reviewed|approved|changes-requested|null,
-//             status? (GitLab's own word), waits? (GitLab: a status that holds the merge) }
+//             status? (GitLab's own word), waits? (GitLab: a status that holds the merge),
+//             branch (the head branch, or null: `yad status` finds the follow-ups by it, #349) }
 //   merged: { number, author, mergedAt (ISO) }
 export function listPrs(target, { sinceMs, runner = run, env = process.env, authCache = new Map() } = {}) {
   const t = target?.cli ? target : prTarget(target, { runner, env, authCache });
@@ -91,6 +92,7 @@ function listGitHub(t, sinceMs, runner) {
     number: n.number, author: author(n.author), draft: n.isDraft === true,
     checks: GH_CHECKS[n.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state] || (n.commits?.nodes?.[0]?.commit?.statusCheckRollup ? null : 'none'),
     review: ghReview(n),
+    branch: typeof n.headRefName === 'string' ? n.headRefName : null,
   }));
   const nodes = repo.merged.nodes;
   const merged = nodes.filter((n) => Date.parse(n.mergedAt) >= sinceMs).map((n) => ({ number: n.number, author: author(n.author), mergedAt: n.mergedAt }));
@@ -117,7 +119,7 @@ function listGitLab(t, sinceMs, runner) {
   const open = o.body.map((x) => {
     const st = typeof x.detailed_merge_status === 'string' ? x.detailed_merge_status : null;
     const checks = st && Object.hasOwn(GL_CHECKS, st) ? GL_CHECKS[st] : null;
-    return { number: x.iid, author: who(x.author), draft: x.draft === true, checks, review: null, ...(st && !checks ? { status: st } : {}), waits: !!st && GL_WAITS.includes(st) };
+    return { number: x.iid, author: who(x.author), draft: x.draft === true, checks, review: null, ...(st && !checks ? { status: st } : {}), waits: !!st && GL_WAITS.includes(st), branch: typeof x.source_branch === 'string' ? x.source_branch : null };
   });
   const merged = m.body.filter((x) => Date.parse(x.merged_at) >= sinceMs).map((x) => ({ number: x.iid, author: who(x.author), mergedAt: x.merged_at }));
   return { ...t, ok: true, open, merged, openPartial: o.body.length >= PAGE, mergedPartial: m.body.length >= PAGE };

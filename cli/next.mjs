@@ -19,7 +19,7 @@ import { bindingsForEpic, bindingsForProfile, dedupeConsecutive, epicIds, isGate
 
 // Is solo mode on? Persisted in hub.json by setup (Phase C/D); default false. Read defensively so a
 // missing/old hub.json never breaks the driver.
-const soloOf = (productConfig) => !!(productConfig && (productConfig.solo === true || productConfig.review_gate?.solo === true));
+export const soloOf = (productConfig) => !!(productConfig && (productConfig.solo === true || productConfig.review_gate?.solo === true));
 function isSolo(root) {
   return soloOf(readJSON(productConfigPath(root), null));
 }
@@ -27,7 +27,7 @@ function isSolo(root) {
 const isSetUp = (root) => exists(path.join(root, PROJECT_FILES.version)) || exists(productConfigPath(root));
 
 // Every epic that has a state ledger, the Foundation included, in id order.
-function listEpics(root) {
+export function listEpics(root) {
   return epicIds(root).filter((id) => exists(path.join(epicRoot(root, id), '.sdlc', 'state.json')));
 }
 
@@ -51,7 +51,7 @@ function listEpics(root) {
 // the printed line. `nextAction` would narrow them itself, but `actionLine` names skills the action
 // never carried (the Build fallback, the hand-off to the next epic) — a view built in two places is two
 // answers for one step.
-function epicAction(root, id, lin = epicLineage(root, id), bindings = loadSkillBindings(root)) {
+export function epicAction(root, id, lin = epicLineage(root, id), bindings = loadSkillBindings(root)) {
   const ledger = loadLedger(epicRoot(root, id));
   const view = bindingsForEpic(bindings, ledger?.state);
   const action = {
@@ -185,7 +185,7 @@ function printBuildLanes(builds, automation = null) {
 // fallback printed when no story has a build-state yet. Both are the engine naming a step's skill in
 // prose, so both must name the project's choice — otherwise `yad next` and `yad skill list` disagree
 // about the same project.
-function actionLine(a, { solo, bindings = null, verified = false } = {}) {
+export function actionLine(a, { solo, bindings = null, verified = false } = {}) {
   const runs = (stepId, fallback) => stepSkills(stepId, bindings)[0] || fallback;
   switch (a.kind) {
     case 'new':
