@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { c, log, info, hand, readJSON, exists, forTerminal, stripAnsi, run } from './lib.mjs';
 import { isVerifiedLedger, productConfigPath, PROJECT_FILES } from './manifest.mjs';
-import { epicRoot, epicStories, featureStatus, isPassed, loadLedger, loadSkillBindings, buildNextForRepo, stepStatus, isValidEpicId, PRODUCT_DONE, PRODUCT_EPICS } from './epic-state.mjs';
+import { epicRoot, epicStories, featureStatus, isPassed, loadLedger, loadSkillBindings, buildNextForRepo, stepStatus, isValidEpicId, PRODUCT_DONE, PRODUCT_EPICS, STEPS } from './epic-state.mjs';
 import { listEpics, epicAction, actionLine, skillPhrase, soloOf } from './next.mjs';
 import { repoSources } from './standup.mjs';
 import { listPrs, prTarget } from './pr-list.mjs';
@@ -184,7 +184,10 @@ export function buildStatus(root, { cwd = root, fetch = true, env = process.env,
     if (finished(root, id, ledger, action)) { finishedCount += 1; continue; }
     // The same words `yad next` prints, with the parallel test-cases track and any re-opened step beside
     // the chain's own action — they are what keeps a shipped epic open.
+    // A step already named, and the review of an author step already named: that review cannot start
+    // before its author step is done, so it is not "open" beside it.
     const named = new Set([action.parallel?.step, ...(action.reopened || []).map((l) => l?.step)].filter(Boolean));
+    for (const r of STEPS) if (r.kind === 'review' && named.has(r.reviews)) named.add(r.id);
     const also = [
       ...(action.parallel ? [`parallel: invoke ${skillPhrase(action.parallel)}`] : []),
       ...(action.reopened || []).map((l) => `re-opened: ${actionLine({ ...l, epicId: id }, { solo, bindings: view, verified })}`),
@@ -192,7 +195,7 @@ export function buildStatus(root, { cwd = root, fetch = true, env = process.env,
       // keeps the epic open, so it is named too — the Build line alone would read "every lane shipped".
       ...(action.kind === 'build' ? (Array.isArray(ledger?.state?.steps) ? ledger.state.steps : [])
         .filter((s) => s && typeof s.id === 'string' && !isPassed(s) && !named.has(s.id))
-        .map((s) => `open: ${s.id} (${stepStatus(s) ?? s.status ?? 'no status'})`) : []),
+        .map((s) => `open: ${s.id} (${stepStatus(s) ?? (typeof s.status === 'string' ? s.status : 'no status')})`) : []),
     ];
     epics.push({ epic: id, product: PRODUCT_EPICS.includes(id), kind: action.kind, step: action.step ?? null, status: action.status ?? null,
       next: stripAnsi([actionLine(action, { solo, bindings: view, verified }), ...also].join(' · ')) });

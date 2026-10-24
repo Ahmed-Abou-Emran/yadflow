@@ -863,6 +863,9 @@ test('#349 review 2: a re-opened step or an open test-cases track keeps a shippe
       assert.deepEqual([m.epics.map((e) => e.epic), m.finished], [['EP-pay'], 0], open);
       assert.match(m.epics[0].next, word);
     }
+    // The common Build state: test-cases in progress, its review still todo — the review is not "open" too (review 5).
+    put(f, { ...base, currentStep: 'ready-for-build', steps: base.steps.map((s) => ({ ...s, status: s.id === 'test-cases' ? 'in_progress' : s.id === 'test-cases-review' ? 'todo' : 'done' })) });
+    assert.doesNotMatch(St.buildStatus(T, { fetch: false }).epics[0].next, /open: test-cases-review/);
     // The skill a project binds is the one "here" names, as `yad next` does (review 3).
     put(f, { ...base, currentStep: 'ready-for-build', steps: base.steps.map((s) => ({ ...s, status: 'done' })) });
     put(path.join(T, '.sdlc/skills.json'), { steps: { implement: 'my-impl' } });
