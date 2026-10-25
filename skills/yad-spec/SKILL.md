@@ -175,8 +175,10 @@ only when ALL of these hold:
 - the story's **Notes for build** says the contract surface touched is none, and Step 3 found nothing
   to quote, so the spec needs no `contracts/` slice;
 - nothing marks it high risk: no step in `epics/<epic>/.sdlc/state.json` carries an `auth` or
-  `payments` risk tag, the code repo's `.sdlc/risk-map` on its default branch gives none of the folders
-  the tasks will touch the level `high`, and the person has not called it high risk.
+  `payments` risk tag; in the code repo's `.sdlc/risk-map` on its default branch, no file the tasks will
+  touch has `high` as its level — a file's level is the one on the deepest directory listed above it,
+  `guessed` counts the same as `confirmed`, and an `unset` line or a file no line covers is not high;
+  and the person has not called it high risk.
 
 Never suggest it for a story that touches the contract, and never choose it yourself: ask in the batch
 ("Light spec — one `spec.md` holding the spec, the plan and the tasks?"), with the reason it qualifies,
@@ -190,9 +192,14 @@ and record the answer in `## Clarifications`. Without a clear yes, write the ful
 - does not run Spec Kit, whose commands need `plan.md` and `tasks.md`. Step 6 records `speckit: not-used`
   and `spec-mode: light`.
 
+**When it qualifies, ask before any Spec Kit command.** Draft `spec.md` by hand and ask the batch, the
+light question in it, before running any `/speckit.*` command, so the choice is known before the path
+is. On a yes, write the light spec. On a no, take one of the two paths below; on **Used**, the batch is
+already asked, so carry the recorded `## Clarifications` lines into the `spec.md` that `/speckit.specify`
+writes instead of asking again.
+
 The spec leg writes the whole light spec, tasks included. When the lane then reaches the `tasks` leg,
 start that step as above and check that the tasks block is there and whole; write nothing else.
-
 
 **Used** (and the spec is not light) — from inside `demo-repos/<repo>/`, drive, in order:
 `/speckit.specify` → (ask the batch) → `/speckit.clarify` → `/speckit.plan` → `/speckit.analyze` →
@@ -206,7 +213,7 @@ again. Answer `/speckit.clarify`'s questions from the batch answers. A question 
 cover is a late one: ask all such questions together, as rule 4 of the batch says.
 `/speckit.constitution` and `/speckit.implement` are **out of scope for Step A** (implement is Step B).
 
-**Not used (degrade)** — draft `spec.md` first, ask the batch, record the answers in it, and only then
+**Not used (degrade)** (and the spec is not light) — draft `spec.md` first, ask the batch, record the answers in it, and only then
 write the rest. Hand-author the identical files in Spec Kit's layout under
 `demo-repos/<repo>/specs/<story>/`: `spec.md`, `research.md`, `data-model.md`, `contracts/`,
 `plan.md`, `tasks.md`. The content is what a real Spec Kit run would produce, traceable to the story's
