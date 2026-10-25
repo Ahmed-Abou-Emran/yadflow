@@ -236,7 +236,8 @@ epic-open and reconcile-debt pass it:
 - The list is read **from the base**, never from the pull request under check, so a pull request
   cannot waive its own commits. Add the entry in its own pull request to the branch the failing pull
   request targets. It counts once it merges.
-- An entry must be a full lowercase hex SHA, 40 characters (`git rev-parse <commit>` prints it). A
+- An entry must be a full lowercase hex SHA: 40 characters, or 64 in a SHA-256 repository
+  (`git rev-parse <commit>` prints it). A
   branch or tag name would move, so it is refused. A short SHA is refused too: git looks a short one
   up as a tag or branch name first, so a tag named like it would stand in for another commit.
 - `SDLC_GATE_EXEMPT` names another path in the repo.
@@ -250,7 +251,7 @@ epic-open and reconcile-debt pass it:
 | `PASS [<gate>]: <sha> '<subject>' — SHA exemption (.sdlc/gate-exempt on <base>)` | Nothing. The commit is listed. |
 | `note [<gate>]: .sdlc/gate-exempt changes in this PR — the list is read from <base>, not from this PR; the new one counts once it merges.` | Merge the list change on its own first, then run the pipeline again. |
 | `note [<gate>]: .sdlc/gate-exempt entry '<entry>' is not a lowercase hex SHA — it exempts nothing.` | Write the commit's SHA, not a branch, tag or `HEAD`. |
-| `note [<gate>]: .sdlc/gate-exempt entry '<entry>' is not a full 40-character SHA — it exempts nothing (a short one could be taken over by a tag or branch of that name).` | Write the whole SHA: `git rev-parse <short>`. |
+| `note [<gate>]: .sdlc/gate-exempt entry '<entry>' is not a full SHA (40 characters, or 64 in a SHA-256 repo) — it exempts nothing (a short one could be taken over by a tag or branch of that name).` | Write the whole SHA: `git rev-parse <short>`. |
 | `note [<gate>]: .sdlc/gate-exempt entry '<entry>' names no commit here — it exempts nothing.` | Check the SHA, and that CI fetches full history. |
 
 ## spec-link

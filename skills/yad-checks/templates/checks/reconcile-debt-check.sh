@@ -498,7 +498,7 @@ open_debt_on_thread() {
 # skips EVERY check of the gate, not only its trailer's — a sealed epic or a frozen thread included. SDLC_GATE_EXEMPT
 # names another path in the repo. The list is read from the BASE, never from this PR — a PR that could
 # list its own commits would wave itself past every gate; an entry counts once it merges. An entry must be
-# a FULL hex SHA: git reads 40 hex characters as a commit, but looks a short one up as a tag or branch name
+# a FULL hex SHA: git reads 40 hex characters (64 in a SHA-256 repo) as a commit, but looks a short one up as a tag or branch name
 # first — so a tag named like a listed short SHA would stand in for another commit, and a short SHA also
 # grows ambiguous as the repo grows. An entry that is not one, or names no commit here, exempts nothing;
 # both are said as notes, so a typo is visible.
@@ -519,8 +519,8 @@ load_exempt_shas() {
     case "$_ex" in
       *[!0123456789abcdef]*) echo "note [$1]: ${GATE_EXEMPT_FILE} entry '${_ex}' is not a lowercase hex SHA — it exempts nothing." ; continue ;;
     esac
-    if [ "${#_ex}" -ne 40 ]; then
-      echo "note [$1]: ${GATE_EXEMPT_FILE} entry '${_ex}' is not a full 40-character SHA — it exempts nothing (a short one could be taken over by a tag or branch of that name)."
+    if [ "${#_ex}" -ne 40 ] && [ "${#_ex}" -ne 64 ]; then
+      echo "note [$1]: ${GATE_EXEMPT_FILE} entry '${_ex}' is not a full SHA (40 characters, or 64 in a SHA-256 repo) — it exempts nothing (a short one could be taken over by a tag or branch of that name)."
       continue
     fi
     _ex_full="$(git rev-parse --verify --quiet "${_ex}^{commit}" 2>/dev/null)" || _ex_full=""
