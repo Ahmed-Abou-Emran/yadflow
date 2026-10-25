@@ -86,8 +86,10 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
   own commits, and guarding the pipeline itself is branch protection's job. It is for history already on a shared
   branch whose trailer cannot be reworded — otherwise every later range that holds it, a release PR
   above all, fails again. The list is read **from the base**, never from the PR, so a PR cannot waive
-  its own commits; a branch/tag name, a short SHA or one that names no commit exempts nothing and
-  is said as a note.
+  its own commits. An entry exempts nothing, and is said as a note, when it is a branch or tag name, a
+  short SHA, a SHA of the wrong length for this repo (64 characters in a SHA-1 repo, 40 in a SHA-256
+  one — git would look it up as a ref name), an annotated tag's or a tree's SHA, or a SHA that names no
+  object here.
 - For every other commit, requires a `Task: <story>-<task>` trailer. **FAIL** if absent.
 - The trailer must be a well-formed `<story>-T<NN>` id. **FAIL** on a malformed trailer (e.g.
   `EP-demo-S01` with no `-T<NN>`) rather than letting it slip through the suffix-strip.
