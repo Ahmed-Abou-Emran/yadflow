@@ -102,6 +102,58 @@ export function setBuildStatus(file, status) {
 }
 
 // Sweep one epic (or every epic under epics/) and reconcile artifact frontmatter with state.json.
+// The artifact files of one epic, each with the step base it is keyed to.
+function artifactFiles(dir) {
+  // Single-file artifacts + each story file (all keyed to the stories step pair).
+  const files = ARTIFACT_FILES.map((f) => ({ base: artifactBase(f), file: path.join(dir, f) }));
+  const storiesDir = path.join(dir, 'stories');
+  if (fs.existsSync(storiesDir)) {
+    for (const f of fs.readdirSync(storiesDir).filter((x) => x.endsWith('.md'))) {
+      files.push({ base: 'stories', file: path.join(storiesDir, f) });
+    }
+  }
+  // Discovery ("epic zero") set: the project-discovery files all key to the single discovery /
+  // discovery-review step pair, so they reconcile together (mirrors the stories/ set above).
+  for (const f of DISCOVERY_FILES) {
+    if (fs.existsSync(path.join(dir, f))) files.push({ base: 'discovery', file: path.join(dir, f) });
+  }
+  // The Foundation's sections key to its one foundation / foundation-review pair the same way. Both
+  // spellings are offered; `desiredStatus` answers null for the base the chain does not carry, so
+  // a converted Foundation holding the six old files still reconciles them under `discovery`.
+  for (const f of FOUNDATION_FILES) {
+    if (fs.existsSync(path.join(dir, f))) files.push({ base: 'foundation', file: path.join(dir, f) });
+  }
+  return files;
+}
+
+// The one writer that moves a status DOWN the ladder: `yad gate reopen` (#322) withdraws an approval, so a
+// file that says `approved` (or `in-review`) over a step walked back says what is now true. Like
+// `setFrontmatterStatus`, only the `status:` line changes and a build-owned value is never touched.
+// Returns the prior status when a change was written, else null.
+export function lowerFrontmatterStatus(file, status) {
+  if (!fs.existsSync(file)) return null;
+  const text = fs.readFileSync(file, 'utf8');
+  const fm = text.match(FRONTMATTER_BLOCK);
+  if (!fm) return null;
+  const cur = (fm[1].match(/^status:\s*(.*)$/m) || [])[1]?.trim();
+  if (cur === undefined || PRESERVE.has(cur)) return null;
+  if (!(cur in RANK) || !(status in RANK) || RANK[status] >= RANK[cur]) return null;
+  const block = fm[1].replace(/^status:\s*.*$/m, () => `status: ${status}`);
+  fs.writeFileSync(file, text.replace(fm[1], () => block));
+  return cur;
+}
+
+// Lower every artifact of one epic to what its walked-back `state` now says (`yad gate reopen`, #322).
+// Returns the root-relative paths it rewrote, so the reopen commit holds exactly those.
+export function lowerStatuses(root, epic, state) {
+  const written = [];
+  for (const { base, file } of artifactFiles(epicRoot(root, epic))) {
+    const want = desiredStatus(state, base);
+    if (want && lowerFrontmatterStatus(file, want)) written.push(path.relative(root, file));
+  }
+  return written;
+}
+
 export async function syncStatuses(root, { epic, dryRun = false } = {}) {
   // `epicIds` — the Foundation included (E75), and only VALID ids: a backup directory or any other
   // folder left under `epics/` is not an epic, and rewriting frontmatter inside it would be a write to
@@ -121,26 +173,7 @@ export async function syncStatuses(root, { epic, dryRun = false } = {}) {
     const state = readJSONStrict(epicFiles(dir).state, null);
     if (!state?.steps) { info(`${e}: no state.json — skipping`); continue; }
 
-    // Single-file artifacts + each story file (all keyed to the stories step pair).
-    const files = ARTIFACT_FILES.map((f) => ({ base: artifactBase(f), file: path.join(dir, f) }));
-    const storiesDir = path.join(dir, 'stories');
-    if (fs.existsSync(storiesDir)) {
-      for (const f of fs.readdirSync(storiesDir).filter((x) => x.endsWith('.md'))) {
-        files.push({ base: 'stories', file: path.join(storiesDir, f) });
-      }
-    }
-    // Discovery ("epic zero") set: the project-discovery files all key to the single discovery /
-    // discovery-review step pair, so they reconcile together (mirrors the stories/ set above).
-    for (const f of DISCOVERY_FILES) {
-      if (fs.existsSync(path.join(dir, f))) files.push({ base: 'discovery', file: path.join(dir, f) });
-    }
-    // The Foundation's sections key to its one foundation / foundation-review pair the same way. Both
-    // spellings are offered; `desiredStatus` answers null for the base the chain does not carry, so
-    // a converted Foundation holding the six old files still reconciles them under `discovery`.
-    for (const f of FOUNDATION_FILES) {
-      if (fs.existsSync(path.join(dir, f))) files.push({ base: 'foundation', file: path.join(dir, f) });
-    }
-
+    const files = artifactFiles(dir);
     for (const { base, file } of files) {
       if (!fs.existsSync(file)) continue;
       const want = desiredStatus(state, base);

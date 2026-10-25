@@ -5,27 +5,29 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  c, log, ok, info, warn, hand, fail, note, quietly, readJSON, readJSONStrict, writeJSON, run, pushWithRebase, isPlainObject, writeMirrored, emitJSON, refuse, collectWarning,
+  c, log, ok, info, warn, hand, fail, note, quietly, readJSON, readJSONStrict, writeJSON, run, pushWithRebase, isPlainObject, writeMirrored, emitJSON, refuse, collectWarning, forTerminal,
 } from './lib.mjs';
 import { OWNING_COMMIT_ENV } from './hook.mjs';
-import { PROJECT_FILES, isVerifiedLedger , productConfigPath, settingsEditHint } from './manifest.mjs';
+import { PROJECT_FILES, VERSION, isVerifiedLedger , productConfigPath, settingsEditHint } from './manifest.mjs';
 import {
   epicIds, epicRel, epicRoot, loadLedger, findReviewStep, artifactBase, artifactHash, acceptedHashes, isStaleHash, gatePredicate, printable,
   advanceState, closingRecord, markInReview, isEscalated, gateRuleFor, gateCapFor, gateReach, uniqueReach, peopleWord, capSeat, gateRuleSum, gateRuleEnforced, parseReviewBranch, artifactFromBase, legacyLogins,
   upsertProductPr, stateInvariants, repairState, DISCOVERY_FILES, FOUNDATION_REQUIRED, unwrittenSections,
   canonicalApprovals, canonicalComments, canonicalProductPrs, optionalStepsFor, isSkippableStep, writeState, routeLacksStep,
   isPassed, stepStatus, claimsSkipped, claimsInherited, DISCOVERY_EPIC, FOUNDATION_DIR, FOUNDATION_EPIC, staleFoundationGuards,
+  reopenStep, retiredPr, epicLineage, heldByReopen, reopenStampDue, stampPassed, isGateStep,
 } from './epic-state.mjs';
+import { readShips } from './ledger.mjs';
 import { activePeople, activeSum, activeBasis, approverCount, printTeamHint, soloTeamHint } from './people.mjs';
 import { applyProductMove, planProductMove } from './migrate.mjs';
 import { productGit, preflightGuardReadiness, resolveDefaultBranch, guardDefaultBranch } from './productcommit.mjs';
 import {
   readPr, mapApprovers, createPr, platformLogin, actorName, ambiguousLegacyNames, prNumberFromUrl,
-  getPrBody, editPrBody, postComment, findPrForBranch, prBranch, branchExists,
+  getPrBody, editPrBody, postComment, findPrForBranch, prBranch, branchExists, newestPrNumber,
 } from './platform.mjs';
 import { isNoBlock, upsertTrailerBlock, nudgeMessage, parseEngagement } from './companion.mjs';
 import { sequenceDiff } from './walkthrough.mjs';
-import { syncStatuses } from './artifact-status.mjs';
+import { syncStatuses, lowerStatuses } from './artifact-status.mjs';
 import { writeIndex, refreshIndexAfterWrite, uncommittedIndexInputs, INDEX_FILE } from './product-index.mjs';
 import { err } from './errors.mjs';
 
@@ -573,7 +575,14 @@ function resolveTargets(productPrs, { epic, artifact, state, platform, number, f
   if (named !== null && (!Number.isInteger(named) || named <= 0)) {
     return { targets: [], discovered: false, reason: `--pr must be a positive integer, got '${number}'` };
   }
-  if (named === null && recorded.length) return { targets: recorded, discovered: false };
+  // A review PR `yad gate reopen` retired never passes its gate again (#322): not as a recorded pointer an
+  // older yad put back, not when named with --pr, and not when found on the review branch below.
+  const retired = (n) => retiredPr(state, artifact || recorded[0]?.artifact, n, platform);
+  const retiredWhy = (n) => `#${n} was retired by \`yad gate reopen\` — it no longer counts for this review; open a fresh one with \`yad gate open ${epic} ${artifact || recorded[0]?.artifact || '<artifact>'}\``;
+  if (named !== null && retired(named)) return { targets: [], discovered: false, reason: retiredWhy(named) };
+  const live = recorded.filter((p) => !retiredPr(state, p.artifact, p.number, p.platform || platform));
+  if (named === null && recorded.length && !live.length) return { targets: [], discovered: false, reason: retiredWhy(recorded[0].number) };
+  if (named === null && live.length) return { targets: live, discovered: false };
   if (!artifact) return { targets: [], discovered: false, reason: 'name the artifact to resolve its review PR' };
   const step = findReviewStep(state, artifact);
   if (!step) return { targets: [], discovered: false, reason: `no review step for ${artifact}` };
@@ -601,6 +610,7 @@ function resolveTargets(productPrs, { epic, artifact, state, platform, number, f
   }
   const found = finder(platform, branch, { cwd });
   if (!found.ok) return { targets: [], discovered: false, reason: found.reason };
+  if (retired(found.number)) return { targets: [], discovered: false, reason: retiredWhy(found.number) };
   info(`no recorded review PR — resolved #${found.number}${found.state ? ` (${found.state})` : ''} from ${branch}`);
   return { targets: entry(found.number, found.url), discovered: true };
 }
@@ -633,7 +643,7 @@ function stageIndexIfClean(root, git, commits = null) {
   return !git('diff', '--cached', '--quiet', '--', INDEX_FILE).ok;
 }
 
-export async function gateSync(root, { epic, artifact, today, reader = readPr, finder = findPrForBranch, branchOf = prBranch, poster = postComment, number = null, local = false, dryRun = false, headCount = null, probe = null } = {}) {
+export async function gateSync(root, { epic, artifact, today, reader = readPr, finder = findPrForBranch, branchOf = prBranch, poster = postComment, number = null, local = false, dryRun = false, headCount = null, probe = null, newest = newestPrNumber } = {}) {
   const { productConfig } = loadProduct(root);
   if (!productConfig?.platform) { warn(`no Product platform configured (${settingsEditHint(root)}) — local gate, nothing to sync`); return { epic, synced: 0, advanced: 0, written: false, gates: [] }; }
   const platform = productConfig.platform;
@@ -709,7 +719,11 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
   // A pointer resolved from the platform is adopted into the ledger on the WRITER path only. In
   // verified mode this run is advisory and writes nothing, so the human never ends up with a gate-state
   // file in their working tree for the ledger-guard check to reject.
-  if (resolved.discovered && !readOnly) productPrs = upsertProductPr(productPrs, targets[0]);
+  // Not for a review held behind a reopen (#322): a pointer recorded during the hold would be read once it lifts.
+  if (resolved.discovered && !readOnly) {
+    const held = findReviewStep(state, targets[0].artifact);
+    if (!held || isPassed(held) || !heldByReopen(state, held.id)) productPrs = upsertProductPr(productPrs, targets[0]);
+  }
 
   let synced = 0;
   let advanced = 0;
@@ -743,6 +757,23 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
     // and write nothing but the PR pointer. The step then read `done` while its approvals were all
     // stale: work proceeded on an audit trail saying the re-review never happened (issue #156).
     const alreadyDone = isPassed(step);
+    // After a reopen the gates pass again in order (#322). Asked of the LIVE state on every pass: an earlier
+    // target in this same run may have just passed a walked-back review and retired this PR (`stampPassed`).
+    if (!alreadyDone && retiredPr(state, pr.artifact, pr.number, platform)) {
+      info(`${step.id}: PR #${pr.number} was retired by \`yad gate reopen\` — not read; review ${pr.artifact} again on a fresh PR/MR: \`yad gate open ${epic} ${step.artifact}\``);
+      productPrs = canonicalProductPrs(productPrs.filter((p) => !(p.artifact === pr.artifact && p.number === pr.number)));
+      gates.push({ step: step.id, artifact: pr.artifact, pr: pr.number ?? null, merged: null, rule: null, passed: false, alreadyDone: false, retired: true, have: null, gateRule: null, cap: null, short: null, missing: ['a fresh review'], staleDropped: 0 });
+      continue;
+    }
+    // A held review is not read, and once the step it waits on passes, its PR is retired with every later
+    // review opened before then (`stampPassed`), so nothing given during the hold counts.
+    const holdFor = alreadyDone ? null : heldByReopen(state, step.id);
+    if (holdFor) {
+      warn(`${step.id} waits for ${holdFor}, an earlier step not passed since \`yad gate reopen\` — PR #${pr.number} is not read`);
+      hand(`once ${holdFor} passes, review ${step.artifact} again on a fresh PR/MR: \`yad gate open ${epic} ${step.artifact}\``);
+      gates.push({ step: step.id, artifact: pr.artifact, pr: pr.number ?? null, merged: null, rule: null, passed: false, alreadyDone: false, held: holdFor, have: null, gateRule: null, cap: null, short: null, missing: [`${holdFor} must pass first`], staleDropped: 0 });
+      continue;
+    }
     const pull = reader(platform, pr.number, { cwd: root });
     // A failed platform read must not pass as a green no-op: flag the run non-zero so CI surfaces it
     // (the wired workflow's reconcile/sweep aggregates this exit) instead of silently not advancing.
@@ -864,6 +895,21 @@ export async function gateSync(root, { epic, artifact, today, reader = readPr, f
       });
       advanced++;
       ok(`gate PASSED — ${step.id} → done; next: ${state.currentStep}`);
+      // A review after a reopened step passed (#322): the later reviews opened before now are retired, so
+      // each is reviewed afresh. The platform's newest number bounds them; this PR's own number when the
+      // platform cannot answer — said, and the CI run goes red, since a later PR above it is then not covered.
+      // Not on a read-only run: nothing it records is kept.
+      // Nothing to retire when no review comes after this one (`test-cases-review`): no question, no red run.
+      const laterReview = state.steps.slice(state.steps.findIndex((s) => s?.id === step.id) + 1).some((s) => isGateStep(s));
+      if (!readOnly && laterReview && reopenStampDue(state, step.id)) {
+        const got = newest(platform, { cwd: root });
+        if (!got?.ok) {
+          warn(`could not ask the platform for its newest PR/MR (${String(got?.reason ?? 'no answer').split('\n')[0]}) — the later reviews are retired only up to #${pr.number}; close any later review PR/MR opened since by hand`);
+          if (!local) process.exitCode = 1;
+        }
+        const n = Math.max(got?.ok && Number.isInteger(got.number) ? got.number : 0, Number(pr.number) || 0);
+        if (stampPassed(state, step.id, { platform, number: n })) info(`${step.id} passed again after \`yad gate reopen\` — the later steps' review PRs up to #${n} are retired; review each again on a fresh PR/MR`);
+      }
     } else {
       state = markInReview(state, step, { by, date: today, pr: pr.number ?? null, hash: curHash });
       for (const m of pred.missing) hand(`still needed: ${m}`);
@@ -975,7 +1021,7 @@ export function convertProductLevel(root, productConfig, { git = (...a) => run('
   }
 }
 
-export async function gateCi(root, { branch, pr, merged = false, today, push = true, reader = readPr, branchOf = prBranch } = {}) {
+export async function gateCi(root, { branch, pr, merged = false, today, push = true, reader = readPr, branchOf = prBranch, newest = newestPrNumber } = {}) {
   const { productConfig } = loadProduct(root);
   if (!productConfig?.platform) { warn(`no Product platform configured (${settingsEditHint(root)}) — nothing to sync`); return { synced: 0, committed: false, pushed: false }; }
   const git = (...args) => run('git', args, { cwd: root });
@@ -1063,6 +1109,18 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     }
     const step = findReviewStep(ledger.state, job.artifact);
     if (!step) { warn(`${job.epic}: no review step for ${job.artifact} — skipping`); continue; }
+    // A review `yad gate reopen` retired (#322) never passes its gate again. Without this the reconcile run,
+    // which replays every review merged in the last days, would read the old merge and undo the reopen.
+    if (!isPassed(step) && Number(job.pr) > 0 && retiredPr(ledger.state, job.artifact, Number(job.pr), productConfig.platform)) {
+      info(`${job.epic}: PR #${job.pr} was retired by \`yad gate reopen\` — it does not pass ${step.id} again; a fresh review does`);
+      continue;
+    }
+    // A review held behind a reopened step (#322) is not recorded either: it is retired once that step passes.
+    const holdFor = !isPassed(step) ? heldByReopen(ledger.state, step.id) : null;
+    if (holdFor) {
+      info(`${job.epic}: ${step.id} waits for ${holdFor}, an earlier step not passed since \`yad gate reopen\` — PR #${job.pr} is not recorded, and is retired once ${holdFor} passes`);
+      continue;
+    }
 
     // The merge event may fire before any hub-prs record exists (Path B never wrote one pre-merge) —
     // build the entry from the event itself so the advance commit carries it onto the default branch.
@@ -1145,7 +1203,7 @@ export async function gateCi(root, { branch, pr, merged = false, today, push = t
     try {
       // A branch event that is not a merge can never advance (the predicate requires merged), so it
       // is read-only under Path B — run it as a dry sync that persists nothing to the working tree.
-      const r = await gateSync(root, { epic: job.epic, artifact: job.artifact, today, reader, dryRun: !!branch && !merged, headCount: sweepCount });
+      const r = await gateSync(root, { epic: job.epic, artifact: job.artifact, today, reader, dryRun: !!branch && !merged, headCount: sweepCount, newest });
       synced += r.synced;
       // When the step actually ADVANCED (the merge phase, or a swept merge the schedule observed),
       // reflect it in the artifact frontmatter (draft → approved). Keyed off the advance, not the
@@ -1369,6 +1427,12 @@ export async function gateStatus(root, { epic, headCount: given = null } = {}) {
   // E74: in solo mode, suggest `yad mode team` when the count shows more than one person may work here.
   // An unknown count is already said by `activeSum` just above, so only a known suggestion prints.
   printTeamHint(soloTeamHint(root, productConfig, { solo, headCount }));
+  // The approvals `yad gate reopen` revoked are no longer in approvals.json, so they are not counted below;
+  // say where they went (#322).
+  for (const r of (Array.isArray(ledger.state.reopens) ? ledger.state.reopens : []).slice(-1)) {
+    if (!isPlainObject(r)) continue;
+    log(`  ${c.dim(`reopened ${printable(r.step) ?? '?'}${r.date ? ` on ${printable(r.date)}` : ''}${r.by ? ` by ${printable(r.by)}` : ''}${r.reason ? ` — ${printable(r.reason)}` : ''}: ${Array.isArray(r.revokedApprovals) ? r.revokedApprovals.length : 0} approval(s) revoked, kept in state.json reopens[]`)}`);
+  }
   const reachSeen = new Set();   // E73: each warning line once per view, not once per step
   const gates = [];              // the --json answer (E1): each review step as this view reads it
   for (const s of ledger.state.steps.filter((x) => x.type === 'review+approve')) {
@@ -1536,6 +1600,168 @@ export async function gateRepair(root, { epic, push = false, allowBranch = false
   return did(true, true, false);
 }
 
+// PURE — the audit-trail commit message for a reopen (#322), in the same form as the repair's. The reason
+// is the person's, kept to one line in the subject; the body lists what was undone.
+export function buildReopenMessage({ epic, step, reason, walked = [], revoked = 0, retired = [] }) {
+  const one = String(reason).replace(/\s+/g, ' ').trim();
+  const subject = `chore(gate): reopen ${epic}/${step} — ${one.length > 72 ? `${one.slice(0, 71)}…` : one} [skip ci]`;
+  return `${subject}\n\nEpic: ${epic}\nReopened: ${step}\nWalked back: ${walked.join(', ') || 'none'}\nRevoked approvals: ${revoked}\nRetired review PRs: ${retired.length ? retired.map((n) => `#${n}`).join(', ') : 'none'}\nReason: ${one}`;
+}
+
+// The exact yadflow the wired gate-sync job runs, when the Product pins one: `gate_sync_version`, else the
+// `.sdlc/cli-version.json` stamp — the workflow's own order, an exact release of this major only (else it
+// floats on the major). A `YAD_VERSION` variable on the platform overrides both and cannot be seen here.
+function ciPin(root, productConfig) {
+  const major = String(VERSION).split('.')[0];
+  const exact = (v) => typeof v === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v) && v.split('.')[0] === major;
+  for (const v of [productConfig?.gate_sync_version, readJSON(path.join(root, PROJECT_FILES.version), null)?.version]) if (exact(v)) return v;
+  return null;
+}
+// Is `a` an older release than `b`? x.y.z compared as numbers; a prerelease is older than its release, and
+// two prereleases compare part by part (`next.2` is older than `next.10`).
+export function olderThan(a, b) {
+  const parse = (v) => { const i = String(v).indexOf('-'); const core = i === -1 ? String(v) : String(v).slice(0, i); return { n: core.split('.').map(Number), pre: i === -1 ? null : String(v).slice(i + 1).split('.') }; };
+  const x = parse(a); const y = parse(b);
+  for (let i = 0; i < 3; i++) if (x.n[i] !== y.n[i]) return x.n[i] < y.n[i];
+  if (x.pre === null || y.pre === null) return x.pre !== null && y.pre === null;
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i]; const q = y.pre[i];
+    if (p === undefined) return true;
+    if (q === undefined) return false;
+    const np = /^\d+$/.test(p); const nq = /^\d+$/.test(q);
+    if (np && nq && Number(p) !== Number(q)) return Number(p) < Number(q);
+    if (np !== nq) return np;
+    if (p !== q) return p < q;
+  }
+  return false;
+}
+// The first release whose `yad gate ci` / `yad gate sync` know a retired review PR (#322). A CI pinned
+// below it would replay the old merge and pass the gate again.
+export const REOPEN_SINCE = '4.7.0';
+
+// `yad gate reopen <epic> <step> --reason "<why>"` (#322) — reopen an approved Shape step before Build
+// starts. The step goes back to `in_progress`, every later step that started goes back to `todo`, and the
+// walked-back reviews' approvals and review PRs move into `state.json`'s `reopens[]` audit, so every gate
+// from the step on must be approved again. The rules are `reopenStep`'s (cli/epic-state.mjs); this loads,
+// writes and, with --push, commits.
+//
+// ON A VERIFIED PRODUCT only CI writes the ledger, and a hand commit of it is refused. As with `gate repair`,
+// the commit this command makes with --push is the owning one; without --push nothing is written, because a
+// reopen left on disk could not be committed any other way. And CI must run a yadflow that knows about
+// reopens: an older `gate ci` would replay the retired review's merge and pass the gate again.
+export async function gateReopen(root, { epic, step, reason, push = false, allowBranch = false, dryRun = false, today = new Date().toISOString().slice(0, 10), newest = newestPrNumber } = {}) {
+  const none = { epic, step: step ?? null, currentStep: null, walkedBack: [], kept: [], revoked: 0, retiredPrs: [], retiredUpTo: null, written: [], dryRun, committed: false, pushed: false };
+  if (!step) { fail('usage: yad gate reopen <epic> <step> --reason "<why>" [--push]'); process.exitCode = 1; return none; }
+  const epicDir = epicRoot(root, epic);
+  const ledger = loadLedger(epicDir);
+  if (!ledger.state) { fail(`no epic state at ${epicDir}/.sdlc/state.json`); process.exitCode = 1; return none; }
+  const productConfig = readJSON(productConfigPath(root), null);
+  const verified = isVerifiedLedger(productConfig);
+
+  log(c.bold(`\nyad gate reopen  ${c.dim(`${epic} ${step}`)}`));
+  // The rules throw a YadError with its fix; the top-level handler prints it.
+  const opts = {
+    reason, by: closingActor(root, productConfig), at: today,
+    approvals: ledger.approvals, productPrs: ledger.productPrs, buildStates: ledger.buildStates,
+    shipped: readShips(epicDir), contractLockHash: ledger.contractLock?.hash ?? null,
+  };
+  const first = reopenStep(ledger.state, step, opts);
+  // A review PR of a later step that the ledger never recorded — on a verified Product CI writes a pointer
+  // only at merge — would merge on approvals given before the reopen. Numbers only grow, so the platform's
+  // newest number now bounds every review opened before this moment: all of them, for the reopened step and
+  // every later one, are retired (`retiredUpTo`). A platform that cannot answer leaves that unknown:
+  // refused on a verified Product, where only CI's merge advances the chain.
+  let upTo = null;
+  const platform = productConfig?.platform || null;
+  if (platform) {
+    const got = newest(platform, { cwd: root });
+    if (got.ok) upTo = got.number ? { platform, number: got.number } : null;
+    else {
+      const say = `the platform could not say which review PRs were opened before now (${String(got.reason ?? 'no answer').split('\n')[0]})`;
+      if (verified) {
+        fail(`${forTerminal(say)} — one of them could pass its gate on approvals from before the reopen; nothing is written`);
+        hand('check the platform CLI is installed and logged in (`yad doctor`), then reopen again');
+        process.exitCode = 1;
+        return none;
+      }
+      warn(`${forTerminal(say)} — a review PR opened before the reopen and never recorded is not retired; close it by hand`);
+    }
+  }
+  const r = upTo ? reopenStep(ledger.state, step, { ...opts, upTo }) : first;
+  const a = r.audit;
+  const walkedBack = a.steps.map((x) => x.id);
+  const retiredNos = a.retiredPrs.map((p) => p.number).filter((n) => n != null);
+  const answer = (extra = {}) => ({ ...none, currentStep: r.state.currentStep, walkedBack, kept: a.kept.map((k) => k.id), revoked: a.revokedApprovals.length, retiredPrs: retiredNos, retiredUpTo: a.retiredUpTo?.number ?? null, ...extra });
+  info(forTerminal(`${walkedBack.join(', ')} go back (${step} to in_progress, the rest to todo); currentStep ${a.from ?? '—'} → ${r.state.currentStep}`));
+  if (a.kept.length) info(forTerminal(`kept as they are (set aside, not built on ${step}): ${a.kept.map((k) => `${k.id} (${k.status})`).join(', ')}`));
+  info(`${a.revokedApprovals.length} approval(s) revoked and ${retiredNos.length} review PR(s) retired${a.retiredUpTo ? `, with every review PR up to #${a.retiredUpTo.number} for ${a.retiredUpTo.artifacts.join(', ')}` : ''} — kept in ${epicRel(epic)}/.sdlc/state.json reopens[]`);
+
+  // Child epics that inherit a step walked back here carry an approval that no longer stands upstream.
+  const children = epicIds(root).filter((id) => id !== epic).filter((id) => {
+    try { const l = epicLineage(root, id); return l.parent === epic && l.inherits.some((x) => walkedBack.includes(x)); } catch { return false; }
+  });
+  if (children.length) warn(`${children.join(', ')} inherit${children.length === 1 ? 's' : ''} a step walked back here — check ${children.length === 1 ? 'it' : 'them'} with \`yad doctor\` once the new review passes`);
+
+  if (verified) {
+    const pin = ciPin(root, productConfig);
+    if (pin && olderThan(pin, REOPEN_SINCE)) {
+      fail(`CI runs yadflow@${pin}, older than ${REOPEN_SINCE}, the first release that knows about reopens — it would replay the retired review's merge and pass the gate again; nothing is written`);
+      hand(`run \`yad update\`, commit and push ${PROJECT_FILES.version} (the CI pin), then reopen`);
+      process.exitCode = 1;
+      return answer();
+    }
+    if (!pin) warn(`CI's yadflow version is not pinned here, so it floats on the latest release of this major — reopen needs ${REOPEN_SINCE} or later there (a YAD_VERSION variable on the platform overrides this, and cannot be seen from here)`);
+  }
+  if (dryRun) { info('dry run — nothing written'); return answer(); }
+  if (verified && !push) {
+    fail('on a verified Product only the commit yad makes may change the ledger — nothing is written');
+    hand(`re-run with --push: \`yad gate reopen ${epic} ${step} --reason "…" --push\``);
+    process.exitCode = 1;
+    return answer();
+  }
+
+  writeState(ledger.files.state, r.state);
+  writeJSON(ledger.files.approvals, canonicalApprovals(r.approvals));
+  writeMirrored(ledger.files.productPrs, ledger.files.productPrsLegacy, canonicalProductPrs(r.productPrs));
+  const statusFiles = lowerStatuses(root, epic, r.state);
+  const rel = (f) => path.relative(root, f);
+  const written = [rel(ledger.files.state), rel(ledger.files.approvals), rel(ledger.files.productPrs), rel(ledger.files.productPrsLegacy), ...statusFiles];
+  ok(`${step} reopened — ${walkedBack.length - 1} later step(s) back to todo, ${a.revokedApprovals.length} approval(s) revoked`);
+  for (const f of statusFiles) info(`${f}: status lowered to match`);
+  const open = a.retiredPrs.filter((p) => p.number != null);
+  if (open.length) hand(`close the retired review PR(s) on the platform if still open: ${open.map((p) => `#${p.number}`).join(', ')} — yad does not close them`);
+  hand(`next: author ${step} again, then \`yad gate open ${epic} <artifact>\` for a fresh review`);
+
+  if (!push) {
+    refreshIndexAfterWrite(root, productConfig);
+    hand(`commit ${written.join(', ')} (or re-run with --push)`);
+    return answer({ written });
+  }
+  preflightGuardReadiness(root);
+  const git = productGit(root);
+  const branch = git('rev-parse', '--abbrev-ref', 'HEAD').stdout;
+  const defaultBranch = resolveDefaultBranch(git, loadProduct(root).productConfig);
+  if (!guardDefaultBranch(branch, defaultBranch, { allowBranch, cmd: 'yad gate reopen', root })) return answer({ written });
+  // Only the files this run wrote, and only those git sees (a legacy mirror never committed is left out).
+  const specs = written.filter((f) => git('add', '--', f).ok);
+  if (git('diff', '--cached', '--quiet', '--', ...specs).ok) { info('nothing changed on disk — nothing to commit'); return answer({ written }); }
+  const all = [...specs, ...(branch === defaultBranch && !verified && stageIndexIfClean(root, git, specs) ? [INDEX_FILE] : [])];
+  const message = buildReopenMessage({ epic, step, reason: a.reason, walked: walkedBack, revoked: a.revokedApprovals.length, retired: retiredNos });
+  const cm = run('git', ['commit', '-m', message, '--', ...all], { cwd: root, env: OWNING_COMMIT_ENV() });
+  if (!cm.ok) {
+    git('reset', '-q', '--', ...all);
+    fail(`git commit failed — ${cm.stderr.split('\n')[0] || cm.code}`);
+    process.exitCode = 1;
+    return answer({ written });
+  }
+  ok(`committed the reopen: ${c.dim(message.split('\n')[0])}`);
+  if (pushWithRebase(root, branch).ok) { ok(`pushed to origin/${branch}`); return answer({ written, committed: true, pushed: true }); }
+  fail(`could not push to origin/${branch} — a protected branch, or an unresolvable rebase conflict`);
+  hand('run `git pull --rebase`, then `git push` — the reopen is committed locally');
+  process.exitCode = 1;
+  return answer({ written, committed: true });
+}
+
 // `head` overrides the review branch the PR is opened against — `open-pr` delegates here after pushing
 // the user's checked-out branch, which for a per-story review (review/EP-*/stories-S01) does NOT equal
 // the branch this would otherwise recompute (artifactFromBase collapses stories-S01 → stories/). Pass
@@ -1558,6 +1784,14 @@ export async function gateOpen(root, { epic, artifact, head, creator = createPr,
   if (aside === 'skipped' || aside === 'deferred') {
     fail(`${step.id} is ${aside} — there is no review to open`);
     hand(`put it back in the chain first: yad ${aside === 'skipped' ? 'unskip' : 'undefer'} ${epic} ${step.id.replace(/-review$/, '')}`);
+    process.exitCode = 1;
+    return;
+  }
+  // After a reopen the gates pass again in order (#322): no later review opens before the reopened step passes.
+  const held = heldByReopen(ledger.state, step.id);
+  if (held) {
+    fail(`${step.id} waits for ${held}, an earlier step not passed since \`yad gate reopen\` — no review is opened`);
+    hand(`pass ${held} first; the gates from a reopened step pass again in order`);
     process.exitCode = 1;
     return;
   }

@@ -313,6 +313,27 @@ export function findPrForBranch(platform, branch, { cwd } = {}) {
   return { ok: true, number: Number(pr.number), url: pr.url || null };
 }
 
+// The highest PR/MR number the repo has given out, open or not (`yad gate reopen`, #322): numbers only grow,
+// so every review opened before the reopen is at or below it. `{ ok: true, number }` (null when the repo has
+// none yet), or `{ ok: false, reason }`. Never throws.
+export function newestPrNumber(platform, { cwd } = {}) {
+  if (!platformReady(platform)) return { ok: false, reason: `${cliFor(platform) || 'platform CLI'} not available` };
+  if (platform === 'gitlab') {
+    const r = run('glab', ['api', 'projects/:id/merge_requests?state=all&order_by=created_at&sort=desc&per_page=1'], { cwd });
+    if (!r.ok) return { ok: false, reason: r.stderr || 'glab api merge_requests failed' };
+    let rows;
+    try { rows = JSON.parse(r.stdout); } catch { return { ok: false, reason: 'unreadable glab api response' }; }
+    const n = Array.isArray(rows) ? Number(rows[0]?.iid) : NaN;
+    return { ok: true, number: Number.isInteger(n) && n > 0 ? n : null };
+  }
+  const r = run('gh', ['pr', 'list', '--state', 'all', '--limit', '1', '--json', 'number'], { cwd });
+  if (!r.ok) return { ok: false, reason: r.stderr || 'gh pr list failed' };
+  let rows;
+  try { rows = JSON.parse(r.stdout); } catch { return { ok: false, reason: 'unreadable gh pr list response' }; }
+  const n = Array.isArray(rows) ? Number(rows[0]?.number) : NaN;
+  return { ok: true, number: Number.isInteger(n) && n > 0 ? n : null };
+}
+
 // The head/source branch of a PR/MR, so a caller can confirm a number a human typed actually belongs
 // to the review it is about to bind approvals to. Returns { ok, branch }; never throws.
 export function prBranch(platform, n, { cwd } = {}) {

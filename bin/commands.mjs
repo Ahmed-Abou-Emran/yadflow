@@ -14,7 +14,7 @@ export { runSetup } from '../cli/setup.mjs';
 export { runNew, runInit, runJoin } from '../cli/workspace.mjs';
 export { findProduct, hasProduct, workspaceProduct, registryEntryFor, toolsFolder, WORKSPACE_FILE } from '../cli/find-product.mjs';
 export { reconcile } from '../cli/reconcile.mjs';
-export { gateOpen, gateSync, gateComments, gateStatus, gateCi, gateReview, gateTrailer, gateWalkthrough, gateRepair } from '../cli/gate.mjs';
+export { gateOpen, gateSync, gateComments, gateStatus, gateCi, gateReview, gateTrailer, gateWalkthrough, gateRepair, gateReopen } from '../cli/gate.mjs';
 export { gateApprove, gateComment, gateAdvance } from '../cli/gate-local.mjs';
 export { isValidEpicId, productDriftError, seedableProfiles } from '../cli/epic-state.mjs';
 export { runEpicNew, runFoundationNew, runFoundationStatus } from '../cli/epic.mjs';

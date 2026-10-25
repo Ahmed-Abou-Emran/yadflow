@@ -154,10 +154,10 @@ git's default stops such a merge with a conflict, and the gates fail closed on a
 
 These commands push straight to the default branch: `yad update --push` (and `yad check --fix --push`),
 `yad checkpoint --push`,
-`yad tidy up --push`, `yad repo refresh --push` and `yad gate repair --push` — and `yad gate ci` when a
+`yad tidy up --push`, `yad repo refresh --push`, `yad gate repair --push` and `yad gate reopen --push` — and `yad gate ci` when a
 person runs it instead of CI. With protection on, they need someone who may bypass the rules. Anyone
 else can run them without `--push`, commit on a branch, and open a pull request instead (on a verified
-Product, `yad gate repair` is the exception: its ledger commit only makes sense on the default branch).
+Product, `yad gate repair` and `yad gate reopen` are the exception: their ledger commit only makes sense on the default branch).
 
 ## The local git hook (E48)
 
@@ -188,7 +188,7 @@ lasts for the whole window, and it also turns off the agent hook there).
 The hook follows the CI check's rules, and where it cannot know the answer it allows. So it lets through a
 new epic's first ledger (its seed), artifacts, the contract lock, a merge commit, and a commit authored
 by the `yad-gate-sync` bot.
-The ledger commits yad's own `yad gate ci` and `yad gate repair` make pass it too: those are the
+The ledger commits yad's own `yad gate ci`, `yad gate repair` and `yad gate reopen` make pass it too: those are the
 commands the refusal sends you to, and CI's check never judges them (they land on the default branch,
 not in a pull request).
 With a `local` ledger it is not installed, and `yad check --fix` removes one yad wrote earlier (only

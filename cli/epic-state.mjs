@@ -489,6 +489,12 @@ export function upsertProductPr(productPrs = [], rec) {
   return canonicalProductPrs([...productPrs.filter((p) => p.artifact !== rec.artifact), rec]);
 }
 
+// Split the review PR pointers: the ones `take` picks come out, the rest stay (`yad gate reopen`, #322).
+export function removeProductPrs(productPrs = [], take) {
+  const list = Array.isArray(productPrs) ? productPrs : [];
+  return { kept: canonicalProductPrs(list.filter((p) => !take(p))), taken: list.filter((p) => take(p)) };
+}
+
 // SHA-256 of the contract surface block (architecture only). Byte-for-byte identical to the recipe
 // yad-architecture/references/contract-format.md publishes — the one the architect runs to write
 // contract-lock.json:
@@ -1596,9 +1602,9 @@ function closeAuthorStep(state, reviewStep, closed = null) {
 //             Absent when no cap applied — the count of people was unknown, or it lowered nothing — and
 //             in solo mode, where nothing was counted. Never on the author step, as `waived`.
 //
-// FIRST CLOSE WINS: a step that already carries one keeps it. Nothing moves a `done` step back today,
-// so nothing has to remove one; a writer that ever does must take `closed` with it, as `record` goes
-// with `blocked`. No shape change: an older release ignores a key it does not know, and nothing reads
+// FIRST CLOSE WINS: a step that already carries one keeps it. One writer moves a `done` step back:
+// `yad gate reopen` (`reopenStep`, #322), and it takes `closed` with it, as `record` goes with `blocked` —
+// into the epic's `reopens[]` audit, so the record of who closed the step and how is kept, not lost. No shape change: an older release ignores a key it does not know, and nothing reads
 // `done` differently because this is present. Steps finished before it carry none, and nothing asks.
 // `approved` is written by `yad gate advance` (E112): a gate passed on recorded approvals on a Product with
 // no platform, where nothing merges. Before E112 the `yad-review-gate` skill wrote it by hand.
@@ -2033,6 +2039,12 @@ const otherWay = (as) => (as === 'skipped' ? 'deferred' : 'skipped');
 // worded. The gate itself is not waived: `gatePredicate` still reports a deferred step's review as owed.
 function setAsideStep(state, stepId, as, { reason, by = null, at = null, debt = false, profiles = LIFECYCLE_PROFILES } = {}) {
   const V = SET_ASIDE[as];
+  // A step `yad gate reopen` walked back (#322) is reviewed again before it is set aside: setting it aside
+  // would lift the hold on the later reviews without retiring the PRs opened during it.
+  if (reopenedAndOpen(state, stepId)) {
+    throw err('YAD-STATE-004', `${stepId} was reopened with \`yad gate reopen\` and has not passed its review again`,
+      'pass its review again first; or, if the change makes the step not apply, thread it as a change epic with the yad-change skill');
+  }
   // DEBT IS OWED WORK, and a skip says the step does not apply (E36/E37), so nothing is owed back. Asked
   // first, before any chain question: it is a wrong command, whatever state the chain is in.
   if (debt && !V.carriesDebt) {
@@ -2253,6 +2265,215 @@ export function unblockStep(state, stepId) {
   cleared.status = earlierPassed && step.type === 'author' ? 'in_progress' : 'todo';
   steps[i] = cleared;
   return state;
+}
+
+// PURE (on copies). Reopen an APPROVED Shape step before Build starts (`yad gate reopen`, #322). The one
+// writer that moves a `done` step back. It walks the chain back to the step, so every gate after it must be
+// approved again, and keeps what it undid in `state.reopens[]` — an audit list that only grows.
+//
+// REVOKE BY MOVING, NOT MARKING. Every reader of `approvals.json`, in this release and every earlier one,
+// counts a record whose `status` is `approved`. A record marked revoked in place would still be counted by
+// an older yad, and the platform sync (`upsertBridge`) would write it back. So the walked-back reviews'
+// approvals LEAVE `approvals.json` and are kept, unchanged, in the audit entry; nothing counts them there.
+// The same for their review PR pointers (`product-prs.json`): they are RETIRED, so a later sync or the CI
+// reconcile replay cannot read the old merged PR and pass the gate again (`retiredPr`).
+//
+// What moves: the author step goes back to `in_progress` (the parallel `test-cases` track keeps the epic at
+// `ready-for-build`; see below), and every later step that has STARTED here
+// (`in_progress`, `in_review`, `done`) goes back to `todo`, its review included. A later step SET ASIDE —
+// skipped, deferred, satisfied (inherited) or blocked — keeps its state and its record: it is a person's
+// decision, not work built on the step, and it is listed as `kept`. A kept BLOCKED review still loses its
+// approvals and review PRs: blocked is a wait, not a decision that the step does not apply. `debt` stays on every step.
+// `currentStep` becomes the step — from `ready-for-build` too, since that claim rested on the approvals now
+// withdrawn — except for the parallel `test-cases` track, which runs beside Build. Returns `{ state, approvals, productPrs, audit }`; the inputs are not changed.
+export function reopenStep(state, stepId, { reason, by = null, at = null, approvals = [], productPrs = [], buildStates = [], shipped = [], contractLockHash = null, upTo = null } = {}) {
+  const fail = (msg, hint) => { throw err('YAD-STATE-004', msg, hint); };
+  requireChain(state, 'reopen a step in');
+  if (isProductLevel(state)) fail('the Foundation is not reopened with this command', 'it runs once per product; change it through its own review');
+  if (backfillAnchorKind(state)) fail('a brownfield anchor has no approved Shape step to reopen', 'thread a change off it with the yad-change skill');
+  const next = JSON.parse(JSON.stringify(state));
+  const steps = next.steps;
+  const ai = steps.findIndex((s) => s?.id === stepId);
+  if (ai === -1) fail(`step '${stepId}' is not in this epic's chain`, `its steps: ${steps.map((s) => s?.id).filter(Boolean).join(', ')}`);
+  const step = steps[ai];
+  if (isGateStep(step)) {
+    const author = authorStepFor(next, step);
+    fail(`${stepId} is a review gate — name the step it reviews`, author ? `yad gate reopen <epic> ${author.id} --reason "<why>"` : 'reopen the author step the gate reviews');
+  }
+  if (stepPhase(stepId) === 'build') fail(`${stepId} is a Build step — only a Shape step is reopened`, 'a Build lane moves with `yad build step`');
+  const st = stepStatus(step);
+  if (claimsInherited(step)) fail(`${stepId} was carried from a parent epic, not approved here`, 'thread a change with the yad-change skill');
+  if (st === 'skipped') fail(`${stepId} is skipped, not approved`, `put it back with \`yad unskip <epic> ${stepId}\``);
+  if (st === 'deferred') fail(`${stepId} is deferred, not approved`, `put it back with \`yad undefer <epic> ${stepId}\``);
+  if (st === 'blocked') fail(`${stepId} is blocked, not approved`, `clear it with \`yad unblock <epic> ${stepId}\``);
+  const ri = steps.findIndex((s, k) => k > ai && isGateStep(s) && authorStepFor(next, s)?.id === stepId);
+  const review = ri === -1 ? null : steps[ri];
+  if (!review || st !== 'done' || stepStatus(review) !== 'done') {
+    const rs = review ? stepStatus(review) : null;
+    fail(`${stepId} has not been approved yet${review ? ` (${review.id} is '${rs ?? review.status ?? 'no status'}')` : ''} — nothing to reopen`,
+      rs === 'in_review' ? 'its review is still open: push the change to the review branch, and the approvals bound to the old text no longer count' : 'finish it and its review the usual way');
+  }
+  if (reason == null || reason === true || !String(reason).trim()) fail('a reopen needs a reason', `yad gate reopen <epic> ${stepId} --reason "<what changed, and why the approval no longer holds>"`);
+  // The parallel `test-cases` track runs BESIDE Build (the stories gate is what lets Build start), so
+  // reopening it never stops Build and is allowed while Build runs; every other step needs Build not begun.
+  const parallel = stepId === 'test-cases';
+  // Build has begun once any story has a Build lane — `yad build start` writes one, and nothing checks the
+  // stories gate after that — or anything shipped. Code then rests on the approved Shape, and changing it
+  // is a new change, threaded (yad-change), not a reopen. A lane skipped whole holds no work, and a skip may
+  // be written before Build begins (E39), so it does not count.
+  const lanes = (Array.isArray(buildStates) ? buildStates : []).flatMap((bs) => Object.entries(isPlainObject(bs?.repos) ? bs.repos : {})
+    .filter(([, lane]) => isPlainObject(lane) && (lane.status !== 'skipped' || laneStarted(lane))).map(([repo]) => `${bs?.story ?? '?'} in ${repo}`));
+  if (!parallel && (lanes.length || (Array.isArray(shipped) && shipped.length))) {
+    fail(`Build has begun (${lanes.length ? `a Build lane for ${lanes.join(', ')}` : `${shipped.length} ship(s) recorded`}) — a reopen is only for before Build`,
+      'thread the change as a new change epic with the yad-change skill');
+  }
+  // A later step in a state this release cannot name was written by a newer yadflow: walking it back would
+  // overwrite a word this release does not understand, so refuse rather than guess.
+  const unknown = steps.slice(ai + 1).find((s) => isPlainObject(s) && s.status != null && stepStatus(s) === null);
+  if (unknown) fail(`${unknown.id} is '${unknown.status}', a state this yadflow does not know`, 'run the newer yadflow that wrote it, or `yad doctor`');
+
+  const from = next.currentStep ?? null;
+  const walked = [];
+  const kept = [];
+  const back = (s, to) => {
+    walked.push({ id: s.id, status: s.status, ...(s.closed ? { closed: s.closed } : {}) });
+    const n = { ...s, status: to };
+    delete n.closed;
+    return n;
+  };
+  steps[ai] = back(step, 'in_progress');
+  for (let j = ai + 1; j < steps.length; j++) {
+    const s = steps[j];
+    if (!isPlainObject(s)) continue;
+    if (hasStarted(s)) steps[j] = back(s, 'todo');
+    else if (stepStatus(s) !== 'todo') kept.push({ id: s.id, status: stepStatus(s) ?? s.status ?? null });
+  }
+  // From `ready-for-build`, the test-cases track does not pull the epic back from Build (`markInReview` and
+  // `advanceState` keep the same rule).
+  if (!(parallel && from === 'ready-for-build')) next.currentStep = stepId;
+
+  // The reviews walked back, and a later review kept as BLOCKED (a wait, not a decision that it does not
+  // apply): their approvals and their review PRs leave the live files, so each is approved again.
+  const reviews = new Set([...walked.map((w) => w.id), ...kept.filter((k) => k.status === 'blocked').map((k) => k.id)]
+    .filter((id) => isGateStep(steps.find((s) => s?.id === id))));
+  const list = Array.isArray(approvals) ? approvals : [];
+  const revoked = list.filter((a) => reviews.has(a?.step));
+  const live = list.filter((a) => !reviews.has(a?.step));
+  // A pointer names its review by `step`, or by artifact: a per-story review (`stories/EP-x-S01.md`) is the
+  // stories review's too.
+  const reviewOf = (artifact) => {
+    if (typeof artifact !== 'string' || !artifact) return null;
+    const b = artifactBase(artifact).replace(/-S\d+$/i, '');
+    return steps.find((s) => s?.type === 'review+approve' && typeof s.artifact === 'string' && artifactBase(s.artifact) === b)?.id ?? null;
+  };
+  const prs = removeProductPrs(productPrs, (p) => reviews.has(p?.step) || reviews.has(reviewOf(p?.artifact)));
+  // Every review after the step, kept ones too: a step skipped or deferred now may be put back later, and then
+  // it holds the reviews after it like any other (a retired PR of a step still set aside is never read).
+  const later = [...new Set(steps.slice(ai + 1).filter((s) => isGateStep(s) && typeof s.artifact === 'string')
+    .map((s) => artifactBase(s.artifact).replace(/-S\d+$/i, '')))];
+  const audit = {
+    step: stepId, date: at, by, reason: String(reason).trim(), from,
+    steps: walked, kept, revokedApprovals: revoked,
+    retiredPrs: prs.taken.map((p) => ({ step: p.step ?? null, artifact: p.artifact ?? null, platform: p.platform ?? null, number: p.number ?? null, branch: p.branch ?? null, url: p.url ?? null })),
+    // Every review PR of the reopened step or a later one numbered up to the platform's newest at the reopen
+    // (`upTo`) is retired too: one the ledger never recorded — on a verified Product a pointer is written only
+    // at merge — would otherwise merge on approvals given before the reopen.
+    // The artifacts whose reviews the reopen touches: the reopened step's own review and every later one, set
+    // aside or not. `retiredUpTo` and, each time a later review passes, `passes[]` (`stampPassed`) cover them.
+    laterArtifacts: later,
+    ...(upTo && Number.isInteger(upTo.number) && upTo.number > 0 ? { retiredUpTo: { platform: upTo.platform ?? null, number: upTo.number, artifacts: later } } : {}),
+    contractLock: contractLockHash,
+  };
+  next.reopens = [...(Array.isArray(next.reopens) ? next.reopens : []), audit];
+  return { state: next, approvals: live, productPrs: prs.kept, audit };
+}
+
+// Was this review PR retired by `yad gate reopen` (#322)? Then it must never pass its gate again — not
+// when a sync finds it on the review branch, and not when the CI reconcile replays its merge. A PR numbered
+// at or below a retired one for the same artifact is retired too: numbers only grow within one repo, so it
+// is an older review of the same text. A pointer from another platform is not compared.
+export function retiredPr(state, artifact, number, platform = null) {
+  const n = Number(number);
+  if (!Number.isInteger(n) || n <= 0 || !artifact) return false;
+  const base = artifactBase(artifact).replace(/-S\d+$/i, '');
+  let top = 0;
+  for (const r of Array.isArray(state?.reopens) ? state.reopens : []) {
+    for (const p of Array.isArray(r?.retiredPrs) ? r.retiredPrs : []) {
+      if (!p?.artifact || artifactBase(p.artifact).replace(/-S\d+$/i, '') !== base) continue;
+      if (platform && p.platform && p.platform !== platform) continue;
+      if (Number.isInteger(p.number) && p.number > top) top = p.number;
+    }
+    for (const u of [r?.retiredUpTo, ...(Array.isArray(r?.passes) ? r.passes : [])]) {
+      if (isPlainObject(u) && Number.isInteger(u.number) && Array.isArray(u.artifacts) && u.artifacts.includes(base)
+        && !(platform && u.platform && u.platform !== platform) && u.number > top) top = u.number;
+    }
+  }
+  return top > 0 && n <= top;
+}
+
+// Does this review come after the step a `yad gate reopen` reopened, with no `passes[]` row for it yet (#322)?
+// Every review after the reopened step does — walked back, todo at the reopen, or kept and put back later —
+// because any of them can hold the reviews after it (`heldByReopen`). When it passes, `stampPassed` retires
+// the later reviews opened before that moment. Except a review whose author step was resumed BEHIND finished
+// work (E41): it runs beside the chain, held nothing, and its pass must not re-open that work.
+const coveredBy = (state, r, reviewStepId) => {
+  const steps = Array.isArray(state?.steps) ? state.steps : [];
+  const ri = steps.findIndex((s) => s?.id === r?.step);
+  const ti = steps.findIndex((s) => s?.id === reviewStepId);
+  if (ri === -1 || ti <= ri || !isGateStep(steps[ti]) || typeof steps[ti].artifact !== 'string') return false;
+  const ai = steps.findIndex((s) => s?.id === authorStepFor(state, steps[ti])?.id);
+  return !(ai !== -1 && behindFinishedWork(steps, ai));
+};
+export function reopenStampDue(state, reviewStepId) {
+  return (Array.isArray(state?.reopens) ? state.reopens : []).some((r) => isPlainObject(r) && coveredBy(state, r, reviewStepId)
+    && !(Array.isArray(r.passes) ? r.passes : []).some((p) => p?.step === reviewStepId));
+}
+
+// A review after a reopened step passed (#322): every review PR of a LATER step opened before now — during
+// the hold, by hand, or merged while it was held — is retired, up to the platform's newest number. Their
+// approvals were given before the step they rest on was approved again, so each later step is reviewed afresh,
+// on a new PR/MR. Recorded per walked-back review (`passes[]`), so a reopen of `epic` closes its hold step by
+// step. Mutates `state`; true when it recorded one.
+export function stampPassed(state, reviewStepId, { platform = null, number } = {}) {
+  if (!reopenStampDue(state, reviewStepId) || !Number.isInteger(number) || number <= 0) return false;
+  const steps = state.steps;
+  const at = steps.findIndex((s) => s?.id === reviewStepId);
+  const after = new Set(steps.slice(at + 1).filter((s) => isGateStep(s) && typeof s.artifact === 'string')
+    .map((s) => artifactBase(s.artifact).replace(/-S\d+$/i, '')));
+  for (const r of state.reopens) {
+    if (!isPlainObject(r) || !coveredBy(state, r, reviewStepId)) continue;
+    const passes = Array.isArray(r.passes) ? r.passes : [];
+    if (passes.some((p) => p?.step === reviewStepId)) continue;
+    r.passes = [...passes, { step: reviewStepId, platform, number, artifacts: [...after] }];
+  }
+  return true;
+}
+
+// Is this step walked back by a reopen, and its review not passed again (#322)? Then it is not set aside. Read
+// from the review's state now, so a Product with no platform (no `passes[]` rows) is not held for ever.
+function reopenedAndOpen(state, stepId) {
+  // Asked before the chain is validated, so it never reads a malformed ledger it does not need.
+  if (!Array.isArray(state?.reopens) || !state.reopens.length || !Array.isArray(state.steps) || !state.steps.every(isPlainObject)) return false;
+  const review = state.steps.find((s) => isGateStep(s) && authorStepFor(state, s)?.id === stepId);
+  if (review && isPassed(review)) return false;
+  return state.reopens.some((r) => isPlainObject(r) && (Array.isArray(r.steps) ? r.steps : []).some((w) => w?.id === stepId || (review && w?.id === review.id)));
+}
+
+// After `yad gate reopen` (#322) the gates pass again IN ORDER: on an epic that has been reopened, a review may
+// not open or pass while any earlier step has not passed. Without this a later review PR merging first
+// (opened after the reopen, or one nobody recorded) would carry the chain past an unapproved step. Returns
+// the id of the step it waits on, or null.
+export function heldByReopen(state, reviewStepId) {
+  const steps = Array.isArray(state?.steps) ? state.steps : [];
+  if (!Array.isArray(state?.reopens) || !state.reopens.length) return null;
+  const ti = steps.findIndex((s) => s?.id === reviewStepId);
+  if (ti === -1) return null;
+  // EVERY earlier step must have passed — not only the reopened one: a reopen of `epic` walks `architecture`
+  // back too, and stacked reopens walk back more. Its own author step is not counted (on a verified Product it
+  // closes only when this review passes), nor a step re-opened beside finished work (E41), which runs aside.
+  const author = authorStepFor(state, steps[ti]);
+  const waiting = steps.slice(0, ti).find((s) => isPlainObject(s) && s.id !== author?.id && !isPassed(s) && !isReopenedStep(state, s.id));
+  return waiting ? waiting.id : null;
 }
 
 // Mark a step in-review (idempotent) and point currentStep at it — EXCEPT once the epic is
@@ -3349,7 +3570,11 @@ export function nextAction(ledger, opts = {}) {
   if (!state || !Array.isArray(state.steps) || isProductLevel(state) || backfillAnchorKind(state)) return a;
   const lanes = reopenedLanes(ledger, { epicId: a.epicId, currentStep: state.currentStep, bindings: opts.bindings ?? null });
   const debt = owedSteps(state).map((s) => ({ step: s.id, status: stepStatus(s) ?? s.status, record: s.record || null }));
-  return { ...a, ...(lanes.length ? { reopened: lanes } : {}), ...(debt.length ? { debt } : {}) };
+  // The last `yad gate reopen` (#322), so the next action says why the chain walked back. Only when there
+  // is one: a key on every action would break the frozen `yad next --json` answers of every older epic.
+  const r = Array.isArray(state.reopens) ? state.reopens[state.reopens.length - 1] : null;
+  const lastReopen = isPlainObject(r) ? { step: r.step ?? null, date: r.date ?? null, by: r.by ?? null, reason: r.reason ?? null } : null;
+  return { ...a, ...(lanes.length ? { reopened: lanes } : {}), ...(debt.length ? { debt } : {}), ...(lastReopen ? { lastReopen } : {}) };
 }
 
 // The steps still OWED AS DEBT (E41): flagged `debt: true` and not yet written here. One entry per pair —
