@@ -494,7 +494,8 @@ open_debt_on_thread() {
 # would fail every later PR whose range still holds it — and a release PR to the default branch walks the
 # whole release, so it fails again on every release until that commit reaches the base. `.sdlc/gate-exempt`
 # names such commits, one full SHA per line, `#` comments allowed; every per-commit gate passes
-# them, so a commit is waived once, in a reviewed change, instead of on every pipeline. SDLC_GATE_EXEMPT
+# them, so a commit is waived once, in a reviewed change, instead of on every pipeline. A listed commit
+# skips EVERY check of the gate, not only its trailer's — a sealed epic or a frozen thread included. SDLC_GATE_EXEMPT
 # names another path in the repo. The list is read from the BASE, never from this PR — a PR that could
 # list its own commits would wave itself past every gate; an entry counts once it merges. An entry must be
 # a FULL hex SHA: git reads 40 hex characters as a commit, but looks a short one up as a tag or branch name

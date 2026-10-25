@@ -240,6 +240,9 @@ epic-open and reconcile-debt pass it:
   branch or tag name would move, so it is refused. A short SHA is refused too: git looks a short one
   up as a tag or branch name first, so a tag named like it would stand in for another commit.
 - `SDLC_GATE_EXEMPT` names another path in the repo.
+- A listed commit skips **every** check of all four gates, not only the trailer check. In epic-open
+  and reconcile-debt that includes the sealed-epic, orphan-thread and frozen-thread checks, which a
+  `chore:` subject can never skip. Read the commit before you list it.
 - Use it only for history you cannot rewrite. A new commit with a wrong trailer is reworded, not listed.
 
 | Message | What to change |

@@ -80,7 +80,8 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
   commits and an unlinked `chore:` is indistinguishable from one naming a story that never existed.
 - **SHA exemption** (shared with lineage-check, epic-open and reconcile-debt — one byte-identical block).
   A commit listed in `.sdlc/gate-exempt` (or `SDLC_GATE_EXEMPT`; one full 40-character hex SHA per
-  line, `#` comments; a short SHA is refused, as a tag of that name would stand in for it) **PASSes** before anything else is judged. It is for history already on a shared
+  line, `#` comments; a short SHA is refused, as a tag of that name would stand in for it) **PASSes** before anything else is judged,
+  so it skips every check of the four gates, not only the trailer's. It is for history already on a shared
   branch whose trailer cannot be reworded — otherwise every later range that holds it, a release PR
   above all, fails again. The list is read **from the base**, never from the PR, so a PR cannot waive
   its own commits; a branch/tag name, a short SHA or one that names no commit exempts nothing and
@@ -436,8 +437,10 @@ resolve the owning epic the same way: `Task:` trailer → `specs/<story>/link.md
 → the Product epic. All **fail closed** on an unresolvable base; all are **per commit**; `ci|chore|build|test`
 commits **with no `Task:` trailer** are exempt — like spec-link, the exemption waives the requirement
 for an owning epic, never the validity of one that is claimed, so a maintenance subject cannot buy a
-pass past the sealed-epic / orphan-thread / frozen-thread checks. A commit listed in the base's `.sdlc/gate-exempt` passes all
-three before anything else is judged (the SHA exemption in §1). When the **Product is not reachable** from CI (the usual case for a code-repo
+pass past the sealed-epic / orphan-thread / frozen-thread checks. The one deliberate exception is the
+SHA exemption (§1): a commit listed in the base's `.sdlc/gate-exempt` skips all three gates, those checks
+included, before anything else is judged — a reviewed waiver of one named commit, which no subject line
+can buy. When the **Product is not reachable** from CI (the usual case for a code-repo
 PR), each degrades to a **PASS-with-note** — the Product-side check (`yad doctor` / `yad reconcile`) covers
 that path, and spec-link still proves the story link.
 
