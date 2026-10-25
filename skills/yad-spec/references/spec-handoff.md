@@ -18,8 +18,9 @@ Driven as harness slash-commands (RESEARCH-NOTES §2, Deviation 3), from **insid
 | 5 | `/speckit.checklist` | Quality checklist for the spec | checklist section under `specs/<feature-id>/` (in the degraded path, folded into `spec.md`) |
 | 6 | `/speckit.tasks`     | Atomic task list | `specs/<feature-id>/tasks.md` |
 
-**Ask first (#357).** Between `specify` and `clarify`, the skill asks every human-only decision and
-open question in one batch (SKILL.md, **Ask the human-only questions first**). The answers go into
+**Ask first (#357).** Between `specify` and `clarify` — or, when the story qualifies for a light spec
+(#348), on a hand draft before any Spec Kit command (SKILL.md Step 5) — the skill asks every human-only
+decision and open question in one batch (SKILL.md, **Ask the human-only questions first**). The answers go into
 `spec.md` under `## Clarifications`, as `- Q: <question> → A: <answer>` lines below a
 `### Session <YYYY-MM-DD>` heading — the format `/speckit.clarify` writes. The degraded path writes
 the same section, so `yad-implement` finds the answers in one place on both paths.
