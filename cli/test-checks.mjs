@@ -3525,6 +3525,16 @@ for (const [name, script, tag] of EXEMPT_GATES) {
     fs.rmSync(T, { recursive: true, force: true });
   });
 
+  test(`${name} gate: a base git cannot diff against is not taken for a change to the list`, () => {
+    const { T } = badTrailerRepo();
+    git(T, 'checkout', '-q', '--orphan', 'other');
+    commit(T, 'chore: unrelated history', { 'x.txt': 'x' });
+    git(T, 'checkout', '-q', 'feature');
+    const r = runGate(script, T, ['other']);
+    assert.ok(!r.out.includes('changes in this PR'), r.out);
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+
   test(`${name} gate: an entry that is not a SHA of a commit here exempts nothing, and says so`, () => {
     const { T, sha } = badTrailerRepo();
     exemptOnBase(T, `feature\n${sha.slice(0, 6)}\n${'d'.repeat(40)}\n`);

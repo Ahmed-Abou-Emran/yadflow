@@ -490,7 +490,10 @@ GATE_EXEMPT_FILE="${SDLC_GATE_EXEMPT:-.sdlc/gate-exempt}"
 exempt_shas=''
 load_exempt_shas() {
   # Three dots: against the merge base, so a base that moved on is not mistaken for this PR's change.
-  if ! git diff --quiet "${BASE}...HEAD" -- "$GATE_EXEMPT_FILE" 2>/dev/null; then
+  # Only exit 1 means "it changed"; an error (no merge base) says nothing about the file.
+  _ex_rc=0
+  git diff --quiet "${BASE}...HEAD" -- "$GATE_EXEMPT_FILE" 2>/dev/null || _ex_rc=$?
+  if [ "$_ex_rc" -eq 1 ]; then
     echo "note [$1]: ${GATE_EXEMPT_FILE} changes in this PR — the list is read from ${BASE}, not from this PR; the new one counts once it merges."
   fi
   git cat-file -e "${BASE}:${GATE_EXEMPT_FILE}" 2>/dev/null || return 0
