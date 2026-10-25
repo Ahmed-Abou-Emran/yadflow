@@ -49,6 +49,39 @@ demo-repos/<repo>/specs/<story-id>/
   link.md         # back-pointer to the story in the product repo (Step A adds this; not a Spec Kit file)
 ```
 
+## Light spec (#348)
+
+A small story the human confirmed as light (SKILL.md Step 5 says when to offer it) has two files only:
+
+```
+demo-repos/<repo>/specs/<story-id>/
+  spec.md         # the spec, then ## Plan, then ## Tasks with the marked tasks block
+  link.md         # as below, with speckit: not-used and spec-mode: light
+```
+
+```markdown
+# Spec — EP-<slug>-S0N
+
+<the spec: context, the need, in scope, out of scope, acceptance criteria copied from the story>
+
+## Clarifications
+### Session <YYYY-MM-DD>
+- Q: Light spec — one spec.md holding the spec, the plan and the tasks? → A: yes
+
+## Plan
+<the approach for this repo in a few lines: what changes, and how it is tested>
+
+## Tasks
+<!-- yad:tasks -->
+## T01 — <one-line goal>
+**Files:** <the files it may touch>
+<!-- /yad:tasks -->
+```
+
+Each marker line appears once, alone on its line, begin before end. The tasks are read **only** from
+between them (`yad build done`, `yad-implement`), so a `T01` mentioned in the spec or the plan is never
+taken for a task. Spec Kit is not run for a light spec: its commands need `plan.md` and `tasks.md`.
+
 ## Degradation rules (when Spec Kit is not used)
 
 Author each file by hand so it is **indistinguishable in shape** from a real Spec Kit run. The content
@@ -104,7 +137,8 @@ product-repo: <path to the product repo — absolute, or relative to THIS file's
 contract-lock: sha256:<hex copied from epics/EP-<slug>/.sdlc/contract-lock.json>   # or the literal
                  # `none` on a short-lane epic, which has no lock. Never an empty or invented hash:
                  # CI reads an unparseable value as a broken lock and fails.
-speckit: installed | not-installed
+speckit: installed | not-installed | not-used
+spec-mode: full | light
 generated: <YYYY-MM-DD>
 ---
 

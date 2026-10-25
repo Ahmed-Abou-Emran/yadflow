@@ -17,7 +17,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { ok, info, hand, warn, run, readJSON, readJSONStrict, writeJSON, writeFileAtomic, isPlainObject, exists } from './lib.mjs';
-import { epicIds, epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, nextAction, loadAutomation, effectiveAdvance, effectiveAction } from './epic-state.mjs';
+import { epicIds, epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, parseFrontmatter, nextAction, loadAutomation, effectiveAdvance, effectiveAction } from './epic-state.mjs';
 import { DEFAULT_LIFECYCLE, laneOrder, laneAuthorSteps } from './lifecycle.mjs';
 import { epicFiles, PROJECT_FILES } from './manifest.mjs';
 import { err } from './errors.mjs';
@@ -233,6 +233,20 @@ export function parseTaskIds(text) {
   }
   return ids;
 }
+
+// A light spec (#348) is one spec.md holding the spec, the plan and the tasks; link.md says
+// `spec-mode: light`. The tasks are the lines between the two markers, so a `T01` line in the spec or the
+// plan above them is never read as a task. Exactly one block, opened before it is closed; otherwise null.
+export const LIGHT_TASKS = { begin: '<!-- yad:tasks -->', end: '<!-- /yad:tasks -->' };
+export function lightTasksBlock(text) {
+  const lines = String(text).split(/\r?\n/);
+  const at = (m) => lines.flatMap((l, i) => (l.trim() === m ? [i] : []));
+  const b = at(LIGHT_TASKS.begin);
+  const e = at(LIGHT_TASKS.end);
+  if (b.length !== 1 || e.length !== 1 || e[0] < b[0]) return null;
+  return lines.slice(b[0] + 1, e[0]).join('\n');
+}
+export const isLightSpec = (linkText) => parseFrontmatter(linkText)['spec-mode'] === 'light';
 
 // PURE: what `build done` finds. `owed` is { repo: [taskIds] | null } (null: tasks.md could not be read);
 // `ships` the story's ships. A retroactive ship covers its whole repo.
@@ -1144,16 +1158,33 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
     if (fetch && !run('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: where.checkout }).ok) {
       throw err(CODE, `could not fetch ${branch} in ${repo} to read the tasks it owes`, `check the network and your login, and that ${branch} is ${repo}'s default branch (default_branch in .sdlc/repos.json); or pass --no-fetch to read the last fetched copy`);
     }
-    const shown = run('git', ['show', `refs/remotes/origin/${branch}:specs/${story}/tasks.md`], { cwd: where.checkout });
-    if (!shown.ok) { owed[repo] = null; why[repo] = `no specs/${story}/tasks.md on origin/${branch}`; continue; }
-    owed[repo] = parseTaskIds(shown.stdout);
-    if (!owed[repo].length) why[repo] = `specs/${story}/tasks.md on origin/${branch} names no task (T01, T02, …)`;
+    const show = (file) => run('git', ['show', `refs/remotes/origin/${branch}:specs/${story}/${file}`], { cwd: where.checkout });
+    const shown = show('tasks.md');
+    if (shown.ok) {
+      owed[repo] = parseTaskIds(shown.stdout);
+      if (!owed[repo].length) why[repo] = `specs/${story}/tasks.md on origin/${branch} names no task (T01, T02, …)`;
+      continue;
+    }
+    // A light spec keeps its tasks in spec.md (#348) — only when its link.md says so.
+    const link = show('link.md');
+    if (!link.ok || !isLightSpec(link.stdout)) { owed[repo] = null; why[repo] = `no specs/${story}/tasks.md on origin/${branch}`; continue; }
+    const spec = show('spec.md');
+    const block = spec.ok ? lightTasksBlock(spec.stdout) : null;
+    if (block === null) {
+      owed[repo] = null;
+      why[repo] = spec.ok
+        ? `specs/${story}/spec.md on origin/${branch} is a light spec without one ${LIGHT_TASKS.begin} … ${LIGHT_TASKS.end} block`
+        : `specs/${story}/link.md on origin/${branch} says spec-mode: light, but there is no spec.md`;
+      continue;
+    }
+    owed[repo] = parseTaskIds(block);
+    if (!owed[repo].length) why[repo] = `the tasks block of specs/${story}/spec.md on origin/${branch} names no task (T01, T02, …)`;
   }
   const plan = planDone({ story, declared: ctx.entry.repos, skipped, owed, ships });
   if (!plan.shipped) {
     for (const r of plan.unreadable) warn(`${r}: ${why[r]} — the tasks it owes cannot be read`);
     if (plan.missing.length) warn(`no ship yet for: ${plan.missing.join(', ')}`);
-    throw err(CODE, `${story} is not shipped yet`, plan.missing.length ? `record each with \`yad build ship ${story} --task <T> --repo <r> --pr <n>\`` : 'make each repo\'s tasks.md readable on its default branch, then run this again');
+    throw err(CODE, `${story} is not shipped yet`, plan.missing.length ? `record each with \`yad build ship ${story} --task <T> --repo <r> --pr <n>\`` : 'make each repo\'s tasks.md (or a light spec\'s tasks block in spec.md) readable on its default branch, then run this again');
   }
   // Every owed repo has a lane, and every lane's earlier steps are done: `yad next` reads a repo with no
   // lane as still owed, so a story marked shipped without one would read shipped in one place and in-build

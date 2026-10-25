@@ -158,10 +158,11 @@ engineer-review rule is satisfied (Step 2). Then:
   task merged with no PR/MR: `--merge-commit <sha>` and no `--pr` (the commit must be on the default
   branch and name the task in its `Task:` trailer or subject; the platform is asked whether a PR merged it,
   and a PR that did is named instead). It moves the story to `in-build`. Never write the shard by hand.
-- **Update the story state** — when **every** task in each repo's `specs/<story>/tasks.md` has a ship,
+- **Update the story state** — when **every** task in each repo's `specs/<story>/tasks.md` (a light spec: the marked tasks block of its
+  `spec.md`, #348) has a ship,
   run `yad build done <story>`: it checks that, closes the `engineer-review` step in each lane, and sets
   the story `status: shipped`, so `yad next`, the epic seal and `yad tidy` all read it shipped. It needs
-  every repo the story declares cloned here, its `tasks.md` merged on the default branch, and a lane in
+  every repo the story declares cloned here, its `tasks.md` (or light `spec.md` and `link.md`) merged on the default branch, and a lane in
   each repo whose earlier steps are done (a story that never ran through `yad-run`: `yad build start`,
   then `yad build step … done` for each step; one shipped before the Build ledger existed:
   `yad checkpoint --retro-ship`). It refuses, writing nothing, and says what is missing. The chain

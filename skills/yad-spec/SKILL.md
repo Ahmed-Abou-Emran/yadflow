@@ -1,6 +1,6 @@
 ---
 name: yad-spec
-description: 'Build Step A of the gated SDLC. For one ready-for-build story and one of its repos, run the heavy Spec Kit ceremony ONCE (specify → clarify → plan → analyze → checklist → tasks) inside that code repo, writing specs/<story-id>/ in Spec Kit''s own layout. Drives /speckit.* as harness slash-commands when installed; authors the same files by hand and records speckit: not-installed when absent. References the locked contract — never re-invents the surface. Writes link.md back to the story. Never auto-advances. Use when the user says "spec story <id> in <repo>" or after a story is ready-for-build.'
+description: 'Build Step A of the gated SDLC. For one ready-for-build story and one of its repos, run the heavy Spec Kit ceremony ONCE (specify → clarify → plan → analyze → checklist → tasks) inside that code repo, writing specs/<story-id>/ in Spec Kit''s own layout. Drives /speckit.* as harness slash-commands when installed; authors the same files by hand and records speckit: not-installed when absent. References the locked contract — never re-invents the surface. Writes link.md back to the story. For a small story with no contract surface, offers a light spec (one spec.md with the plan and tasks) that a human confirms (#348). Never auto-advances. Use when the user says "spec story <id> in <repo>" or after a story is ready-for-build.'
 ---
 
 # SDLC — Author Spec (Build Step A)
@@ -166,8 +166,30 @@ questions first** above describes. Its items come from the story, `epic.md`, the
 Step 3, and the first draft of `spec.md`. Record the answers in `spec.md`, under `## Clarifications`,
 as `- Q: <question> → A: <answer>` lines below a `### Session <YYYY-MM-DD>` heading. This is the format
 `/speckit.clarify` writes, and both paths below leave the answers there.
+When the story qualifies for a **light spec** (below), put that question in the same batch.
 
-**Used** — from inside `demo-repos/<repo>/`, drive, in order:
+**Light spec (#348).** A small story can have one `spec.md` instead of the full set of files. Suggest it
+only when ALL of these hold:
+- the route is `chore` or `spike`, or `epics/<epic>/.sdlc/change.json` says `depth: defect-fix` or
+  `depth: behavioral-no-surface`;
+- the story's **Notes for build** says the contract surface touched is none, and Step 3 found nothing
+  to quote, so the spec needs no `contracts/` slice;
+- nothing marks it high risk (a "Risk level: high" note, or the person says so).
+
+Never suggest it for a story that touches the contract, and never choose it yourself: ask in the batch
+("Light spec — one `spec.md` holding the spec, the plan and the tasks?"), with the reason it qualifies,
+and record the answer in `## Clarifications`. Without a clear yes, write the full spec. A light spec:
+- is **only** `spec.md` and `link.md` under `demo-repos/<repo>/specs/<story>/`. `spec.md` holds the spec,
+  then `## Plan` (the approach, in a few lines), then `## Tasks`. No `research.md`, `data-model.md`,
+  `plan.md`, `tasks.md` or `contracts/`;
+- keeps its tasks between the two marker lines `<!-- yad:tasks -->` and `<!-- /yad:tasks -->` under
+  `## Tasks`, once each, in the same shape as `tasks.md` (`## T01 — <goal>` and a **Files:** list).
+  `yad build done` and `yad-implement` read the tasks only from between the markers;
+- does not run Spec Kit, whose commands need `plan.md` and `tasks.md`. Step 6 records `speckit: not-used`
+  and `spec-mode: light`.
+
+
+**Used** (and the spec is not light) — from inside `demo-repos/<repo>/`, drive, in order:
 `/speckit.specify` → (ask the batch) → `/speckit.clarify` → `/speckit.plan` → `/speckit.analyze` →
 `/speckit.checklist` → `/speckit.tasks`. **Pin the feature to `<story>`** (do not accept an
 auto-slug): start `/speckit.specify` with `SPECIFY_FEATURE_DIRECTORY=specs/<story>`, because without it
@@ -194,12 +216,13 @@ frontmatter linking the spec back to the product repo: `story`, `epic`, `repo`, 
 place CI checks the Product out; the gates read that record first anyway), `contract-lock` (the hash **copied** from `contract-lock.json`, NOT recomputed
 in the code repo — or the literal `none` on a short-lane epic, which has no lock; never a made-up or
 empty hash, which the CI gate reads as a broken lock and fails), `speckit`
-(`installed | not-installed`), `generated` (date). This `link.md` plus the
+(`installed | not-installed`, or `not-used` for a light spec), `spec-mode` (`light` for a light spec,
+else `full`; nothing after the value on that line), `generated` (date). This `link.md` plus the
 spec folder is the authoritative record that this story's spec exists.
 
 ### Step 7 — Stop (Shape state untouched)
 Report: the spec folder path, the files written, whether Spec Kit was used, the task count from
-`tasks.md`, and that the next action is **Step B — `yad-implement`**. Do **not** edit the epic's
+`tasks.md` (or the light spec's tasks block), whether the spec is light, and that the next action is **Step B — `yad-implement`**. Do **not** edit the epic's
 `state.json`, `approvals.json`, or `contract-lock.json`. Step A is a generation step, not a Shape gate.
 
 ### Step 8 — Record the `spec` trust signal (Phase 4b)
@@ -222,7 +245,8 @@ whatever the team sets with `yad dial`, and this step never changes it.
 ## Hard rules (build plan §A, Cross-cutting)
 
 - **Heavy spec once per story, not per task.** specify/clarify/plan/analyze/checklist/tasks run once
-  per story per repo. Do not re-run the ceremony for each task.
+  per story per repo. Do not re-run the ceremony for each task. A **light spec** (#348) skips it, and only
+  when a human confirms it in the batch.
 - **Per-repo spec, shared contract.** Spec/plan/tasks live in the code repo; the contract stays
   singular in the product repo. Never widen the contract surface from here.
 - **Nothing auto-advances.** Step A generates files and stops; no state machine is advanced. Step 5

@@ -81,9 +81,11 @@ them all in **one** message.
 ## On Activation
 
 ### Step 1 — Resolve the spec and the task
-Read `demo-repos/<repo>/specs/<story>/tasks.md`. Find the block for `<task>` (`## <task> — …`). Read
+Read `demo-repos/<repo>/specs/<story>/tasks.md` — or, for a **light spec** (`link.md` says
+`spec-mode: light`, #348), the lines between `<!-- yad:tasks -->` and `<!-- /yad:tasks -->` in its
+`spec.md`, and nothing outside them. Find the block for `<task>` (`## <task> — …`). Read
 its one-line goal and its **Files:** list (the declared file boundary) and the acceptance criterion it
-satisfies. If the task ID is not in `tasks.md`, STOP. Confirm the spec exists (Step A ran); if not,
+satisfies. If the task ID is not in `tasks.md` (or the light block), STOP. Confirm the spec exists (Step A ran); if not,
 STOP and point at `yad-spec`.
 
 ### Step 2 — Resolve the code repo and branch
@@ -98,7 +100,8 @@ choices (`config.yaml` `build.ai_coauthor.allowed`). Do the same at the Product 
 already configured.
 
 ### Step 3 — Read the spec inputs (do NOT re-derive the contract)
-Read the story's `spec.md`, `plan.md`, `data-model.md`, and `contracts/` for this task's context. The
+Read the story's `spec.md`, `plan.md`, `data-model.md`, and `contracts/` for this task's context. A
+light spec has only `spec.md`: its `## Plan` section is the plan, and it has no contract slice. The
 contract slice is **quoted** from the product repo's locked `contract.md` — implement to it, never
 change it here.
 

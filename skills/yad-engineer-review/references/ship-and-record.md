@@ -180,8 +180,8 @@ decides machine safety, the merge is still the human act.
 
 The story frontmatter `status` reflects build progress:
 
-- `in-build` — at least one, but not all, of the story's tasks (from `specs/<story>/tasks.md`) have ship
-  records.
+- `in-build` — at least one, but not all, of the story's tasks (from `specs/<story>/tasks.md`, or the
+  marked tasks block of a light spec's `spec.md`, #348) have ship records.
 - `shipped` — **every** task in `tasks.md` has a ship record.
 
 You write this flip into `stories/<story>.md`, but **do not hand-commit it** — the next
