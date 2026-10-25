@@ -1372,3 +1372,98 @@ test('yad build ship from a commit more than one merged PR holds: refused, namin
     await assert.rejects(() => buildShip(P, { story: 'EP-l-S01', task: 'T01', repo: 'api', mergeCommit: sha.T01, today: '2026-10-21', runner }), /is in more than one merged PR\/MR: #4, #8/);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('yad build step spec in_progress pins Spec Kit\'s feature folder to the story, only where Spec Kit is used (#348)', () => {
+  const { W, P, api } = workspace();
+  const fj = path.join(api, '.specify/feature.json');
+  try {
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    // No .specify/: the repo does not use Spec Kit, so nothing is written or said.
+    let r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'in_progress', '--json');
+    assert.equal(r.code, 0, r.out);
+    assert.equal('specKit' in json(r), false);
+    assert.equal(fs.existsSync(fj), false);
+    assert.doesNotMatch(r.out, /Spec Kit/);
+    // The previous story's folder, plus a key of Spec Kit's own: the folder moves, the key stays.
+    write(api, { '.specify/feature.json': JSON.stringify({ feature_directory: 'specs/EP-l-S00', other: 1 }) });
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'in_progress', '--json');
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(json(r).specKit, { file: 'api/.specify/feature.json', featureDirectory: 'specs/EP-l-S01', changed: true });
+    assert.deepEqual(read(fj), { feature_directory: 'specs/EP-l-S01', other: 1 });
+    assert.match(r.out, /SPECIFY_FEATURE_DIRECTORY=specs\/EP-l-S01/);
+    // Already pinned: no rewrite.
+    const before = fs.statSync(fj).mtimeMs;
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'in_progress');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /feature folder in api is already specs\/EP-l-S01/);
+    assert.equal(fs.statSync(fj).mtimeMs, before);
+    // A file it cannot read is left alone, and the step is still recorded.
+    fs.writeFileSync(fj, '{ not json');
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'in_progress');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /feature\.json cannot be read, so it was left alone/);
+    assert.equal(fs.readFileSync(fj, 'utf8'), '{ not json');
+    fs.writeFileSync(fj, '[]');
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'in_progress');
+    assert.match(r.out, /is not a JSON object/);
+    assert.equal(fs.readFileSync(fj, 'utf8'), '[]');
+    // Other moves of the step do not touch it.
+    fs.rmSync(fj);
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'done');
+    assert.equal(r.code, 0, r.out);
+    assert.equal(fs.existsSync(fj), false);
+    // The tasks step pins it too (yad-spec runs both, and another story may have moved it), creating the
+    // file when .specify/ has none; specify's hint is for the spec step only.
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'tasks', 'in_progress', '--json');
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(json(r).specKit, { file: 'api/.specify/feature.json', featureDirectory: 'specs/EP-l-S01', changed: true });
+    assert.equal(fs.readFileSync(fj, 'utf8'), '{"feature_directory":"specs/EP-l-S01"}\n');
+    assert.doesNotMatch(r.out, /SPECIFY_FEATURE_DIRECTORY/);
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'tasks', 'in_progress', '--json');
+    assert.deepEqual(json(r).specKit, { file: 'api/.specify/feature.json', featureDirectory: 'specs/EP-l-S01', changed: false });
+    // Not a plain file, or a .specify that is a link: never written through.
+    fs.rmSync(fj);
+    fs.mkdirSync(fj);
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'tasks', 'in_progress');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /feature\.json is not a plain file, so it was left alone/);
+    assert.equal(fs.statSync(fj).isDirectory(), true);
+    fs.rmSync(path.join(api, '.specify'), { recursive: true });
+    const elsewhere = path.join(W, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.symlinkSync(elsewhere, path.join(api, '.specify'));
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'tasks', 'in_progress');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /api\/\.specify is not a plain folder, so Spec Kit's feature folder was not pinned/);
+    assert.deepEqual(fs.readdirSync(elsewhere), []);
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build step spec in_progress: a repo not checked out is said, and the step is still recorded (#348)', () => {
+  const { W, P, dir } = workspace();
+  try {
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'web');
+    const r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'web', 'spec', 'in_progress');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /web is not checked out here, so Spec Kit's feature folder was not pinned/);
+    assert.equal(read(path.join(dir, '.sdlc/build-state/EP-l-S01.json')).repos.web.steps[0].status, 'in_progress');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build step spec in_progress: a pin that cannot run never fails the recorded step (#348 review 2)', () => {
+  const { W, P, dir, api } = workspace();
+  try {
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    write(api, { '.specify/memory/constitution.md': '# c\n' });
+    // The folder is a clone of another repo than the one registered: the lookup throws, the pin is a warning
+    // that keeps the lookup's fix, and the step stands.
+    git(api, 'remote', 'set-url', 'origin', 'https://github.com/team/api.git');
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', git_url: 'https://github.com/team/other.git' }, { name: 'web', path: '../web' }] }) });
+    const r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'in_progress', '--json');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /Spec Kit folder not pinned: \.\.\/api is a clone of team\/api, not team\/other — fix the path of api/);
+    assert.equal('specKit' in json(r), false);
+    assert.equal(fs.existsSync(path.join(api, '.specify/feature.json')), false);
+    assert.equal(read(path.join(dir, '.sdlc/build-state/EP-l-S01.json')).repos.api.steps[0].status, 'in_progress');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});

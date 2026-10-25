@@ -27,7 +27,11 @@ the same section, so `yad-implement` finds the answers in one place on both path
 **Excluded from Step A:** `/speckit.constitution` (project-level, one-time bootstrap) and
 `/speckit.implement` (that is Step B — the per-task build loop). Stop at `tasks`.
 
-**Feature-id is pinned** to the story ID (`EP-<slug>-S0N`), never Spec Kit's numbered auto-slug. If a
+**Feature-id is pinned** to the story ID (`EP-<slug>-S0N`), never Spec Kit's numbered auto-slug. Two
+things pin it (#348): `yad build step <story> --repo <repo> spec|tasks in_progress` writes
+`{"feature_directory":"specs/<story>"}` to `.specify/feature.json`, which `/speckit.plan`, `/speckit.tasks`
+and the rest read; and `/speckit.specify`, which does not read that file, is started with
+`SPECIFY_FEATURE_DIRECTORY=specs/<story>`. If a
 Spec Kit version forces its own folder name, keep the run but make `link.md` (below) the crosswalk
 between the Spec-Kit slug and the permanent story ID.
 
