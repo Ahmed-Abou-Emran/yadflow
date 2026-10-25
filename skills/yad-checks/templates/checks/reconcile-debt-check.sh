@@ -527,8 +527,10 @@ load_exempt_shas() {
       continue
     fi
     _ex_full="$(git rev-parse --verify --quiet "${_ex}^{commit}" 2>/dev/null)" || _ex_full=""
-    if [ -z "$_ex_full" ]; then
-      echo "note [$1]: ${GATE_EXEMPT_FILE} entry '${_ex}' names no commit here — it exempts nothing."
+    # Only an entry git reads back as exactly itself: hex of the other hash's length (64 in a SHA-1 repo,
+    # 40 in a SHA-256 one) is looked up as a tag or branch name first, so a ref of that name would stand in.
+    if [ -z "$_ex_full" ] || [ "$_ex_full" != "$_ex" ]; then
+      echo "note [$1]: ${GATE_EXEMPT_FILE} entry '${_ex}' names no commit here (or is not this repo's full SHA length) — it exempts nothing."
       continue
     fi
     exempt_shas="${exempt_shas}${_ex_full}

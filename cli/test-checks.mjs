@@ -3525,6 +3525,19 @@ for (const [name, script, tag] of EXEMPT_GATES) {
     fs.rmSync(T, { recursive: true, force: true });
   });
 
+  test(`${name} gate: hex of the other hash's length is never read as a tag of that name`, () => {
+    // In a SHA-1 repo git looks 64 hex characters up as a ref name first.
+    const { T } = badTrailerRepo();
+    const fake = 'a'.repeat(64);
+    exemptOnBase(T, `${fake}\n`);
+    git(T, 'update-ref', `refs/tags/${fake}`, 'feature');
+    const r = runGate(script, T);
+    assert.equal(r.code, 1, r.out);
+    assert.ok(!r.out.includes('SHA exemption'), r.out);
+    assert.ok(r.out.includes(`entry '${fake}' names no commit here (or is not this repo's full SHA length)`), r.out);
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+
   test(`${name} gate: in a SHA-256 repo a full 64-character SHA is listed like a 40-character one`, () => {
     const { T, sha } = badTrailerRepo({ objectFormat: 'sha256' });
     assert.equal(sha.length, 64);
@@ -3542,6 +3555,7 @@ for (const [name, script, tag] of EXEMPT_GATES) {
     git(T, 'checkout', '-q', 'feature');
     const r = runGate(script, T, ['other']);
     assert.ok(!r.out.includes('changes in this PR'), r.out);
+    assert.ok(r.out.includes("'EP-demo-S07-parity'"), `${name} still judged the commits: ${r.out}`);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
