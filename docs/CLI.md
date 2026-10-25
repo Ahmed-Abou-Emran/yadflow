@@ -1343,6 +1343,7 @@ Each entry records:
 | `versions` | a known-good range, or `null` when no bound has been tested yet (all of them, for now). A range uses full versions (`>=3.0.0 <4.0.0`, `^3.2.0`, `~1.4.0`); a partial one such as `~1` is refused, and `<4.0.0` also keeps out 4.0.0's own pre-releases |
 | `fallback` | what yadflow does without it |
 | `records` | the exact line a skill writes when it did not use the tool (`speckit: not-installed`); see [what a skill does when its tool is missing](#what-a-skill-does-when-its-tool-is-missing) |
+| `recordsElse` | only on Spec Kit: the one case that records another line — a light spec, which never runs Spec Kit and records `speckit: not-used` (#348) |
 
 **How a tool is found.** The toolbox reads the same answer as `yad detect`, and looks for a program by
 reading the `PATH` folders. It starts no program, installs nothing and uses no network. Repomix counts

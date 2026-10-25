@@ -182,13 +182,16 @@ only when ALL of these hold:
 from the draft `spec.md` and the code; if you cannot say which files, do not offer light. Read
 `.sdlc/risk-map` as the default branch has it (`default_branch` in the Product's `.sdlc/repos.json`, else the
 clone's `origin/HEAD`):
-fetch it, then `git -C demo-repos/<repo> show origin/<default>:.sdlc/risk-map`. If the file is not on
-that branch, the map gives no `high`; any other failure (no such branch, no fetch) is no answer. `yad risk-map check` reads the
+fetch it, then ask git whether the branch holds the file, as yad does:
+`git -C demo-repos/<repo> ls-tree --full-tree origin/<default> -- .sdlc/risk-map`. Empty output (or an
+entry that is not a plain file) means there is no map, so it gives no `high`; a git error (no such
+branch, no fetch) is no answer. Otherwise read it with
+`git -C demo-repos/<repo> show origin/<default>:.sdlc/risk-map`. `yad risk-map check` reads the
 clone's working copy instead, so use its report only when the clone is on the default branch with the
 map unchanged. A file's level is the one on the deepest directory listed above it (`./` covers only the
 files at the root); `guessed` counts the same as `confirmed`; an `unset` line, or a file no line covers,
-is not high; a directory listed twice takes its first line. The map gives **no answer**, so do not
-offer light, when its first line is not `# yad-risk-map v1`, or a line (blank lines and `#` comments
+is not high. The map gives **no answer**, so do not offer light, when its first line that is not blank
+is not the header `# yad-risk-map v1`, or a line (blank lines and `#` comments
 aside) is neither `<dir>/ <high|medium|low> <guessed|confirmed>` nor `<dir>/ unset` (optionally
 `<dir>/ unset guessed`), each with an optional ` # reason`, or a directory is listed twice.
 
