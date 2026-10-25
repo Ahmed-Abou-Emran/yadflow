@@ -78,6 +78,13 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
   A maintenance commit that *does* carry a `Task:` trailer is resolved like any other: a malformed id
   or a missing `specs/<story>/link.md` **FAILS**. Otherwise the trailer is decorative on exempt
   commits and an unlinked `chore:` is indistinguishable from one naming a story that never existed.
+- **SHA exemption** (shared with lineage-check, epic-open and reconcile-debt — one byte-identical block).
+  A commit listed in `.sdlc/gate-exempt` (or `SDLC_GATE_EXEMPT`; one hex SHA of 7–40 characters per
+  line, `#` comments) **PASSes** before anything else is judged. It is for history already on a shared
+  branch whose trailer cannot be reworded — otherwise every later range that holds it, a release PR
+  above all, fails again. The list is read **from the base**, never from the PR, so a PR cannot waive
+  its own commits; a branch/tag name, a too-short entry or one that names no commit exempts nothing and
+  is said as a note.
 - For every other commit, requires a `Task: <story>-<task>` trailer. **FAIL** if absent.
 - The trailer must be a well-formed `<story>-T<NN>` id. **FAIL** on a malformed trailer (e.g.
   `EP-demo-S01` with no `-T<NN>`) rather than letting it slip through the suffix-strip.
@@ -429,7 +436,8 @@ resolve the owning epic the same way: `Task:` trailer → `specs/<story>/link.md
 → the Product epic. All **fail closed** on an unresolvable base; all are **per commit**; `ci|chore|build|test`
 commits **with no `Task:` trailer** are exempt — like spec-link, the exemption waives the requirement
 for an owning epic, never the validity of one that is claimed, so a maintenance subject cannot buy a
-pass past the sealed-epic / orphan-thread / frozen-thread checks. When the **Product is not reachable** from CI (the usual case for a code-repo
+pass past the sealed-epic / orphan-thread / frozen-thread checks. A commit listed in the base's `.sdlc/gate-exempt` passes all
+three before anything else is judged (the SHA exemption in §1). When the **Product is not reachable** from CI (the usual case for a code-repo
 PR), each degrades to a **PASS-with-note** — the Product-side check (`yad doctor` / `yad reconcile`) covers
 that path, and spec-link still proves the story link.
 

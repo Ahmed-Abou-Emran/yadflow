@@ -3464,6 +3464,92 @@ for (const [name, script, tag] of [['spec-link', SPEC_LINK, 'spec-link'], ['line
   });
 }
 
+// A commit already on a shared branch cannot be reworded, so one malformed trailer re-failed every later
+// PR whose range held it — a release PR to the default branch walks the whole release. `.sdlc/gate-exempt`
+// waives it in every per-commit gate, and is read from the BASE so a PR cannot waive itself.
+const EXEMPT_GATES = [['spec-link', SPEC_LINK, 'spec-link'], ['lineage-check', LINEAGE, 'lineage-check'], ['epic-open', EPIC_OPEN, 'epic-open'], ['reconcile-debt', DEBT, 'reconcile-debt']];
+// The shape that motivated it: a suffix on the story segment, which no gate can resolve.
+function badTrailerRepo() {
+  const T = scaffoldRepo();
+  seedProductEpic(path.join(T, 'product'), 'EP-demo');
+  commit(T, 'fix: stop leftovers blocking the next arm\n\nTask: EP-demo-S07-parity-T08', {
+    'src/thing.js': 'x',
+    'specs/EP-demo-S07/link.md': linkMd({ story: 'EP-demo-S07', epic: 'EP-demo', 'product-repo': '../../nowhere' }),
+  });
+  const sha = git(T, 'rev-parse', 'HEAD').toString().trim();
+  return { T, sha };
+}
+// Put the exempt list on `main` and leave `feature` where it is — the list is the base's, not the PR's.
+function exemptOnBase(T, body, file = '.sdlc/gate-exempt') {
+  git(T, 'checkout', '-q', 'main');
+  commit(T, 'chore: list a waived commit', { [file]: body });
+  git(T, 'checkout', '-q', 'feature');
+}
+
+for (const [name, script, tag] of EXEMPT_GATES) {
+  test(`${name} gate: a commit listed in the base's .sdlc/gate-exempt passes, by short or full SHA`, () => {
+    for (const len of [8, 40]) {
+      const { T, sha } = badTrailerRepo();
+      const before = runGate(script, T);
+      assert.equal(before.code, 1, before.out);
+      assert.ok(before.out.includes("'EP-demo-S07-parity' is not a story ID"), before.out);
+      exemptOnBase(T, `# already on a shared branch\n\n${sha.slice(0, len)}  # fix: stop leftovers\n`);
+      const r = runGate(script, T);
+      assert.equal(r.code, 0, r.out);
+      assert.ok(r.out.includes(`PASS [${tag}]: `) && r.out.includes('— SHA exemption (.sdlc/gate-exempt on main)'), r.out);
+      fs.rmSync(T, { recursive: true, force: true });
+    }
+  });
+
+  test(`${name} gate: a PR cannot exempt its own commit — the list is read from the base`, () => {
+    const { T, sha } = badTrailerRepo();
+    commit(T, 'chore: waive my own commit', { '.sdlc/gate-exempt': `${sha}\n` });
+    const r = runGate(script, T);
+    assert.equal(r.code, 1, r.out);
+    assert.ok(r.out.includes(`note [${tag}]: .sdlc/gate-exempt changes in this PR — the list is read from main, not from this PR`), r.out);
+    assert.ok(!r.out.includes('SHA exemption'), r.out);
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+
+  test(`${name} gate: an entry that is not a SHA of a commit here exempts nothing, and says so`, () => {
+    const { T, sha } = badTrailerRepo();
+    exemptOnBase(T, `feature\n${sha.slice(0, 6)}\n${'d'.repeat(40)}\n`);
+    const r = runGate(script, T);
+    assert.equal(r.code, 1, r.out);
+    assert.ok(r.out.includes(`note [${tag}]: .sdlc/gate-exempt entry 'feature' is not a lowercase hex SHA`), r.out);
+    assert.ok(r.out.includes(`entry '${sha.slice(0, 6)}' is not 7 to 40 hex characters`), r.out);
+    assert.ok(r.out.includes(`entry '${'d'.repeat(40)}' names no commit here`), r.out);
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+
+  test(`${name} gate: SDLC_GATE_EXEMPT names another file in the repo`, () => {
+    const { T, sha } = badTrailerRepo();
+    exemptOnBase(T, `${sha}\n`, 'ops/waived.txt');
+    assert.equal(runGate(script, T).code, 1);
+    const r = runGate(script, T, ['main'], { SDLC_GATE_EXEMPT: 'ops/waived.txt' });
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.out.includes('— SHA exemption (ops/waived.txt on main)'), r.out);
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+}
+
+test('every per-commit gate carries the SAME SHA-exemption block, byte for byte', () => {
+  const region = (script) => {
+    const src = fs.readFileSync(script, 'utf8');
+    const start = src.indexOf('# --- shared SHA exemption');
+    const end = src.indexOf('\nis_exempt_sha() {', start);
+    assert.ok(start >= 0 && end > start, `${script}: SHA-exemption block not found`);
+    return src.slice(start, src.indexOf('\n', end + 1) + 1);
+  };
+  const [[, first], ...rest] = EXEMPT_GATES;
+  const canonical = region(first);
+  for (const [name, script] of rest) assert.equal(region(script), canonical, `${name} drifted from the canonical SHA-exemption block`);
+  for (const [name, script, tag] of EXEMPT_GATES) {
+    const src = fs.readFileSync(script, 'utf8');
+    assert.ok(src.includes(`${region(script)}load_exempt_shas ${tag}\n`), `${name}: the block is not followed by its call`);
+  }
+});
+
 test('contract-check gate: a changed slice needs its link.md; removing a whole slice does not (E117 review 2)', () => {
   // Deleting link.md dropped a stale pin: the story deferred.
   const T = scaffoldRepo();

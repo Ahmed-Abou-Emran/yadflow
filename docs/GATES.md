@@ -220,6 +220,35 @@ a changed slice on the repo's [first spec](#contract-check).
 | `'<path>/epics/<file>' on <base> is a symlink or a submodule … Replace it with the files themselves.` | Replace the link inside the kept Product with real files, in its own pull request. |
 | `product-repo resolves to '<path>', a Product this repo keeps, and '<path>/epics' could not be read from <base> — run the job again; if it repeats, check the code out with full history and no partial-clone filter …` | As it says. |
 
+### Waiving a commit already on a shared branch
+
+A commit that is already on a shared branch cannot be reworded without rewriting that branch. If its
+`Task:` trailer is wrong, every later pull request whose range still holds it fails again. A release
+pull request to the default branch walks the whole release, so it fails on every release until that
+commit reaches the base. List such a commit in `.sdlc/gate-exempt`, and spec-link, lineage-check,
+epic-open and reconcile-debt pass it:
+
+```
+# one short or full SHA per line; text after # is a comment
+4f2a9c1e  # fix(cart): Task: EP-cart-S03-retry-T02, already on develop
+```
+
+- The list is read **from the base**, never from the pull request under check, so a pull request
+  cannot waive its own commits. Add the entry in its own pull request to the branch the failing pull
+  request targets. It counts once it merges.
+- An entry must be a lowercase hex SHA of 7 to 40 characters. A branch or tag name would move, so it
+  is refused.
+- `SDLC_GATE_EXEMPT` names another path in the repo.
+- Use it only for history you cannot rewrite. A new commit with a wrong trailer is reworded, not listed.
+
+| Message | What to change |
+|---|---|
+| `PASS [<gate>]: <sha> '<subject>' — SHA exemption (.sdlc/gate-exempt on <base>)` | Nothing. The commit is listed. |
+| `note [<gate>]: .sdlc/gate-exempt changes in this PR — the list is read from <base>, not from this PR; the new one counts once it merges.` | Merge the list change on its own first, then run the pipeline again. |
+| `note [<gate>]: .sdlc/gate-exempt entry '<entry>' is not a lowercase hex SHA — it exempts nothing.` | Write the commit's SHA, not a branch, tag or `HEAD`. |
+| `note [<gate>]: .sdlc/gate-exempt entry '<entry>' is not 7 to 40 hex characters — it exempts nothing.` | Write at least 7 characters of the SHA. |
+| `note [<gate>]: .sdlc/gate-exempt entry '<entry>' names no commit here (or more than one) — it exempts nothing.` | Check the SHA, or write more of it when a short one matches several commits. |
+
 ## spec-link
 
 **What it checks:** every commit names the task it implements, with a `Task:` trailer, and that task's
@@ -235,6 +264,8 @@ the trailer. With no `--task`, `yad commit` reads the id from a branch named lik
 - A commit whose type is `ci`, `chore`, `build` or `test` (with an optional scope and `!`) needs no
   trailer. If such a commit does have one, the trailer is still checked.
 - Merge commits are skipped.
+- A commit listed in `.sdlc/gate-exempt` on the base. See
+  [Waiving a commit already on a shared branch](#waiving-a-commit-already-on-a-shared-branch).
 
 **Reads:** each commit's `Task:` trailer; whether `specs/<story>/link.md` exists.
 
@@ -364,6 +395,8 @@ the Product. An epic with no type counts as `feature`.
 
 - `ci`, `chore`, `build` and `test` commits with no `Task:` trailer.
 - Merge commits.
+- A commit listed in `.sdlc/gate-exempt` on the base. See
+  [Waiving a commit already on a shared branch](#waiving-a-commit-already-on-a-shared-branch).
 - A commit with no usable `Task:` trailer (spec-link reports it) or no `link.md` (spec-link fails it):
   a note.
 - The Product cannot be reached: passes with a note.
@@ -392,6 +425,8 @@ change epic that threads to it.
 
 - `ci`, `chore`, `build` and `test` commits with no `Task:` trailer.
 - Merge commits.
+- A commit listed in `.sdlc/gate-exempt` on the base. See
+  [Waiving a commit already on a shared branch](#waiving-a-commit-already-on-a-shared-branch).
 - No usable `Task:` trailer, or no `link.md`: a note (spec-link reports it).
 - The Product cannot be reached: passes with a note.
 
@@ -419,6 +454,8 @@ another epic, no other change may ship on that thread.
 
 - `ci`, `chore`, `build` and `test` commits with no `Task:` trailer.
 - Merge commits.
+- A commit listed in `.sdlc/gate-exempt` on the base. See
+  [Waiving a commit already on a shared branch](#waiving-a-commit-already-on-a-shared-branch).
 - No usable `Task:` trailer, or no `link.md`: skipped without a note (spec-link reports it).
 - The Product cannot be reached: passes with a note.
 - An epic's own debt never blocks it.
