@@ -1412,6 +1412,30 @@ test('yad build step spec in_progress pins Spec Kit\'s feature folder to the sto
     r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'done');
     assert.equal(r.code, 0, r.out);
     assert.equal(fs.existsSync(fj), false);
+    // The tasks step pins it too (yad-spec runs both, and another story may have moved it), creating the
+    // file when .specify/ has none; specify's hint is for the spec step only.
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'tasks', 'in_progress', '--json');
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(json(r).specKit, { file: 'api/.specify/feature.json', featureDirectory: 'specs/EP-l-S01', changed: true });
+    assert.equal(fs.readFileSync(fj, 'utf8'), '{"feature_directory":"specs/EP-l-S01"}\n');
+    assert.doesNotMatch(r.out, /SPECIFY_FEATURE_DIRECTORY/);
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'tasks', 'in_progress', '--json');
+    assert.deepEqual(json(r).specKit, { file: 'api/.specify/feature.json', featureDirectory: 'specs/EP-l-S01', changed: false });
+    // Not a plain file, or a .specify that is a link: never written through.
+    fs.rmSync(fj);
+    fs.mkdirSync(fj);
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'tasks', 'in_progress');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /feature\.json is not a plain file, so it was left alone/);
+    assert.equal(fs.statSync(fj).isDirectory(), true);
+    fs.rmSync(path.join(api, '.specify'), { recursive: true });
+    const elsewhere = path.join(W, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.symlinkSync(elsewhere, path.join(api, '.specify'));
+    r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'tasks', 'in_progress');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /api\/\.specify is not a plain folder, so Spec Kit's feature folder was not pinned/);
+    assert.deepEqual(fs.readdirSync(elsewhere), []);
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
 

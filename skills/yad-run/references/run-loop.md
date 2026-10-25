@@ -39,6 +39,8 @@ if task and bs.currentStep == "engineer-review" and task has no close on impleme
 
 while step is a Build step (not engineer-review):
     result = run_step_skill(step)                     # the skill(s) `yad next --json` names for this lane
+                                                      #   (yad-spec moves spec/tasks to in_progress itself,
+                                                      #   which pins Spec Kit's feature folder — #348)
 
     if result stopped to ask human-only questions — its first batch or a later one (#357) —
        and did NOT hit its contract STOP (a contract item is the contract-touch HALT below):
