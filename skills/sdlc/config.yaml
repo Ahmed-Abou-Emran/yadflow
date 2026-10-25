@@ -219,7 +219,7 @@ build:
   # unfolded ship, e.g. a `yad checkpoint --retro-ship` backfill or any ship on an `in-build` story.
   build_log: "epics/EP-<slug>/.sdlc/build-log.json"   # folded ships
   build_log_dir: "epics/EP-<slug>/.sdlc/build-log/"   # one <story>-<task>-<repo>.json shard per ship
-  story_build_states: [in-build, shipped]   # in-build = some tasks shipped; shipped = all tasks in tasks.md shipped
+  story_build_states: [in-build, shipped]   # in-build = some tasks shipped; shipped = all tasks in tasks.md (or a light spec's tasks block) shipped
   # Backfill (yad-backfill) — specs for already-built features in an existing repo.
   backfill:
     tool: repomix                  # the one true CLI subprocess: `npx repomix@1.18.1` (Phase 0 / RESEARCH-NOTES §3)

@@ -178,12 +178,15 @@ for it" table is in the [team guide §11](../TEAM-GUIDE.md).
   at `specs/<story-id>/` (#348). Before the long work,
   it asks every human-only decision (security trade-offs, secrets and tokens, contract changes, changes
   that cannot be undone) and every open question in one batch, and records the answers in `spec.md`
-  (#357).
+  (#357). For a small story with no contract surface (a chore or spike route, or a change epic whose depth
+  is `defect-fix` or `behavioral-no-surface`), it offers a **light spec** in that batch: one `spec.md` holding the spec, `## Plan` and
+  `## Tasks`, with the tasks between `<!-- yad:tasks -->` and `<!-- /yad:tasks -->`, and no Spec Kit run.
+  A human confirms it; a story that touches the contract, or a high-risk one, is always full (#348).
 - **`yad-implement`** — Step B. With the dev lens, implement **one** atomic task as a small diff
   (≤3 files) on its own branch. The diff stays inside the files the task declared (flag and STOP if it
   would grow). Commit ends with the task ID; `Contract-Change: yes` only if it touches the locked
   contract surface. Before any code, it asks in one batch the human-only decisions `spec.md` has not
-  answered yet (#357).
+  answered yet (#357). On a light spec it reads the task from the marked tasks block of `spec.md` (#348).
 - **`yad-checks`** — Step C, the production-safety gates. Wire and run the CI gates: **spec-link**
   (every change links a real story/spec), **contract-check** (a contract-surface diff without a
   re-locked contract FAILS), **build/test/lint**, **verified-commits** (every commit platform-signed),

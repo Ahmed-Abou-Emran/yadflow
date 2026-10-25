@@ -39,7 +39,7 @@ function initRepo(dir) {
 
 // A Product (W/product) with one epic whose stories review passed, one story declaring api and web, and the
 // api repo (W/api) on its origin with the story's tasks.md merged. No platform: ships are recorded by flag.
-function workspace({ tasks = '# Tasks\n\n- [ ] T01 — create the order\n- [ ] T02 — list orders\n' } = {}) {
+function workspace({ tasks = '# Tasks\n\n- [ ] T01 — create the order\n- [ ] T02 — list orders\n', spec = null } = {}) {
   const W = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'yad-build-')));
   fs.writeFileSync(path.join(W, '.yad-workspace.json'), JSON.stringify({ version: 1, product: 'product' }));
   const P = path.join(W, 'product');
@@ -62,7 +62,8 @@ function workspace({ tasks = '# Tasks\n\n- [ ] T01 — create the order\n- [ ] T
   git(P, 'commit', '-q', '-m', 'chore: seed');
   const api = path.join(W, 'api');
   initRepo(api);
-  write(api, { [`specs/EP-l-S01/tasks.md`]: tasks, 'a.txt': 'a\n' });
+  // `spec` replaces the tasks.md with other spec files (a light spec, #348).
+  write(api, { ...(spec || { [`specs/EP-l-S01/tasks.md`]: tasks }), 'a.txt': 'a\n' });
   git(api, 'add', '-A');
   git(api, 'commit', '-q', '-m', 'docs: tasks');
   git(W, 'init', '-q', '--bare', '-b', 'main', 'api.git');
@@ -1465,5 +1466,94 @@ test('yad build step spec in_progress: a pin that cannot run never fails the rec
     assert.equal('specKit' in json(r), false);
     assert.equal(fs.existsSync(path.join(api, '.specify/feature.json')), false);
     assert.equal(read(path.join(dir, '.sdlc/build-state/EP-l-S01.json')).repos.api.steps[0].status, 'in_progress');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+// A light spec (#348): one spec.md with the spec, the plan and the tasks; link.md says spec-mode: light.
+const LIGHT_LINK = '---\nstory: EP-l-S01\nepic: EP-l\nrepo: api\nfeature-id: EP-l-S01\nproduct-repo: ../../../product\ncontract-lock: none\nspeckit: not-used\nspec-mode: light\ngenerated: 2026-10-25\n---\n# Spec link\n';
+const lightSpec = (tasks) => `# Spec — EP-l-S01\n\n## Acceptance criteria\n- T09 is not a task: it is above the block.\n\n## Plan\n1. T08 neither.\n\n## Tasks\n${tasks}`;
+const LIGHT_TASKS_OK = '<!-- yad:tasks -->\n## T01 — create the order\n**Files:** src/T01.js\n\n## T02 — list orders\n**Files:** src/T02.js\n<!-- /yad:tasks -->\n';
+function walkToReview(P) {
+  yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+  yad(P, 'skip', 'EP-l', 'EP-l-S01', '--repo', 'web', '--reason', 'no UI change');
+  for (const step of ['spec', 'tasks', 'implement', 'checks']) {
+    const r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', step, 'done');
+    assert.equal(r.code, 0, r.out);
+  }
+}
+
+test('yad build done reads a light spec\'s tasks from the marked block of spec.md (#348)', () => {
+  const { W, P, dir, sha } = workspace({ spec: { 'specs/EP-l-S01/link.md': LIGHT_LINK, 'specs/EP-l-S01/spec.md': lightSpec(LIGHT_TASKS_OK) } });
+  try {
+    walkToReview(P);
+    let r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01);
+    assert.equal(r.code, 0, r.out);
+    // T02 is owed; T08 and T09 above the block are not.
+    r = yad(P, 'build', 'done', 'EP-l-S01');
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /no ship yet for: api\/T02/);
+    assert.doesNotMatch(r.out, /T0[89]/);
+    r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T02', '--repo', 'api', '--merge-commit', sha.T02);
+    assert.equal(r.code, 0, r.out);
+    r = yad(P, 'build', 'done', 'EP-l-S01');
+    assert.equal(r.code, 0, r.out);
+    assert.equal(status(dir), 'shipped');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});
+
+test('yad build done: a spec.md tasks block counts only for a light spec, and only when it is whole (#348)', () => {
+  const cases = [
+    // link.md does not say light: the missing tasks.md is missing, whatever spec.md holds.
+    [{ 'specs/EP-l-S01/link.md': LIGHT_LINK.replace('spec-mode: light\n', ''), 'specs/EP-l-S01/spec.md': lightSpec(LIGHT_TASKS_OK) }, /its link\.md does not say `spec-mode: light` \(plain, on its own line\), so the tasks block in spec\.md is not read/],
+    // A link.md with Windows line endings is not read as light: named, not hidden behind "no tasks.md".
+    [{ 'specs/EP-l-S01/link.md': LIGHT_LINK.replace(/\n/g, '\r\n'), 'specs/EP-l-S01/spec.md': lightSpec(LIGHT_TASKS_OK) }, /its link\.md does not say `spec-mode: light`/],
+    [{ 'specs/EP-l-S01/link.md': LIGHT_LINK.replace('spec-mode: light', 'spec-mode: full') }, /no specs\/EP-l-S01\/tasks\.md on origin\/main/],
+    [{ 'specs/EP-l-S01/link.md': LIGHT_LINK }, /says spec-mode: light, but there is no spec\.md/],
+    [{ 'specs/EP-l-S01/link.md': LIGHT_LINK, 'specs/EP-l-S01/spec.md': lightSpec('## T01 — no markers\n') }, /is a light spec without one <!-- yad:tasks --> … <!-- \/yad:tasks --> block/],
+    [{ 'specs/EP-l-S01/link.md': LIGHT_LINK, 'specs/EP-l-S01/spec.md': lightSpec(LIGHT_TASKS_OK + LIGHT_TASKS_OK) }, /is a light spec without one/],
+    [{ 'specs/EP-l-S01/link.md': LIGHT_LINK, 'specs/EP-l-S01/spec.md': lightSpec('<!-- /yad:tasks -->\n## T01 — x\n<!-- yad:tasks -->\n') }, /is a light spec without one/],
+    [{ 'specs/EP-l-S01/link.md': LIGHT_LINK, 'specs/EP-l-S01/spec.md': lightSpec('<!-- yad:tasks -->\nnothing yet\n<!-- /yad:tasks -->\n') }, /the tasks block of specs\/EP-l-S01\/spec\.md on origin\/main names no task/],
+  ];
+  for (const [spec, why] of cases) {
+    const { W, P, sha } = workspace({ spec });
+    try {
+      walkToReview(P);
+      yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01);
+      const r = yad(P, 'build', 'done', 'EP-l-S01');
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.out, why);
+      assert.match(r.out, /EP-l-S01 is not shipped yet/);
+    } finally { fs.rmSync(W, { recursive: true, force: true }); }
+  }
+});
+
+test('the light-spec markers the skills write are the ones yad build done reads (#348)', async () => {
+  const { LIGHT_TASKS, lightTasksBlock } = await import('./build.mjs');
+  const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
+  for (const f of ['skills/yad-spec/SKILL.md', 'skills/yad-spec/references/spec-handoff.md', 'skills/yad-implement/SKILL.md', 'docs/CLI.md']) {
+    const text = read(f);
+    assert.ok(text.includes(LIGHT_TASKS.begin) && text.includes(LIGHT_TASKS.end), f);
+  }
+  assert.match(read('skills/yad-spec/SKILL.md'), /`spec-mode: light`/);
+  assert.match(read('skills/yad-spec/references/spec-handoff.md'), /^spec-mode: full \| light$/m);
+  // The example in spec-handoff.md is a block build done can read.
+  const example = read('skills/yad-spec/references/spec-handoff.md').match(/```markdown\n(# Spec — [\s\S]*?)```/)[1];
+  assert.match(lightTasksBlock(example), /^## T01 — /m);
+});
+
+test('yad build done: a tasks.md that exists wins over a light spec\'s tasks block (#348 review 1)', () => {
+  const { W, P, dir, sha } = workspace({ spec: {
+    'specs/EP-l-S01/tasks.md': '# Tasks\n\n- [ ] T01 — create the order\n',
+    'specs/EP-l-S01/link.md': LIGHT_LINK,
+    'specs/EP-l-S01/spec.md': lightSpec(LIGHT_TASKS_OK),
+  } });
+  try {
+    walkToReview(P);
+    let r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01);
+    assert.equal(r.code, 0, r.out);
+    r = yad(P, 'build', 'done', 'EP-l-S01');
+    assert.equal(r.code, 0, r.out);
+    assert.doesNotMatch(r.out, /T02/);
+    assert.equal(status(dir), 'shipped');
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });

@@ -372,7 +372,9 @@ the product repo. Code repos are **separate git repos** under `demo-repos/<repo>
 1. **Spec** — `yad-spec` runs the heavy Spec Kit ceremony **once per story per repo**
    (`specify`→`clarify`→`plan`→`analyze`→`checklist`→`tasks`), writing `specs/<story-id>/` and a
    `link.md` back to the story (drives `/speckit.*` when installed, else degrades). It **quotes** the
-   locked contract; it never widens it.
+   locked contract; it never widens it. A small story with no contract surface can instead have a
+   **light spec** (#348): one `spec.md` with the spec, a plan and the marked tasks, offered by
+   `yad-spec` and confirmed by a person.
 2. **Implement** — `yad-implement` (the `dev` step): one atomic task = one branch
    (`feat/<story>-<task>-…`) = one PR. The diff stays inside the files the task declared. Commit with
    **`yad commit`** — it builds the conventional subject, derives the `Task:` trailer from the branch

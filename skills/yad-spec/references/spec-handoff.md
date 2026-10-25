@@ -18,8 +18,9 @@ Driven as harness slash-commands (RESEARCH-NOTES §2, Deviation 3), from **insid
 | 5 | `/speckit.checklist` | Quality checklist for the spec | checklist section under `specs/<feature-id>/` (in the degraded path, folded into `spec.md`) |
 | 6 | `/speckit.tasks`     | Atomic task list | `specs/<feature-id>/tasks.md` |
 
-**Ask first (#357).** Between `specify` and `clarify`, the skill asks every human-only decision and
-open question in one batch (SKILL.md, **Ask the human-only questions first**). The answers go into
+**Ask first (#357).** Between `specify` and `clarify` — or, when the story qualifies for a light spec
+(#348), on a hand draft before any Spec Kit command (SKILL.md Step 5) — the skill asks every human-only
+decision and open question in one batch (SKILL.md, **Ask the human-only questions first**). The answers go into
 `spec.md` under `## Clarifications`, as `- Q: <question> → A: <answer>` lines below a
 `### Session <YYYY-MM-DD>` heading — the format `/speckit.clarify` writes. The degraded path writes
 the same section, so `yad-implement` finds the answers in one place on both paths.
@@ -43,11 +44,44 @@ demo-repos/<repo>/specs/<story-id>/
   research.md     # decisions/unknowns resolved during clarify
   data-model.md   # entities/fields THIS repo implements (quoting the shared ones from the contract)
   contracts/      # the API/event surface this repo implements (quoted from the locked contract)
-                  # OMITTED ENTIRELY on a short-lane epic — see below
+                  # OMITTED ENTIRELY on a short-lane epic, and for a story with nothing to quote — see below
   plan.md         # technical approach for this repo
   tasks.md        # numbered atomic tasks (T01…), each scoped to the files it may touch
   link.md         # back-pointer to the story in the product repo (Step A adds this; not a Spec Kit file)
 ```
+
+## Light spec (#348)
+
+A small story the human confirmed as light (SKILL.md Step 5 says when to offer it) has two files only:
+
+```
+demo-repos/<repo>/specs/<story-id>/
+  spec.md         # the spec, then ## Plan, then ## Tasks with the marked tasks block
+  link.md         # as below, with speckit: not-used and spec-mode: light
+```
+
+```markdown
+# Spec — EP-<slug>-S0N
+
+<the spec: context, the need, in scope, out of scope, acceptance criteria copied from the story>
+
+## Clarifications
+### Session <YYYY-MM-DD>
+- Q: Light spec — one spec.md holding the spec, the plan and the tasks? → A: yes
+
+## Plan
+<the approach for this repo in a few lines: what changes, and how it is tested>
+
+## Tasks
+<!-- yad:tasks -->
+## T01 — <one-line goal>
+**Files:** <the files it may touch>
+<!-- /yad:tasks -->
+```
+
+Each marker line appears once, alone on its line, begin before end. The tasks are read **only** from
+between them (`yad build done`, `yad-implement`), so a `T01` mentioned in the spec or the plan is never
+taken for a task. Spec Kit is not run for a light spec: its commands need `plan.md` and `tasks.md`.
 
 ## Degradation rules (when Spec Kit is not used)
 
@@ -81,6 +115,8 @@ comes from the story's acceptance criteria and the **locked contract surface** �
   Markdown (`.md`). The contract-check gate then passes the slice with **no** `Contract-Change` trailer,
   because it can prove every quoted line is in the lock (issue #344). Never reword, reorder or skip a line
   inside a block: that is a surface change, and it needs the trailer.
+  **Leave the folder out when there is nothing to quote** — a story on a locked epic that touches none of
+  the surface has no `contracts/` folder (an empty one cannot be committed and quotes nothing).
   **Do NOT create this folder on a short-lane epic** (`profile: chore` or `spike`). Those routes have
   no architecture step, so there is no locked `contract.md` to quote and no lock for CI to check the
   quote against — the gate refuses a slice under a lockless epic. A short-lane story consumes the
@@ -104,7 +140,8 @@ product-repo: <path to the product repo — absolute, or relative to THIS file's
 contract-lock: sha256:<hex copied from epics/EP-<slug>/.sdlc/contract-lock.json>   # or the literal
                  # `none` on a short-lane epic, which has no lock. Never an empty or invented hash:
                  # CI reads an unparseable value as a broken lock and fails.
-speckit: installed | not-installed
+speckit: installed | not-installed | not-used
+spec-mode: full | light
 generated: <YYYY-MM-DD>
 ---
 

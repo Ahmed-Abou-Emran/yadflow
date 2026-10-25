@@ -704,6 +704,8 @@ test('E87: the section says when to use each tool, its fallback, and what to rec
   assert.match(spec, /`used: true` and `status\.state` is `installed` or `available`/);
   assert.match(spec, /`yad toolbox remove spec-kit`/, 'a team skip means the fallback');
   assert.ok(spec.includes(`  - Fallback — ${TOOLBOX.find((t) => t.id === 'spec-kit').fallback}.\n  - Record \`speckit: not-installed\`.`));
+  // A light spec chose not to run Spec Kit: the section names its own line, so the two never disagree (#348).
+  assert.ok(spec.includes('whatever the reason — except a light spec, which never runs Spec Kit and records `speckit: not-used` (#348).'));
   // A connector follows the file its connect skill writes, not the toolbox's use flag.
   const ui = skillFallbackSection('yad-ui');
   assert.match(ui, /\*\*Figma\*\* \(`figma`, a connector\)\. Used when `\.sdlc\/design\.json` connects it/);
@@ -938,6 +940,9 @@ test('E84: toolProblems names each way an entry can be wrong', () => {
   assert.ok(bad({ detect: { skills: 'impeccable' } }).some((p) => p.includes('detect.skills')));
   assert.ok(bad({ versions: 'latest' }).some((p) => p.startsWith('versions ')));
   assert.ok(bad({ fallback: '' }).some((p) => p.startsWith('fallback ')));
+  for (const patch of [{ recordsElse: '' }, { recordsElse: 'a case.' }, { records: null, recordsElse: 'a case' }]) {
+    assert.ok(bad(patch).some((p) => p.startsWith('recordsElse ')), JSON.stringify(patch));
+  }
   assert.ok(bad({ usedBy: [] }).length === 0, 'an empty usedBy list is still a list');
   assert.ok(bad({ usedBy: 'yad-ui' }).some((p) => p.startsWith('usedBy ')));
   for (const [patch, start] of [[{ name: '' }, 'name '], [{ role: '' }, 'role '], [{ licence: '' }, 'licence '], [{ records: '' }, 'records '],

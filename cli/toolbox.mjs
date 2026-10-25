@@ -78,7 +78,8 @@ const VET_REGISTRIES = Object.freeze(['npm', 'pypi']);
 // (Docker, Homebrew, a VS Code extension) are in its own README, which `source` links. `versions` is null
 // everywhere: no bound has been tested, and E88 vets licence and source, not a version range. `records`
 // is the exact line a skill writes when the tool is absent. Each skill in
-// `usedBy` quotes `fallback` and `records` word for word in its "When a tool is missing" section (E87):
+// `usedBy` quotes `fallback` and `records` word for word in its "When a tool is missing" section (E87),
+// and `recordsElse`, when set, names the one case that records another line (#348):
 // change the words here, then rewrite the sections with `skillFallbackSection`.
 export const TOOLBOX = Object.freeze([
   // ---- core: offered at setup --------------------------------------------------------------------
@@ -126,6 +127,7 @@ export const TOOLBOX = Object.freeze([
     versions: null,
     fallback: "yad-spec writes the same spec files by hand, in Spec Kit's layout",
     records: 'speckit: not-installed', note: 'A program named specify on PATH also counts; another tool by that name would too.',
+    recordsElse: 'a light spec, which never runs Spec Kit and records `speckit: not-used` (#348)',
     usedBy: ['yad-spec'],
   },
   {
@@ -375,6 +377,8 @@ export function toolProblems(t) {
   need(typeof t?.fallback !== 'string' || !/[.\s]$/.test(t.fallback), 'fallback ends without a full stop or a space');
   need(t?.records === null || (typeof t?.records === 'string' && t.records.length > 0), 'records is null or the line a skill writes');
   need(t?.note === null || (typeof t?.note === 'string' && t.note.length > 0), 'note is null or a sentence');
+  need(t?.recordsElse === undefined || (typeof t.recordsElse === 'string' && t.recordsElse.length > 0 && t.records !== null && !/\.$/.test(t.recordsElse)),
+    'recordsElse is absent, or the one other case, with records set and no full stop (the section adds it)');
   need(t?.manual === null || (typeof t?.manual === 'string' && /^https:\/\//.test(t.manual)), 'manual is null or an https URL');
   need(isStringList(t?.usedBy), 'usedBy lists the skills or commands that use it');
   need(t?.tier !== 'connector' || !isStringList(t?.usedBy) || connectorFile(t) !== null, 'a connector names the yad-connect-* skill that connects it');
@@ -746,6 +750,10 @@ export function connectorFile(tool) {
 // The skills (folders under skills/, not `yad <command>`s) that use a tool.
 export const skillsUsing = (tool) => tool.usedBy.filter((u) => !u.startsWith('yad '));
 
+// The line a skill writes when the tool was not used. `recordsElse` is the one case where the skill chose
+// not to use it and records another line (yad-spec's light spec, #348), so the two never read against each other.
+const recordLine = (t) => `  - Record \`${t.records}\`. It means the tool was not used, whatever the reason${t.recordsElse ? ` — except ${t.recordsElse}` : ''}.`;
+
 export function skillFallbackSection(skill, tools = TOOLBOX) {
   const mine = tools.filter((t) => t.tier !== 'recommended' && skillsUsing(t).includes(skill));
   if (!mine.length) return null;
@@ -784,7 +792,7 @@ export function skillFallbackSection(skill, tools = TOOLBOX) {
   for (const t of core) {
     lines.push(`- **${t.name}** (\`${t.id}\`). Use it when its entry has \`used: true\` and \`status.state\` is \`installed\` or \`available\`. Otherwise — not found, its plugin turned off in Claude Code, or the team chose not to use it (\`yad toolbox remove ${t.id}\`) — use the fallback.`);
     lines.push(`  - Fallback — ${t.fallback}.`);
-    if (t.records) lines.push(`  - Record \`${t.records}\`. It means the tool was not used, whatever the reason.`);
+    if (t.records) lines.push(recordLine(t));
   }
   for (const t of connectors) {
     const file = connectorFile(t);
@@ -794,7 +802,7 @@ export function skillFallbackSection(skill, tools = TOOLBOX) {
       ? `- **${t.name}** (\`${t.id}\`, a connector). This skill connects it, by writing \`${file}\` as the steps below say. The other skills follow that file, not yad's toolbox answer.`
       : `- **${t.name}** (\`${t.id}\`, a connector). Used when \`${file}\` connects it. ${connect} writes that file; follow it, not yad's toolbox answer.`);
     lines.push(`  - Fallback — ${t.fallback}.`);
-    if (t.records) lines.push(`  - Record \`${t.records}\`. It means the tool was not used, whatever the reason.`);
+    if (t.records) lines.push(recordLine(t));
   }
   lines.push('', SKILL_FALLBACK_END);
   return lines.join('\n');

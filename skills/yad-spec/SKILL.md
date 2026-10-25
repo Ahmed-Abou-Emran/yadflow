@@ -1,6 +1,6 @@
 ---
 name: yad-spec
-description: 'Build Step A of the gated SDLC. For one ready-for-build story and one of its repos, run the heavy Spec Kit ceremony ONCE (specify → clarify → plan → analyze → checklist → tasks) inside that code repo, writing specs/<story-id>/ in Spec Kit''s own layout. Drives /speckit.* as harness slash-commands when installed; authors the same files by hand and records speckit: not-installed when absent. References the locked contract — never re-invents the surface. Writes link.md back to the story. Never auto-advances. Use when the user says "spec story <id> in <repo>" or after a story is ready-for-build.'
+description: 'Build Step A of the gated SDLC. For one ready-for-build story and one of its repos, run the heavy Spec Kit ceremony ONCE (specify → clarify → plan → analyze → checklist → tasks) inside that code repo, writing specs/<story-id>/ in Spec Kit''s own layout. Drives /speckit.* as harness slash-commands when installed; authors the same files by hand and records speckit: not-installed when absent. References the locked contract — never re-invents the surface. Writes link.md back to the story. For a small story with no contract surface, offers a light spec (one spec.md with the plan and tasks) that a human confirms (#348). Never auto-advances. Use when the user says "spec story <id> in <repo>" or after a story is ready-for-build.'
 ---
 
 # SDLC — Author Spec (Build Step A)
@@ -43,7 +43,7 @@ Tell the person which tools you used and which fallbacks, and why.
 
 - **Spec Kit** (`spec-kit`). Use it when its entry has `used: true` and `status.state` is `installed` or `available`. Otherwise — not found, its plugin turned off in Claude Code, or the team chose not to use it (`yad toolbox remove spec-kit`) — use the fallback.
   - Fallback — yad-spec writes the same spec files by hand, in Spec Kit's layout.
-  - Record `speckit: not-installed`. It means the tool was not used, whatever the reason.
+  - Record `speckit: not-installed`. It means the tool was not used, whatever the reason — except a light spec, which never runs Spec Kit and records `speckit: not-used` (#348).
 
 <!-- end: When a tool is missing -->
 
@@ -150,7 +150,7 @@ contract here. (On a route that HAS one; the short lanes do not — see below.)
 Read Spec Kit's entry in `yad toolbox list --json --dir demo-repos/<repo>`, as **When a tool is
 missing** says. If yad cannot answer, check for `/speckit.*` slash-commands and/or
 `demo-repos/<repo>/.specify/`. Record the result for Step 6's
-frontmatter (`speckit: installed | not-installed`).
+frontmatter (`speckit: installed | not-installed`; a light spec records `not-used` whatever is found).
 
 ### Step 5 — Run the heavy ceremony ONCE (or degrade)
 **Start the step (#348).** From the Product, run `yad build step <story> --repo <repo> <step> in_progress`,
@@ -166,23 +166,78 @@ questions first** above describes. Its items come from the story, `epic.md`, the
 Step 3, and the first draft of `spec.md`. Record the answers in `spec.md`, under `## Clarifications`,
 as `- Q: <question> → A: <answer>` lines below a `### Session <YYYY-MM-DD>` heading. This is the format
 `/speckit.clarify` writes, and both paths below leave the answers there.
+When the story qualifies for a **light spec** (below), put that question in the same batch.
 
-**Used** — from inside `demo-repos/<repo>/`, drive, in order:
+**Light spec (#348).** A small story can have one `spec.md` instead of the full set of files. Suggest it
+only when ALL of these hold:
+- the route is `chore` or `spike`, or `epics/<epic>/.sdlc/change.json` says `depth: defect-fix` or
+  `depth: behavioral-no-surface`;
+- the story's **Notes for build** says the contract surface touched is none, and Step 3 found nothing
+  to quote, so the spec needs no `contracts/` slice;
+- nothing marks it high risk: no step in `epics/<epic>/.sdlc/state.json` carries an `auth` or
+  `payments` risk tag; the code repo's risk map gives no file the work will touch the level `high`
+  (below); and the person has not called it high risk.
+
+**Reading the risk map for it.** The tasks do not exist yet, so judge the files the work will touch
+from the draft `spec.md` and the code; if you cannot say which files, do not offer light. Read
+`.sdlc/risk-map` as the default branch has it (`default_branch` in the Product's `.sdlc/repos.json`, else the
+clone's `origin/HEAD`):
+fetch it, then ask git whether the branch holds the file, as yad does:
+`git -C demo-repos/<repo> ls-tree --full-tree origin/<default> -- .sdlc/risk-map`. Empty output (or an
+entry that is not a plain file) means there is no map, so it gives no `high`; a git error (no such
+branch, no fetch) is no answer. Otherwise read it with
+`git -C demo-repos/<repo> show origin/<default>:.sdlc/risk-map`. `yad risk-map check` reads the
+clone's working copy instead, so use its report only when the clone is on the default branch with the
+map unchanged. A file's level is the one on the deepest directory listed above it (`./` covers only the
+files at the root); `guessed` counts the same as `confirmed`; an `unset` line, or a file no line covers,
+is not high. The map gives **no answer**, so do not offer light, when its first line that is not blank
+is not the header `# yad-risk-map v1`, or a line (blank lines and `#` comments
+aside) is neither `<dir>/ <high|medium|low> <guessed|confirmed>` nor `<dir>/ unset` (optionally
+`<dir>/ unset guessed`), each with an optional ` # reason`, or a directory is listed twice.
+
+Never suggest it for a story that touches the contract, and never choose it yourself: ask in the batch
+("Light spec — one `spec.md` holding the spec, the plan and the tasks?"), with the reason it qualifies,
+and record the answer in `## Clarifications`. Without a clear yes, write the full spec. A light spec:
+- is **only** `spec.md` and `link.md` under `demo-repos/<repo>/specs/<story>/`. `spec.md` holds the spec,
+  then `## Plan` (the approach, in a few lines), then `## Tasks`. No `research.md`, `data-model.md`,
+  `plan.md`, `tasks.md` or `contracts/`. A re-run that turns a full spec into a light one deletes
+  everything else in the folder (a `tasks.md` that is still there wins over the light block);
+- keeps its tasks between the two marker lines `<!-- yad:tasks -->` and `<!-- /yad:tasks -->` under
+  `## Tasks`, once each, in the same shape as `tasks.md` (`## T01 — <goal>` and a **Files:** list).
+  `yad build done` and `yad-implement` read the tasks only from between the markers;
+- does not run Spec Kit, whose commands need `plan.md` and `tasks.md`. Step 6 records `speckit: not-used`
+  and `spec-mode: light`.
+
+**When it qualifies, ask before any Spec Kit command.** Draft `spec.md` by hand and ask the batch, the
+light question in it, before running any `/speckit.*` command, so the choice is known before the path
+is. On a yes, write the light spec. On a no, take one of the two paths below; on **Used**, the batch is
+already asked, so copy the recorded `## Clarifications` lines out first (`/speckit.specify` replaces
+`spec.md` with its template), then put them into the `spec.md` it writes instead of asking again.
+
+The spec leg writes the whole light spec, tasks included. When the lane then reaches the `tasks` leg,
+start that step as above and check that the tasks block is there and whole; write nothing else.
+
+**Used** (and the spec is not light) — from inside `demo-repos/<repo>/`, drive, in order:
 `/speckit.specify` → (ask the batch) → `/speckit.clarify` → `/speckit.plan` → `/speckit.analyze` →
 `/speckit.checklist` → `/speckit.tasks`. **Pin the feature to `<story>`** (do not accept an
 auto-slug): start `/speckit.specify` with `SPECIFY_FEATURE_DIRECTORY=specs/<story>`, because without it
 specify makes a numbered folder of its own. Before `/speckit.plan` and again before `/speckit.tasks`,
 check that `.specify/feature.json` still names `specs/<story>`; if it does not, set it back to
 `{"feature_directory":"specs/<story>"}`. Seed `specify` from the story's acceptance criteria and the contract elements from Step 3.
-On a resume after a question halt, keep the `spec.md` already drafted: do not run `/speckit.specify`
-again. Answer `/speckit.clarify`'s questions from the batch answers. A question it asks that the batch did not
+If Step 3 found nothing to quote, keep `contracts/` out: delete any `contracts/` folder `/speckit.specify`
+or `/speckit.plan` writes, since lines that are not quoted from the lock fail contract-check.
+On a resume after a question halt, keep the `spec.md` that `/speckit.specify` already wrote: do not run
+it again. A hand draft made only to ask the light question is not that: run `/speckit.specify` and carry
+its `## Clarifications` in. Tell them apart by `specs/<story>/checklists/requirements.md`: specify
+writes it, a hand draft never does. Answer `/speckit.clarify`'s questions from the batch answers. A question it asks that the batch did not
 cover is a late one: ask all such questions together, as rule 4 of the batch says.
 `/speckit.constitution` and `/speckit.implement` are **out of scope for Step A** (implement is Step B).
 
-**Not used (degrade)** — draft `spec.md` first, ask the batch, record the answers in it, and only then
-write the rest. Hand-author the identical files in Spec Kit's layout under
+**Not used (degrade)** (and the spec is not light) — draft `spec.md` first, ask the batch, record the answers in it, and only then
+write the rest (after a "no" to light, the batch is already asked: do not ask it again). Hand-author the identical files in Spec Kit's layout under
 `demo-repos/<repo>/specs/<story>/`: `spec.md`, `research.md`, `data-model.md`, `contracts/`,
-`plan.md`, `tasks.md`. The content is what a real Spec Kit run would produce, traceable to the story's
+`plan.md`, `tasks.md`. Write `contracts/` only when Step 3 found surface to quote: a story with nothing to
+quote has no `contracts/` folder at all (git keeps no empty folder, and an empty one quotes nothing). The content is what a real Spec Kit run would produce, traceable to the story's
 acceptance criteria and the locked contract surface. `tasks.md` MUST be numbered atomic tasks (`T01…`),
 each declaring the files it may touch, so Step B's "stay inside the declared files" rule has something
 to read. See `references/spec-handoff.md` for the exact file map and per-file degradation rules.
@@ -194,12 +249,13 @@ frontmatter linking the spec back to the product repo: `story`, `epic`, `repo`, 
 place CI checks the Product out; the gates read that record first anyway), `contract-lock` (the hash **copied** from `contract-lock.json`, NOT recomputed
 in the code repo — or the literal `none` on a short-lane epic, which has no lock; never a made-up or
 empty hash, which the CI gate reads as a broken lock and fails), `speckit`
-(`installed | not-installed`), `generated` (date). This `link.md` plus the
+(`installed | not-installed`, or `not-used` for a light spec), `spec-mode` (`light` for a light spec,
+else `full`; nothing after the value on that line), `generated` (date). This `link.md` plus the
 spec folder is the authoritative record that this story's spec exists.
 
 ### Step 7 — Stop (Shape state untouched)
 Report: the spec folder path, the files written, whether Spec Kit was used, the task count from
-`tasks.md`, and that the next action is **Step B — `yad-implement`**. Do **not** edit the epic's
+`tasks.md` (or the light spec's tasks block), whether the spec is light, and that the next action is **Step B — `yad-implement`**. Do **not** edit the epic's
 `state.json`, `approvals.json`, or `contract-lock.json`. Step A is a generation step, not a Shape gate.
 
 ### Step 8 — Record the `spec` trust signal (Phase 4b)
@@ -222,7 +278,8 @@ whatever the team sets with `yad dial`, and this step never changes it.
 ## Hard rules (build plan §A, Cross-cutting)
 
 - **Heavy spec once per story, not per task.** specify/clarify/plan/analyze/checklist/tasks run once
-  per story per repo. Do not re-run the ceremony for each task.
+  per story per repo. Do not re-run the ceremony for each task. A **light spec** (#348) skips it, and only
+  when a human confirms it in the batch.
 - **Per-repo spec, shared contract.** Spec/plan/tasks live in the code repo; the contract stays
   singular in the product repo. Never widen the contract surface from here.
 - **Nothing auto-advances.** Step A generates files and stops; no state machine is advanced. Step 5

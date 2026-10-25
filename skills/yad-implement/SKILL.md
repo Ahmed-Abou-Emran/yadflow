@@ -81,9 +81,11 @@ them all in **one** message.
 ## On Activation
 
 ### Step 1 — Resolve the spec and the task
-Read `demo-repos/<repo>/specs/<story>/tasks.md`. Find the block for `<task>` (`## <task> — …`). Read
+Read `demo-repos/<repo>/specs/<story>/tasks.md` — or, for a **light spec** (`link.md` says
+`spec-mode: light`, #348), the lines between `<!-- yad:tasks -->` and `<!-- /yad:tasks -->` in its
+`spec.md`, and nothing outside them. Find the block for `<task>` (`## <task> — …`). Read
 its one-line goal and its **Files:** list (the declared file boundary) and the acceptance criterion it
-satisfies. If the task ID is not in `tasks.md`, STOP. Confirm the spec exists (Step A ran); if not,
+satisfies. If the task ID is not in `tasks.md` (or the light block), STOP. Confirm the spec exists (Step A ran); if not,
 STOP and point at `yad-spec`.
 
 ### Step 2 — Resolve the code repo and branch
@@ -98,18 +100,19 @@ choices (`config.yaml` `build.ai_coauthor.allowed`). Do the same at the Product 
 already configured.
 
 ### Step 3 — Read the spec inputs (do NOT re-derive the contract)
-Read the story's `spec.md`, `plan.md`, `data-model.md`, and `contracts/` for this task's context. The
+Read the story's `spec.md`, `plan.md`, `data-model.md`, and `contracts/` for this task's context. A
+light spec has only `spec.md`: its `## Plan` section is the plan, and it has no contract slice. The
 contract slice is **quoted** from the product repo's locked `contract.md` — implement to it, never
 change it here.
 
 **Then ask the batch (#357)** that **Ask the human-only questions first** above describes, before
 writing any code. Read `spec.md`'s `## Clarifications` first: `yad-spec` recorded its answers there.
 Ask only what is still open for THIS task, from its block in `tasks.md`, `plan.md` and the contract
-slice. Record the answers in the commit body (Step 6), in a `Decisions:` paragraph above the trailer
+slice (on a light spec: its block and `## Plan` in `spec.md`). Record the answers in the commit body (Step 6), in a `Decisions:` paragraph above the trailer
 block — not in `spec.md`, which is outside the task's declared files. Until that commit they are on
 no disk, so after a question halt the person gives the answers to the resumed run, which uses them
 and does not ask again. If an answer changes what
-`spec.md`, `plan.md` or `tasks.md` says, that is a spec gap: STOP and re-run `yad-spec`, as for a file
+`spec.md`, `plan.md` or `tasks.md` says (a light spec: anything in `spec.md`), that is a spec gap: STOP and re-run `yad-spec`, as for a file
 outside the declared list in Step 4.
 
 ### Step 4 — Implement the task (dev lens), inside the declared files ONLY

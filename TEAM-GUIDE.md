@@ -783,7 +783,7 @@ descriptions of all 38 skills are in [`docs/SKILLS.md`](docs/SKILLS.md).
 | `yad-review-companion` | Make review fun & visible: 60-sec trailer, swipe cards, grounded chat, engagement signal + friendly nudge (Shape gate & code PRs). |
 | `yad-pair-review` | A guided, two-way review: the AI walks you through a change one stop at a time, highest risk first, and asks you about each. Its CLI side is `yad gate walkthrough` (Shape) and `yad review walkthrough` (code PR). |
 | `yad-product-bridge` | Open the review PR/MR on the Product and sync platform approvals back. |
-| `yad-spec` | Spec a ready story in one repo (Spec Kit ceremony). |
+| `yad-spec` | Spec a ready story in one repo (Spec Kit ceremony, or a light one-file spec for a small story, confirmed by a person). |
 | `yad-implement` | Implement one atomic task as a small branch. |
 | `yad-checks` | Wire / run the CI gates (spec-link, contract-check, build/test/lint, verified-commits, commit-message, pr-title, pr-template, the feature-thread gates lineage-check / epic-open / reconcile-debt, and the advisory risk-map check). |
 | `yad-pr-template` | Install the platform PR/MR template + risk routing + the pr-title/pr-template gate scripts. |
