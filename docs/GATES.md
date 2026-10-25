@@ -240,7 +240,11 @@ epic-open and reconcile-debt pass it:
   (`git rev-parse <commit>` prints it). A
   branch or tag name would move, so it is refused. A short SHA is refused too: git looks a short one
   up as a tag or branch name first, so a tag named like it would stand in for another commit.
-- `SDLC_GATE_EXEMPT` names another path in the repo.
+- `SDLC_GATE_EXEMPT` names another path in the repo. It is set in the pipeline config, and a pull
+  request can change that config where its own pipeline runs (GitHub `pull_request` workflows, for
+  example). That does not let it waive its own commits: the variable can only name a file on the base,
+  and every entry there must be a full SHA. A pull request that edits the pipeline could remove the
+  gates altogether, so required checks and branch protection are what guard the pipeline itself.
 - A listed commit skips **every** check of all four gates, not only the trailer check. In epic-open
   and reconcile-debt that includes the sealed-epic, orphan-thread and frozen-thread checks, which a
   `chore:` subject can never skip. Read the commit before you list it.
