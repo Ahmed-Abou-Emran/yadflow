@@ -1449,3 +1449,21 @@ test('yad build step spec in_progress: a repo not checked out is said, and the s
     assert.equal(read(path.join(dir, '.sdlc/build-state/EP-l-S01.json')).repos.web.steps[0].status, 'in_progress');
   } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });
+
+test('yad build step spec in_progress: a pin that cannot run never fails the recorded step (#348 review 2)', () => {
+  const { W, P, dir, api } = workspace();
+  try {
+    yad(P, 'build', 'start', 'EP-l-S01', '--repo', 'api');
+    write(api, { '.specify/memory/constitution.md': '# c\n' });
+    // The folder is a clone of another repo than the one registered: the lookup throws, the pin is a warning
+    // that keeps the lookup's fix, and the step stands.
+    git(api, 'remote', 'set-url', 'origin', 'https://github.com/team/api.git');
+    write(P, { '.sdlc/repos.json': JSON.stringify({ repos: [{ name: 'api', path: '../api', git_url: 'https://github.com/team/other.git' }, { name: 'web', path: '../web' }] }) });
+    const r = yad(P, 'build', 'step', 'EP-l-S01', '--repo', 'api', 'spec', 'in_progress', '--json');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /Spec Kit folder not pinned: \.\.\/api is a clone of team\/api, not team\/other — fix the path of api/);
+    assert.equal('specKit' in json(r), false);
+    assert.equal(fs.existsSync(path.join(api, '.specify/feature.json')), false);
+    assert.equal(read(path.join(dir, '.sdlc/build-state/EP-l-S01.json')).repos.api.steps[0].status, 'in_progress');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
+});

@@ -225,7 +225,8 @@ whatever the team sets with `yad dial`, and this step never changes it.
   per story per repo. Do not re-run the ceremony for each task.
 - **Per-repo spec, shared contract.** Spec/plan/tasks live in the code repo; the contract stays
   singular in the product repo. Never widen the contract surface from here.
-- **Nothing auto-advances.** Step A generates files and stops; no state machine is advanced.
+- **Nothing auto-advances.** Step A generates files and stops; no state machine is advanced. Step 5
+  only starts the lane's spec or tasks step (`in_progress`); it never closes one.
 - **Human-only decisions are asked first, in one batch** (#357), before the long work — never decided
   by the agent.
 

@@ -375,7 +375,8 @@ export function pinSpecKit(root, repo, story, step = 'spec') {
   const dir = path.join(checkout, '.specify');
   const featureDirectory = `specs/${story}`;
   const fix = `set it by hand: {"feature_directory":"${featureDirectory}"} in ${repo}/.specify/feature.json`;
-  const dirStat = fs.lstatSync(dir, { throwIfNoEntry: false });
+  let dirStat;
+  try { dirStat = fs.lstatSync(dir, { throwIfNoEntry: false }); } catch (e) { warn(`could not read ${repo}/.specify: ${e.message} — ${fix}`); return null; }
   if (!dirStat) return null; // no .specify/: the repo does not use Spec Kit
   // A link is not followed: yad never writes through one.
   if (!dirStat.isDirectory()) { info(`${repo}/.specify is not a plain folder, so Spec Kit's feature folder was not pinned — ${fix}`); return null; }
