@@ -3487,18 +3487,32 @@ function exemptOnBase(T, body, file = '.sdlc/gate-exempt') {
 }
 
 for (const [name, script, tag] of EXEMPT_GATES) {
-  test(`${name} gate: a commit listed in the base's .sdlc/gate-exempt passes, by short or full SHA`, () => {
-    for (const len of [8, 40]) {
-      const { T, sha } = badTrailerRepo();
-      const before = runGate(script, T);
-      assert.equal(before.code, 1, before.out);
-      assert.ok(before.out.includes("'EP-demo-S07-parity' is not a story ID"), before.out);
-      exemptOnBase(T, `# already on a shared branch\n\n${sha.slice(0, len)}  # fix: stop leftovers\n`);
-      const r = runGate(script, T);
-      assert.equal(r.code, 0, r.out);
-      assert.ok(r.out.includes(`PASS [${tag}]: `) && r.out.includes('— SHA exemption (.sdlc/gate-exempt on main)'), r.out);
-      fs.rmSync(T, { recursive: true, force: true });
-    }
+  test(`${name} gate: a commit listed in the base's .sdlc/gate-exempt by its full SHA passes`, () => {
+    const { T, sha } = badTrailerRepo();
+    const before = runGate(script, T);
+    assert.equal(before.code, 1, before.out);
+    assert.ok(before.out.includes("'EP-demo-S07-parity' is not a story ID"), before.out);
+    exemptOnBase(T, `# already on a shared branch\n\n${sha}  # fix: stop leftovers\n`);
+    const r = runGate(script, T);
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.out.includes(`PASS [${tag}]: `) && r.out.includes('— SHA exemption (.sdlc/gate-exempt on main)'), r.out);
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+
+  test(`${name} gate: a short SHA exempts nothing — a tag of that name would stand in for another commit`, () => {
+    const { T, sha } = badTrailerRepo();
+    exemptOnBase(T, `${sha.slice(0, 8)}\n`);
+    let r = runGate(script, T);
+    assert.equal(r.code, 1, r.out);
+    assert.ok(r.out.includes(`entry '${sha.slice(0, 8)}' is not a full 40-character SHA`), r.out);
+    assert.ok(!r.out.includes('SHA exemption'), r.out);
+    // A full SHA is read as the commit itself, even with a tag of the same name pointing elsewhere.
+    exemptOnBase(T, `${sha}\n`);
+    git(T, 'update-ref', `refs/tags/${sha}`, 'main');
+    r = runGate(script, T);
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.out.includes('— SHA exemption (.sdlc/gate-exempt on main)'), r.out);
+    fs.rmSync(T, { recursive: true, force: true });
   });
 
   test(`${name} gate: a PR cannot exempt its own commit — the list is read from the base`, () => {
@@ -3517,7 +3531,7 @@ for (const [name, script, tag] of EXEMPT_GATES) {
     const r = runGate(script, T);
     assert.equal(r.code, 1, r.out);
     assert.ok(r.out.includes(`note [${tag}]: .sdlc/gate-exempt entry 'feature' is not a lowercase hex SHA`), r.out);
-    assert.ok(r.out.includes(`entry '${sha.slice(0, 6)}' is not 7 to 40 hex characters`), r.out);
+    assert.ok(r.out.includes(`entry '${sha.slice(0, 6)}' is not a full 40-character SHA`), r.out);
     assert.ok(r.out.includes(`entry '${'d'.repeat(40)}' names no commit here`), r.out);
     fs.rmSync(T, { recursive: true, force: true });
   });

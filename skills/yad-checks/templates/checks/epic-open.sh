@@ -478,12 +478,14 @@ epic_sealed() {
 # A commit already on a shared branch cannot be reworded without rewriting that branch, so one bad trailer
 # would fail every later PR whose range still holds it — and a release PR to the default branch walks the
 # whole release, so it fails again on every release until that commit reaches the base. `.sdlc/gate-exempt`
-# names such commits, one short or full SHA per line, `#` comments allowed; every per-commit gate passes
+# names such commits, one full SHA per line, `#` comments allowed; every per-commit gate passes
 # them, so a commit is waived once, in a reviewed change, instead of on every pipeline. SDLC_GATE_EXEMPT
 # names another path in the repo. The list is read from the BASE, never from this PR — a PR that could
 # list its own commits would wave itself past every gate; an entry counts once it merges. An entry must be
-# a hex SHA of 7 to 40 characters (a branch or tag name would move), and one that names no commit here
-# exempts nothing; both are said as notes, so a typo is visible.
+# a FULL hex SHA: git reads 40 hex characters as a commit, but looks a short one up as a tag or branch name
+# first — so a tag named like a listed short SHA would stand in for another commit, and a short SHA also
+# grows ambiguous as the repo grows. An entry that is not one, or names no commit here, exempts nothing;
+# both are said as notes, so a typo is visible.
 GATE_EXEMPT_FILE="${SDLC_GATE_EXEMPT:-.sdlc/gate-exempt}"
 exempt_shas=''
 load_exempt_shas() {
@@ -498,13 +500,13 @@ load_exempt_shas() {
     case "$_ex" in
       *[!0123456789abcdef]*) echo "note [$1]: ${GATE_EXEMPT_FILE} entry '${_ex}' is not a lowercase hex SHA — it exempts nothing." ; continue ;;
     esac
-    if [ "${#_ex}" -lt 7 ] || [ "${#_ex}" -gt 40 ]; then
-      echo "note [$1]: ${GATE_EXEMPT_FILE} entry '${_ex}' is not 7 to 40 hex characters — it exempts nothing."
+    if [ "${#_ex}" -ne 40 ]; then
+      echo "note [$1]: ${GATE_EXEMPT_FILE} entry '${_ex}' is not a full 40-character SHA — it exempts nothing (a short one could be taken over by a tag or branch of that name)."
       continue
     fi
     _ex_full="$(git rev-parse --verify --quiet "${_ex}^{commit}" 2>/dev/null)" || _ex_full=""
     if [ -z "$_ex_full" ]; then
-      echo "note [$1]: ${GATE_EXEMPT_FILE} entry '${_ex}' names no commit here (or more than one) — it exempts nothing."
+      echo "note [$1]: ${GATE_EXEMPT_FILE} entry '${_ex}' names no commit here — it exempts nothing."
       continue
     fi
     exempt_shas="${exempt_shas}${_ex_full}

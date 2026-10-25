@@ -79,11 +79,11 @@ Every gate stops on its failure except **risk-map**, which is advisory: there a 
   or a missing `specs/<story>/link.md` **FAILS**. Otherwise the trailer is decorative on exempt
   commits and an unlinked `chore:` is indistinguishable from one naming a story that never existed.
 - **SHA exemption** (shared with lineage-check, epic-open and reconcile-debt — one byte-identical block).
-  A commit listed in `.sdlc/gate-exempt` (or `SDLC_GATE_EXEMPT`; one hex SHA of 7–40 characters per
-  line, `#` comments) **PASSes** before anything else is judged. It is for history already on a shared
+  A commit listed in `.sdlc/gate-exempt` (or `SDLC_GATE_EXEMPT`; one full 40-character hex SHA per
+  line, `#` comments; a short SHA is refused, as a tag of that name would stand in for it) **PASSes** before anything else is judged. It is for history already on a shared
   branch whose trailer cannot be reworded — otherwise every later range that holds it, a release PR
   above all, fails again. The list is read **from the base**, never from the PR, so a PR cannot waive
-  its own commits; a branch/tag name, a too-short entry or one that names no commit exempts nothing and
+  its own commits; a branch/tag name, a short SHA or one that names no commit exempts nothing and
   is said as a note.
 - For every other commit, requires a `Task: <story>-<task>` trailer. **FAIL** if absent.
 - The trailer must be a well-formed `<story>-T<NN>` id. **FAIL** on a malformed trailer (e.g.

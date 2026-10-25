@@ -229,15 +229,16 @@ commit reaches the base. List such a commit in `.sdlc/gate-exempt`, and spec-lin
 epic-open and reconcile-debt pass it:
 
 ```
-# one short or full SHA per line; text after # is a comment
-4f2a9c1e  # fix(cart): Task: EP-cart-S03-retry-T02, already on develop
+# one full SHA per line; text after # is a comment
+4f2a9c1e5d3b7a6f8e0c2d4b6a8f0e1c3d5b7a9f  # fix(cart): Task: EP-cart-S03-retry-T02, already on develop
 ```
 
 - The list is read **from the base**, never from the pull request under check, so a pull request
   cannot waive its own commits. Add the entry in its own pull request to the branch the failing pull
   request targets. It counts once it merges.
-- An entry must be a lowercase hex SHA of 7 to 40 characters. A branch or tag name would move, so it
-  is refused.
+- An entry must be a full lowercase hex SHA, 40 characters (`git rev-parse <commit>` prints it). A
+  branch or tag name would move, so it is refused. A short SHA is refused too: git looks a short one
+  up as a tag or branch name first, so a tag named like it would stand in for another commit.
 - `SDLC_GATE_EXEMPT` names another path in the repo.
 - Use it only for history you cannot rewrite. A new commit with a wrong trailer is reworded, not listed.
 
@@ -246,8 +247,8 @@ epic-open and reconcile-debt pass it:
 | `PASS [<gate>]: <sha> '<subject>' — SHA exemption (.sdlc/gate-exempt on <base>)` | Nothing. The commit is listed. |
 | `note [<gate>]: .sdlc/gate-exempt changes in this PR — the list is read from <base>, not from this PR; the new one counts once it merges.` | Merge the list change on its own first, then run the pipeline again. |
 | `note [<gate>]: .sdlc/gate-exempt entry '<entry>' is not a lowercase hex SHA — it exempts nothing.` | Write the commit's SHA, not a branch, tag or `HEAD`. |
-| `note [<gate>]: .sdlc/gate-exempt entry '<entry>' is not 7 to 40 hex characters — it exempts nothing.` | Write at least 7 characters of the SHA. |
-| `note [<gate>]: .sdlc/gate-exempt entry '<entry>' names no commit here (or more than one) — it exempts nothing.` | Check the SHA, or write more of it when a short one matches several commits. |
+| `note [<gate>]: .sdlc/gate-exempt entry '<entry>' is not a full 40-character SHA — it exempts nothing (a short one could be taken over by a tag or branch of that name).` | Write the whole SHA: `git rev-parse <short>`. |
+| `note [<gate>]: .sdlc/gate-exempt entry '<entry>' names no commit here — it exempts nothing.` | Check the SHA, and that CI fetches full history. |
 
 ## spec-link
 
