@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { ok, info, hand, warn, run, readJSON, readJSONStrict, writeJSON, isPlainObject, exists } from './lib.mjs';
+import { ok, info, hand, warn, run, readJSON, readJSONStrict, writeJSON, writeFileAtomic, isPlainObject, exists } from './lib.mjs';
 import { epicIds, epicRoot, epicRel, epicStories, loadLedger, stepStatus, laneStarted, isPassed, readFrontmatter, nextAction, loadAutomation, effectiveAdvance, effectiveAction } from './epic-state.mjs';
 import { DEFAULT_LIFECYCLE, laneOrder, laneAuthorSteps } from './lifecycle.mjs';
 import { epicFiles, PROJECT_FILES } from './manifest.mjs';
@@ -357,7 +357,40 @@ export async function buildStep(root, { story, repo, step, to, reason, via = 'hu
   ok(`${story} / ${repo}: ${step} is ${to}${reopened ? ` again, for ${reopened}` : ''}${to === 'blocked' ? ` — ${String(reason).trim()}` : ''}`);
   if (to === 'done') info(`next: ${lane.currentStep}`);
   hand('commit with `yad checkpoint --push`');
-  return { story, repo, step, status: to, currentStep: lane.currentStep, changed: true };
+  const specKit = step === 'spec' && to === 'in_progress' ? pinSpecKit(root, repo, story) : null;
+  return { story, repo, step, status: to, currentStep: lane.currentStep, changed: true, ...(specKit ? { specKit } : {}) };
+}
+
+// Spec Kit finds the story folder it writes into through `.specify/feature.json` (issue #348): pinned to
+// specs/<story> when the spec step starts, so /speckit.plan and the rest never write into the previous
+// story's folder. Only in a repo that has a `.specify/` folder, i.e. uses Spec Kit. The step is already
+// recorded, so nothing here fails it: a problem is a warning with the fix. The file is the clone's working
+// state, as Spec Kit's own writes are — it is not committed.
+export function pinSpecKit(root, repo, story) {
+  let checkout;
+  try { ({ checkout } = registeredRepo(root, repo)); } catch (e) { warn(`Spec Kit folder not pinned: ${e.message}`); return null; }
+  if (!checkout) { info(`${repo} is not checked out here, so Spec Kit's feature folder was not pinned`); return null; }
+  const dir = path.join(checkout, '.specify');
+  let isDir = false;
+  try { isDir = fs.lstatSync(dir).isDirectory(); } catch { /* no .specify/: the repo does not use Spec Kit */ }
+  if (!isDir) return null;
+  const file = path.join(dir, 'feature.json');
+  const featureDirectory = `specs/${story}`;
+  const fix = `set it by hand: {"feature_directory":"${featureDirectory}"} in ${repo}/.specify/feature.json`;
+  let have = {};
+  try {
+    const st = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (st && !st.isFile()) { warn(`${repo}/.specify/feature.json is not a plain file, so it was left alone — ${fix}`); return null; }
+    if (st) have = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch { warn(`${repo}/.specify/feature.json cannot be read, so it was left alone — ${fix}`); return null; }
+  if (!isPlainObject(have)) { warn(`${repo}/.specify/feature.json is not a JSON object, so it was left alone — ${fix}`); return null; }
+  const changed = have.feature_directory !== featureDirectory;
+  if (changed) {
+    try { writeFileAtomic(file, JSON.stringify({ ...have, feature_directory: featureDirectory }) + '\n'); } catch (e) { warn(`could not write ${repo}/.specify/feature.json: ${e.message} — ${fix}`); return null; }
+  }
+  ok(`Spec Kit's feature folder in ${repo} ${changed ? 'is now' : 'is already'} ${featureDirectory}`);
+  hand(`start the spec with \`SPECIFY_FEATURE_DIRECTORY=${featureDirectory}\` — /speckit.specify makes a numbered folder of its own without it`);
+  return { file: `${repo}/.specify/feature.json`, featureDirectory, changed };
 }
 
 export async function buildTrust(root, { story, repo, step, verdict, signals = {}, ranBy = 'human', note = null, uid = null, task = null, today } = {}) {

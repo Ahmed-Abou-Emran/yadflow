@@ -153,6 +153,12 @@ missing** says. If yad cannot answer, check for `/speckit.*` slash-commands and/
 frontmatter (`speckit: installed | not-installed`).
 
 ### Step 5 — Run the heavy ceremony ONCE (or degrade)
+**Start the step (#348).** Run `yad build step <story> --repo <repo> spec in_progress` from the Product
+(after `yad build start <story> --repo <repo>` if the story has no lane in this repo yet). It records the
+step, and in a repo that uses Spec Kit it points `.specify/feature.json` at `specs/<story>`, so Spec Kit
+never writes into the previous story's folder. Run it again on a resume: it changes nothing that is
+already right.
+
 **Ask first (#357).** Before the long part of the ceremony, ask the batch that **Ask the human-only
 questions first** above describes. Its items come from the story, `epic.md`, the contract read in
 Step 3, and the first draft of `spec.md`. Record the answers in `spec.md`, under `## Clarifications`,
@@ -162,7 +168,9 @@ as `- Q: <question> → A: <answer>` lines below a `### Session <YYYY-MM-DD>` he
 **Used** — from inside `demo-repos/<repo>/`, drive, in order:
 `/speckit.specify` → (ask the batch) → `/speckit.clarify` → `/speckit.plan` → `/speckit.analyze` →
 `/speckit.checklist` → `/speckit.tasks`. **Pin the feature to `<story>`** (do not accept an
-auto-slug). Seed `specify` from the story's acceptance criteria and the contract elements from Step 3.
+auto-slug): start `/speckit.specify` with `SPECIFY_FEATURE_DIRECTORY=specs/<story>`, because without it
+specify makes a numbered folder of its own. Before `/speckit.plan`, check that `.specify/feature.json`
+still names `specs/<story>`. Seed `specify` from the story's acceptance criteria and the contract elements from Step 3.
 On a resume after a question halt, keep the `spec.md` already drafted: do not run `/speckit.specify`
 again. Answer `/speckit.clarify`'s questions from the batch answers. A question it asks that the batch did not
 cover is a late one: ask all such questions together, as rule 4 of the batch says.

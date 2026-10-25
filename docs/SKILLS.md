@@ -173,7 +173,9 @@ for it" table is in the [team guide §11](../TEAM-GUIDE.md).
 
 - **`yad-spec`** — Step A. For one ready-for-build story and one of its repos, run the Spec Kit ceremony
   once (specify → clarify → plan → analyze → checklist → tasks) → `specs/<story-id>/`. Drives `/speckit.*`
-  when installed; references the locked contract — never re-invents the surface. Before the long work,
+  when installed; references the locked contract — never re-invents the surface. It starts the step with
+  `yad build step <story> --repo <repo> spec in_progress`, which points Spec Kit's `.specify/feature.json`
+  at `specs/<story-id>/` (#348). Before the long work,
   it asks every human-only decision (security trade-offs, secrets and tokens, contract changes, changes
   that cannot be undone) and every open question in one batch, and records the answers in `spec.md`
   (#357).
