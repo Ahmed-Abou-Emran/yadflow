@@ -108,11 +108,11 @@ change it here.
 **Then ask the batch (#357)** that **Ask the human-only questions first** above describes, before
 writing any code. Read `spec.md`'s `## Clarifications` first: `yad-spec` recorded its answers there.
 Ask only what is still open for THIS task, from its block in `tasks.md`, `plan.md` and the contract
-slice. Record the answers in the commit body (Step 6), in a `Decisions:` paragraph above the trailer
+slice (on a light spec: its block and `## Plan` in `spec.md`). Record the answers in the commit body (Step 6), in a `Decisions:` paragraph above the trailer
 block — not in `spec.md`, which is outside the task's declared files. Until that commit they are on
 no disk, so after a question halt the person gives the answers to the resumed run, which uses them
 and does not ask again. If an answer changes what
-`spec.md`, `plan.md` or `tasks.md` says, that is a spec gap: STOP and re-run `yad-spec`, as for a file
+`spec.md`, `plan.md` or `tasks.md` says (a light spec: anything in `spec.md`), that is a spec gap: STOP and re-run `yad-spec`, as for a file
 outside the declared list in Step 4.
 
 ### Step 4 — Implement the task (dev lens), inside the declared files ONLY

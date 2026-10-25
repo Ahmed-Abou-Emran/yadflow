@@ -1167,8 +1167,16 @@ export async function buildDone(root, { story, today, fetch = true } = {}) {
     }
     // A light spec keeps its tasks in spec.md (#348) — only when its link.md says so.
     const link = show('link.md');
-    if (!link.ok || !isLightSpec(link.stdout)) { owed[repo] = null; why[repo] = `no specs/${story}/tasks.md on origin/${branch}`; continue; }
-    const spec = show('spec.md');
+    const spec = link.ok ? show('spec.md') : null;
+    if (!link.ok || !isLightSpec(link.stdout)) {
+      owed[repo] = null;
+      // A tasks block with no light mode named is most likely a link.md the reader cannot parse (CRLF, a
+      // quoted value): say so, rather than only that tasks.md is missing.
+      why[repo] = spec?.ok && lightTasksBlock(spec.stdout) !== null
+        ? `no specs/${story}/tasks.md on origin/${branch}, and its link.md does not say \`spec-mode: light\` (plain, on its own line), so the tasks block in spec.md is not read`
+        : `no specs/${story}/tasks.md on origin/${branch}`;
+      continue;
+    }
     const block = spec.ok ? lightTasksBlock(spec.stdout) : null;
     if (block === null) {
       owed[repo] = null;

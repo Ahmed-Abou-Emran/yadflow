@@ -1504,7 +1504,9 @@ test('yad build done reads a light spec\'s tasks from the marked block of spec.m
 test('yad build done: a spec.md tasks block counts only for a light spec, and only when it is whole (#348)', () => {
   const cases = [
     // link.md does not say light: the missing tasks.md is missing, whatever spec.md holds.
-    [{ 'specs/EP-l-S01/link.md': LIGHT_LINK.replace('spec-mode: light\n', ''), 'specs/EP-l-S01/spec.md': lightSpec(LIGHT_TASKS_OK) }, /no specs\/EP-l-S01\/tasks\.md on origin\/main/],
+    [{ 'specs/EP-l-S01/link.md': LIGHT_LINK.replace('spec-mode: light\n', ''), 'specs/EP-l-S01/spec.md': lightSpec(LIGHT_TASKS_OK) }, /its link\.md does not say `spec-mode: light` \(plain, on its own line\), so the tasks block in spec\.md is not read/],
+    // A link.md with Windows line endings is not read as light: named, not hidden behind "no tasks.md".
+    [{ 'specs/EP-l-S01/link.md': LIGHT_LINK.replace(/\n/g, '\r\n'), 'specs/EP-l-S01/spec.md': lightSpec(LIGHT_TASKS_OK) }, /its link\.md does not say `spec-mode: light`/],
     [{ 'specs/EP-l-S01/link.md': LIGHT_LINK.replace('spec-mode: light', 'spec-mode: full') }, /no specs\/EP-l-S01\/tasks\.md on origin\/main/],
     [{ 'specs/EP-l-S01/link.md': LIGHT_LINK }, /says spec-mode: light, but there is no spec\.md/],
     [{ 'specs/EP-l-S01/link.md': LIGHT_LINK, 'specs/EP-l-S01/spec.md': lightSpec('## T01 — no markers\n') }, /is a light spec without one <!-- yad:tasks --> … <!-- \/yad:tasks --> block/],
@@ -1537,4 +1539,21 @@ test('the light-spec markers the skills write are the ones yad build done reads 
   // The example in spec-handoff.md is a block build done can read.
   const example = read('skills/yad-spec/references/spec-handoff.md').match(/```markdown\n(# Spec — [\s\S]*?)```/)[1];
   assert.match(lightTasksBlock(example), /^## T01 — /m);
+});
+
+test('yad build done: a tasks.md that exists wins over a light spec\'s tasks block (#348 review 1)', () => {
+  const { W, P, dir, sha } = workspace({ spec: {
+    'specs/EP-l-S01/tasks.md': '# Tasks\n\n- [ ] T01 — create the order\n',
+    'specs/EP-l-S01/link.md': LIGHT_LINK,
+    'specs/EP-l-S01/spec.md': lightSpec(LIGHT_TASKS_OK),
+  } });
+  try {
+    walkToReview(P);
+    let r = yad(P, 'build', 'ship', 'EP-l-S01', '--task', 'T01', '--repo', 'api', '--merge-commit', sha.T01);
+    assert.equal(r.code, 0, r.out);
+    r = yad(P, 'build', 'done', 'EP-l-S01');
+    assert.equal(r.code, 0, r.out);
+    assert.doesNotMatch(r.out, /T02/);
+    assert.equal(status(dir), 'shipped');
+  } finally { fs.rmSync(W, { recursive: true, force: true }); }
 });

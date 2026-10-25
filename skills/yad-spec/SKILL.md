@@ -150,7 +150,7 @@ contract here. (On a route that HAS one; the short lanes do not — see below.)
 Read Spec Kit's entry in `yad toolbox list --json --dir demo-repos/<repo>`, as **When a tool is
 missing** says. If yad cannot answer, check for `/speckit.*` slash-commands and/or
 `demo-repos/<repo>/.specify/`. Record the result for Step 6's
-frontmatter (`speckit: installed | not-installed`).
+frontmatter (`speckit: installed | not-installed`; a light spec records `not-used` whatever is found).
 
 ### Step 5 — Run the heavy ceremony ONCE (or degrade)
 **Start the step (#348).** From the Product, run `yad build step <story> --repo <repo> <step> in_progress`,
@@ -174,7 +174,9 @@ only when ALL of these hold:
   `depth: behavioral-no-surface`;
 - the story's **Notes for build** says the contract surface touched is none, and Step 3 found nothing
   to quote, so the spec needs no `contracts/` slice;
-- nothing marks it high risk (a "Risk level: high" note, or the person says so).
+- nothing marks it high risk: no step in `epics/<epic>/.sdlc/state.json` carries an `auth` or
+  `payments` risk tag, the code repo's `.sdlc/risk-map` on its default branch gives none of the folders
+  the tasks will touch the level `high`, and the person has not called it high risk.
 
 Never suggest it for a story that touches the contract, and never choose it yourself: ask in the batch
 ("Light spec — one `spec.md` holding the spec, the plan and the tasks?"), with the reason it qualifies,
@@ -187,6 +189,9 @@ and record the answer in `## Clarifications`. Without a clear yes, write the ful
   `yad build done` and `yad-implement` read the tasks only from between the markers;
 - does not run Spec Kit, whose commands need `plan.md` and `tasks.md`. Step 6 records `speckit: not-used`
   and `spec-mode: light`.
+
+The spec leg writes the whole light spec, tasks included. When the lane then reaches the `tasks` leg,
+start that step as above and check that the tasks block is there and whole; write nothing else.
 
 
 **Used** (and the spec is not light) — from inside `demo-repos/<repo>/`, drive, in order:

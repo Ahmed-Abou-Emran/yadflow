@@ -182,7 +182,7 @@ The story frontmatter `status` reflects build progress:
 
 - `in-build` — at least one, but not all, of the story's tasks (from `specs/<story>/tasks.md`, or the
   marked tasks block of a light spec's `spec.md`, #348) have ship records.
-- `shipped` — **every** task in `tasks.md` has a ship record.
+- `shipped` — **every** task in `tasks.md` (or the light spec's tasks block) has a ship record.
 
 You write this flip into `stories/<story>.md`, but **do not hand-commit it** — the next
 `yad checkpoint --push` carries it in the same `chore(product)` commit as the ledgers (the story now has a
