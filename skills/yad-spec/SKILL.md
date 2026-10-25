@@ -177,7 +177,8 @@ only when ALL of these hold:
 - nothing marks it high risk: no step in `epics/<epic>/.sdlc/state.json` carries an `auth` or
   `payments` risk tag; in the code repo's `.sdlc/risk-map` on its default branch, no file the tasks will
   touch has `high` as its level — a file's level is the one on the deepest directory listed above it,
-  `guessed` counts the same as `confirmed`, and an `unset` line or a file no line covers is not high;
+  `guessed` counts the same as `confirmed`, and an `unset` line or a file no line covers is not high (a
+  map whose header yad does not know — `yad risk-map check` says so — gives no answer: do not offer light);
   and the person has not called it high risk.
 
 Never suggest it for a story that touches the contract, and never choose it yourself: ask in the batch
@@ -185,7 +186,8 @@ Never suggest it for a story that touches the contract, and never choose it your
 and record the answer in `## Clarifications`. Without a clear yes, write the full spec. A light spec:
 - is **only** `spec.md` and `link.md` under `demo-repos/<repo>/specs/<story>/`. `spec.md` holds the spec,
   then `## Plan` (the approach, in a few lines), then `## Tasks`. No `research.md`, `data-model.md`,
-  `plan.md`, `tasks.md` or `contracts/`;
+  `plan.md`, `tasks.md` or `contracts/`. A re-run that turns a full spec into a light one deletes those
+  files, since a `tasks.md` that is still there wins over the light block;
 - keeps its tasks between the two marker lines `<!-- yad:tasks -->` and `<!-- /yad:tasks -->` under
   `## Tasks`, once each, in the same shape as `tasks.md` (`## T01 — <goal>` and a **Files:** list).
   `yad build done` and `yad-implement` read the tasks only from between the markers;
@@ -195,8 +197,8 @@ and record the answer in `## Clarifications`. Without a clear yes, write the ful
 **When it qualifies, ask before any Spec Kit command.** Draft `spec.md` by hand and ask the batch, the
 light question in it, before running any `/speckit.*` command, so the choice is known before the path
 is. On a yes, write the light spec. On a no, take one of the two paths below; on **Used**, the batch is
-already asked, so carry the recorded `## Clarifications` lines into the `spec.md` that `/speckit.specify`
-writes instead of asking again.
+already asked, so copy the recorded `## Clarifications` lines out first (`/speckit.specify` replaces
+`spec.md` with its template), then put them into the `spec.md` it writes instead of asking again.
 
 The spec leg writes the whole light spec, tasks included. When the lane then reaches the `tasks` leg,
 start that step as above and check that the tasks block is there and whole; write nothing else.
@@ -208,8 +210,9 @@ auto-slug): start `/speckit.specify` with `SPECIFY_FEATURE_DIRECTORY=specs/<stor
 specify makes a numbered folder of its own. Before `/speckit.plan` and again before `/speckit.tasks`,
 check that `.specify/feature.json` still names `specs/<story>`; if it does not, set it back to
 `{"feature_directory":"specs/<story>"}`. Seed `specify` from the story's acceptance criteria and the contract elements from Step 3.
-On a resume after a question halt, keep the `spec.md` already drafted: do not run `/speckit.specify`
-again. Answer `/speckit.clarify`'s questions from the batch answers. A question it asks that the batch did not
+On a resume after a question halt, keep the `spec.md` that `/speckit.specify` already wrote: do not run
+it again. A hand draft made only to ask the light question is not that: run `/speckit.specify` and carry
+its `## Clarifications` in. Answer `/speckit.clarify`'s questions from the batch answers. A question it asks that the batch did not
 cover is a late one: ask all such questions together, as rule 4 of the batch says.
 `/speckit.constitution` and `/speckit.implement` are **out of scope for Step A** (implement is Step B).
 
