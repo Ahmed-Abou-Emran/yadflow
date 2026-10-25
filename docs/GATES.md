@@ -256,7 +256,7 @@ epic-open and reconcile-debt pass it:
 | `note [<gate>]: .sdlc/gate-exempt changes in this PR — the list is read from <base>, not from this PR; the new one counts once it merges.` | Merge the list change on its own first, then run the pipeline again. |
 | `note [<gate>]: .sdlc/gate-exempt entry '<entry>' is not a lowercase hex SHA — it exempts nothing.` | Write the commit's SHA, not a branch, tag or `HEAD`. |
 | `note [<gate>]: .sdlc/gate-exempt entry '<entry>' is not a full SHA (40 characters, or 64 in a SHA-256 repo) — it exempts nothing (a short one could be taken over by a tag or branch of that name).` | Write the whole SHA: `git rev-parse <short>`. |
-| `note [<gate>]: .sdlc/gate-exempt entry '<entry>' names no commit here (or is not this repo's full SHA length) — it exempts nothing.` | Check the SHA, that it is this repository's length (40, or 64 in a SHA-256 repository), and that CI fetches full history. |
+| `note [<gate>]: .sdlc/gate-exempt entry '<entry>' is not the full SHA of a commit here — it exempts nothing.` | Check the SHA: it must be a commit's, not an annotated tag's or a tree's (`git rev-parse <tag>^{commit}` prints the commit's); it must be this repository's length (40, or 64 in a SHA-256 repository); and CI must fetch full history. |
 
 ## spec-link
 

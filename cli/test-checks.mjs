@@ -3525,6 +3525,18 @@ for (const [name, script, tag] of EXEMPT_GATES) {
     fs.rmSync(T, { recursive: true, force: true });
   });
 
+  test(`${name} gate: an annotated tag's own SHA exempts nothing — the list names commits`, () => {
+    const { T } = badTrailerRepo();
+    git(T, '-c', 'tag.gpgsign=false', 'tag', '-a', '-m', 'a tag', 'v-bad', 'feature');
+    const tagSha = git(T, 'rev-parse', 'v-bad').toString().trim();
+    exemptOnBase(T, `${tagSha}\n`);
+    const r = runGate(script, T);
+    assert.equal(r.code, 1, r.out);
+    assert.ok(!r.out.includes('SHA exemption'), r.out);
+    assert.ok(r.out.includes(`entry '${tagSha}' is not the full SHA of a commit here`), r.out);
+    fs.rmSync(T, { recursive: true, force: true });
+  });
+
   test(`${name} gate: hex of the other hash's length is never read as a tag of that name`, () => {
     // In a SHA-1 repo git looks 64 hex characters up as a ref name first.
     const { T } = badTrailerRepo();
@@ -3534,7 +3546,7 @@ for (const [name, script, tag] of EXEMPT_GATES) {
     const r = runGate(script, T);
     assert.equal(r.code, 1, r.out);
     assert.ok(!r.out.includes('SHA exemption'), r.out);
-    assert.ok(r.out.includes(`entry '${fake}' names no commit here (or is not this repo's full SHA length)`), r.out);
+    assert.ok(r.out.includes(`entry '${fake}' is not the full SHA of a commit here`), r.out);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
@@ -3566,7 +3578,7 @@ for (const [name, script, tag] of EXEMPT_GATES) {
     assert.equal(r.code, 1, r.out);
     assert.ok(r.out.includes(`note [${tag}]: .sdlc/gate-exempt entry 'feature' is not a lowercase hex SHA`), r.out);
     assert.ok(r.out.includes(`entry '${sha.slice(0, 6)}' is not a full SHA (40 characters, or 64 in a SHA-256 repo)`), r.out);
-    assert.ok(r.out.includes(`entry '${'d'.repeat(40)}' names no commit here`), r.out);
+    assert.ok(r.out.includes(`entry '${'d'.repeat(40)}' is not the full SHA of a commit here`), r.out);
     fs.rmSync(T, { recursive: true, force: true });
   });
 
