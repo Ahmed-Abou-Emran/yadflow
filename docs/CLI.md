@@ -1463,7 +1463,8 @@ testing connectors), `yad-connect-design`, and `yad-learn` and `yad-connect-lear
   `source: repomix-unavailable` (written by `yad-backfill` in a spec's frontmatter and by `yad-connect-repos`
   in `repos.json`; `yad setup` writes `source: repomix` whether or not it packed, and `yad repo refresh`
   never changes `source`). It means the
-  tool was not used, whatever the reason. The skill also tells you which tools it used and why.
+  tool was not used, whatever the reason — except where the entry's `recordsElse` names another case:
+  a light spec (#348) never runs Spec Kit and records `speckit: not-used`. The skill also tells you which tools it used and why.
 - **The toolbox owns the words.** To change a fallback, change `cli/toolbox.mjs` and run
   `node scripts/skill-fallbacks.mjs`, which rewrites every section and takes it out of a skill no tool
   names any more. The section ends with the line `<!-- end: When a tool is missing -->`, and the script

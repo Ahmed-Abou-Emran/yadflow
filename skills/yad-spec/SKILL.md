@@ -180,14 +180,17 @@ only when ALL of these hold:
 
 **Reading the risk map for it.** The tasks do not exist yet, so judge the files the work will touch
 from the draft `spec.md` and the code; if you cannot say which files, do not offer light. Read
-`.sdlc/risk-map` as the default branch has it, with `git -C demo-repos/<repo> show
-origin/<default>:.sdlc/risk-map` (no file there: the map gives no `high`). `yad risk-map check` reads the
+`.sdlc/risk-map` as the default branch has it (`default_branch` in the Product's `.sdlc/repos.json`, else the
+clone's `origin/HEAD`):
+fetch it, then `git -C demo-repos/<repo> show origin/<default>:.sdlc/risk-map`. If the file is not on
+that branch, the map gives no `high`; any other failure (no such branch, no fetch) is no answer. `yad risk-map check` reads the
 clone's working copy instead, so use its report only when the clone is on the default branch with the
 map unchanged. A file's level is the one on the deepest directory listed above it (`./` covers only the
 files at the root); `guessed` counts the same as `confirmed`; an `unset` line, or a file no line covers,
-is not high. The map gives **no answer**, so do not offer light, when its first line is not
-`# yad-risk-map v1`, or a line other than a `#` comment is not `<dir>/ <level> <guessed|confirmed>`
-(with an optional `# reason`).
+is not high; a directory listed twice takes its first line. The map gives **no answer**, so do not
+offer light, when its first line is not `# yad-risk-map v1`, or a line (blank lines and `#` comments
+aside) is neither `<dir>/ <high|medium|low> <guessed|confirmed>` nor `<dir>/ unset` (optionally
+`<dir>/ unset guessed`), each with an optional ` # reason`, or a directory is listed twice.
 
 Never suggest it for a story that touches the contract, and never choose it yourself: ask in the batch
 ("Light spec — one `spec.md` holding the spec, the plan and the tasks?"), with the reason it qualifies,
@@ -218,6 +221,8 @@ auto-slug): start `/speckit.specify` with `SPECIFY_FEATURE_DIRECTORY=specs/<stor
 specify makes a numbered folder of its own. Before `/speckit.plan` and again before `/speckit.tasks`,
 check that `.specify/feature.json` still names `specs/<story>`; if it does not, set it back to
 `{"feature_directory":"specs/<story>"}`. Seed `specify` from the story's acceptance criteria and the contract elements from Step 3.
+If Step 3 found nothing to quote, keep `contracts/` out: delete any `contracts/` folder `/speckit.specify`
+or `/speckit.plan` writes, since lines that are not quoted from the lock fail contract-check.
 On a resume after a question halt, keep the `spec.md` that `/speckit.specify` already wrote: do not run
 it again. A hand draft made only to ask the light question is not that: run `/speckit.specify` and carry
 its `## Clarifications` in. Tell them apart by `specs/<story>/checklists/requirements.md`: specify
