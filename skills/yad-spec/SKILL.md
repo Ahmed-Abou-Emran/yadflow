@@ -43,7 +43,7 @@ Tell the person which tools you used and which fallbacks, and why.
 
 - **Spec Kit** (`spec-kit`). Use it when its entry has `used: true` and `status.state` is `installed` or `available`. Otherwise — not found, its plugin turned off in Claude Code, or the team chose not to use it (`yad toolbox remove spec-kit`) — use the fallback.
   - Fallback — yad-spec writes the same spec files by hand, in Spec Kit's layout.
-  - Record `speckit: not-installed`. It means the tool was not used, whatever the reason.
+  - Record `speckit: not-installed`. It means the tool was not used, whatever the reason — except a light spec, which never runs Spec Kit and records `speckit: not-used` (#348).
 
 <!-- end: When a tool is missing -->
 
@@ -175,12 +175,19 @@ only when ALL of these hold:
 - the story's **Notes for build** says the contract surface touched is none, and Step 3 found nothing
   to quote, so the spec needs no `contracts/` slice;
 - nothing marks it high risk: no step in `epics/<epic>/.sdlc/state.json` carries an `auth` or
-  `payments` risk tag; in the code repo's `.sdlc/risk-map` on its default branch, no file the tasks will
-  touch has `high` as its level — a file's level is the one on the deepest directory listed above it,
-  `guessed` counts the same as `confirmed`, and an `unset` line or a file no line covers is not high (a
-  map whose header yad does not know, or with a line it cannot read — `yad risk-map check` reports both
-  — gives no answer: do not offer light);
-  and the person has not called it high risk.
+  `payments` risk tag; the code repo's risk map gives no file the work will touch the level `high`
+  (below); and the person has not called it high risk.
+
+**Reading the risk map for it.** The tasks do not exist yet, so judge the files the work will touch
+from the draft `spec.md` and the code; if you cannot say which files, do not offer light. Read
+`.sdlc/risk-map` as the default branch has it, with `git -C demo-repos/<repo> show
+origin/<default>:.sdlc/risk-map` (no file there: the map gives no `high`). `yad risk-map check` reads the
+clone's working copy instead, so use its report only when the clone is on the default branch with the
+map unchanged. A file's level is the one on the deepest directory listed above it (`./` covers only the
+files at the root); `guessed` counts the same as `confirmed`; an `unset` line, or a file no line covers,
+is not high. The map gives **no answer**, so do not offer light, when its first line is not
+`# yad-risk-map v1`, or a line other than a `#` comment is not `<dir>/ <level> <guessed|confirmed>`
+(with an optional `# reason`).
 
 Never suggest it for a story that touches the contract, and never choose it yourself: ask in the batch
 ("Light spec — one `spec.md` holding the spec, the plan and the tasks?"), with the reason it qualifies,
@@ -221,7 +228,8 @@ cover is a late one: ask all such questions together, as rule 4 of the batch say
 **Not used (degrade)** (and the spec is not light) — draft `spec.md` first, ask the batch, record the answers in it, and only then
 write the rest (after a "no" to light, the batch is already asked: do not ask it again). Hand-author the identical files in Spec Kit's layout under
 `demo-repos/<repo>/specs/<story>/`: `spec.md`, `research.md`, `data-model.md`, `contracts/`,
-`plan.md`, `tasks.md`. The content is what a real Spec Kit run would produce, traceable to the story's
+`plan.md`, `tasks.md`. Write `contracts/` only when Step 3 found surface to quote: a story with nothing to
+quote has no `contracts/` folder at all (git keeps no empty folder, and an empty one quotes nothing). The content is what a real Spec Kit run would produce, traceable to the story's
 acceptance criteria and the locked contract surface. `tasks.md` MUST be numbered atomic tasks (`T01…`),
 each declaring the files it may touch, so Step B's "stay inside the declared files" rule has something
 to read. See `references/spec-handoff.md` for the exact file map and per-file degradation rules.

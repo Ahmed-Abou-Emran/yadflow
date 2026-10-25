@@ -44,7 +44,7 @@ demo-repos/<repo>/specs/<story-id>/
   research.md     # decisions/unknowns resolved during clarify
   data-model.md   # entities/fields THIS repo implements (quoting the shared ones from the contract)
   contracts/      # the API/event surface this repo implements (quoted from the locked contract)
-                  # OMITTED ENTIRELY on a short-lane epic — see below
+                  # OMITTED ENTIRELY on a short-lane epic, and for a story with nothing to quote — see below
   plan.md         # technical approach for this repo
   tasks.md        # numbered atomic tasks (T01…), each scoped to the files it may touch
   link.md         # back-pointer to the story in the product repo (Step A adds this; not a Spec Kit file)
@@ -115,6 +115,8 @@ comes from the story's acceptance criteria and the **locked contract surface** �
   Markdown (`.md`). The contract-check gate then passes the slice with **no** `Contract-Change` trailer,
   because it can prove every quoted line is in the lock (issue #344). Never reword, reorder or skip a line
   inside a block: that is a surface change, and it needs the trailer.
+  **Leave the folder out when there is nothing to quote** — a story on a locked epic that touches none of
+  the surface has no `contracts/` folder (an empty one cannot be committed and quotes nothing).
   **Do NOT create this folder on a short-lane epic** (`profile: chore` or `spike`). Those routes have
   no architecture step, so there is no locked `contract.md` to quote and no lock for CI to check the
   quote against — the gate refuses a slice under a lockless epic. A short-lane story consumes the
