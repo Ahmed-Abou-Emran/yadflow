@@ -1,3 +1,58 @@
+# [4.12.0](https://github.com/abdelrahmannasr/yadflow/compare/v4.11.0...v4.12.0) (2026-11-15)
+
+
+### Bug Fixes
+
+* **brand:** review round 1 — linear-time reading, a source path inside the Product, safe terminal text (E184, [#553](https://github.com/abdelrahmannasr/yadflow/issues/553)) ([6aff2ea](https://github.com/abdelrahmannasr/yadflow/commit/6aff2eafdf065688067236572f24f34bf630f520))
+* **brand:** review round 2 — the dark block read inside itself; primary checked as link text (E184, [#553](https://github.com/abdelrahmannasr/yadflow/issues/553)) ([c67e888](https://github.com/abdelrahmannasr/yadflow/commit/c67e888fcc943b95fa6afef519959db54abafe9e)), closes [#9466f8](https://github.com/abdelrahmannasr/yadflow/issues/9466f8)
+* **brand:** review round 3 — DESIGN.md's CSS read as rules in one pass (E184, [#553](https://github.com/abdelrahmannasr/yadflow/issues/553)) ([3a363d9](https://github.com/abdelrahmannasr/yadflow/commit/3a363d9257b1758a56bb0d22f6b7e0d9010dea69))
+* **brand:** review round 4 — markdown prose, fences and html.dark read right (E184, [#553](https://github.com/abdelrahmannasr/yadflow/issues/553)) ([cac56be](https://github.com/abdelrahmannasr/yadflow/commit/cac56be6846c70dc34819ecead9d3beab4f22dff))
+* **brand:** review round 5 — :not(.dark) is light; a /* in prose is not a comment (E184, [#553](https://github.com/abdelrahmannasr/yadflow/issues/553)) ([034c995](https://github.com/abdelrahmannasr/yadflow/commit/034c995689ad0c40f4d3859b71ba43d4c4aad56f))
+* **brand:** review round 6 — a comment after a brace is a comment; nested :not() (E184, [#553](https://github.com/abdelrahmannasr/yadflow/issues/553)) ([a390ddc](https://github.com/abdelrahmannasr/yadflow/commit/a390ddc309554b910045cf09d276b3c9559fbe5b))
+* **brand:** review round 7 — a fenced DESIGN.md is read only inside its CSS fences (E184, [#553](https://github.com/abdelrahmannasr/yadflow/issues/553)) ([fb908f8](https://github.com/abdelrahmannasr/yadflow/commit/fb908f8a3a022332b0e6defb567517e83ccbfa66))
+* **brand:** review round 8 — fences read as CommonMark does, each on its own (E184, [#553](https://github.com/abdelrahmannasr/yadflow/issues/553)) ([5e5d989](https://github.com/abdelrahmannasr/yadflow/commit/5e5d989a7388d8ebf8a76ac41f0e791bea22b8a0))
+* **brand:** review round 9 — the light look is the first :root rule with colours (E184, [#553](https://github.com/abdelrahmannasr/yadflow/issues/553)) ([0ee5f21](https://github.com/abdelrahmannasr/yadflow/commit/0ee5f21dbc01b54a3c2646a3a005e509062a6ad5))
+* **local-setup:** CodeQL — refuse `--!>` too, and the version test builds no regex ([1cb4c65](https://github.com/abdelrahmannasr/yadflow/commit/1cb4c65b4de54fb34b76f102d297d360687542bf))
+* **local-setup:** review round 1 — nothing hidden, the view as text, add writes only the team list (E185, part 3) ([558b46a](https://github.com/abdelrahmannasr/yadflow/commit/558b46a59a991f609307939c07db4a77b5aecf30))
+* **local-setup:** review round 1 — the agent sees every command first, upkeep is not only an update, done and skip start no gh they do not need (E185) ([175ba90](https://github.com/abdelrahmannasr/yadflow/commit/175ba908cd56072b8b767603395d2f0b7593328d))
+* **local-setup:** review round 1 — the notice runs yad's own copy in git's folder, never the Product's file (E185, part 4) ([ffaf7f9](https://github.com/abdelrahmannasr/yadflow/commit/ffaf7f90e9901ae9505f85e673c4f1451ebf1212))
+* **local-setup:** review round 1 — vetted only by hash, markers refused, commands shown exactly (E185) ([936aeac](https://github.com/abdelrahmannasr/yadflow/commit/936aeac0549602624a294a8bca3ee3307c46930b))
+* **local-setup:** review round 2 — a person step's commands are the person's, upkeep hands over person steps, done and skip run no extra checks (E185) ([fc1dea6](https://github.com/abdelrahmannasr/yadflow/commit/fc1dea64db806f9cbbaee073bbfcc6e37f5139fb))
+* **local-setup:** review round 2 — nested secrets found, toolbox files read as before, the invite is update's (E185, part 3) ([03b9a1d](https://github.com/abdelrahmannasr/yadflow/commit/03b9a1d45f70a148a2462ae3acb004044fdf7e7d))
+* **local-setup:** review round 2 — the notice in a linked worktree, a hand-wired hook, off removes any copy (E185, part 4) ([6d36755](https://github.com/abdelrahmannasr/yadflow/commit/6d367554cb1169c9056fe2a279de644eb5178fdf))
+* **local-setup:** review round 2 — version skew, the view's PR rule, invisible characters (E185) ([8f1007f](https://github.com/abdelrahmannasr/yadflow/commit/8f1007f38bda4cb77a159fda3a48dfcd875cbd69))
+* **local-setup:** review round 3 — --api-key= found again, every bit of HTML in the view escaped (E185, part 3) ([be6da2f](https://github.com/abdelrahmannasr/yadflow/commit/be6da2f7908b693e95e06323adada50f0ffcc80f))
+* **local-setup:** review round 3 — "not vetted" never softened, no lowered CLI version (E185) ([5b724ef](https://github.com/abdelrahmannasr/yadflow/commit/5b724ef1e313512c6deee26ce04b1f296b7d06b3))
+* **local-setup:** review round 3 — a husky hook with yad's line is wired; only a real line counts (E185, part 4) ([f1180a9](https://github.com/abdelrahmannasr/yadflow/commit/f1180a9db2d0e730d96364fd4498a81c963aacd7))
+* **local-setup:** review round 4 — a hand-wired hook is read where git runs it (E185, part 4) ([0772ec1](https://github.com/abdelrahmannasr/yadflow/commit/0772ec19134c46113099c7c3a1b7d145a4c9e51e))
+* **local-setup:** review round 4 — a quoted value is read whole; an empty value is not a secret (E185, part 3) ([47b7ff4](https://github.com/abdelrahmannasr/yadflow/commit/47b7ff4a1a03aa4dd381c850748c6f857950437d))
+* **local-setup:** review round 4 — the machine section names unvetted steps, plain spaces only (E185) ([2006cdd](https://github.com/abdelrahmannasr/yadflow/commit/2006cddc402e6f1862e743979307a21c2ed1db5a))
+* **local-setup:** review round 5 — a hook file with any carriage return is not wired (E185, part 4) ([9728616](https://github.com/abdelrahmannasr/yadflow/commit/9728616a35132a0f104999bb5e76d46957ded3b7))
+* **local-setup:** review round 5 — a prompt's closing quote opens nothing; a quoted & value is a secret (E185, part 3) ([fc38d5e](https://github.com/abdelrahmannasr/yadflow/commit/fc38d5ecfef711506ed7044a3f98e22dcfbc99d2))
+* **local-setup:** review round 5 — the unvetted bucket named directly, tested, and in --json (E185) ([3b9f36b](https://github.com/abdelrahmannasr/yadflow/commit/3b9f36bafe01b113a3bad32de36bcd853433b568))
+* **local-setup:** review round 6 — a prompt before ; is not a secret, nor a bare query flag (E185, part 3) ([6a32b28](https://github.com/abdelrahmannasr/yadflow/commit/6a32b2878fc495d8000fe46892f1556900dae141))
+* **local-setup:** review round 7 — a quoted value that starts with ; is a secret again (E185, part 3) ([b4cecd4](https://github.com/abdelrahmannasr/yadflow/commit/b4cecd4499fc5689e6ae52f9a50e8f3095cb0664))
+* **local-setup:** review round 8 — a prompt with no space after ; or && is not a secret (E185, part 3) ([84d4256](https://github.com/abdelrahmannasr/yadflow/commit/84d4256e818eb2787eb42d24e35d50a090fcc970))
+* **update:** a shared file the Product gitignores gets no row asking to commit it ([#555](https://github.com/abdelrahmannasr/yadflow/issues/555)) ([7a26f0f](https://github.com/abdelrahmannasr/yadflow/commit/7a26f0f495d47d9c2b876a1c6ce1ab45a02d0fc1))
+* **update:** review round 1 — only a committed ignore rule is the team's; each shared file names what was left out ([#555](https://github.com/abdelrahmannasr/yadflow/issues/555)) ([1bc0b7b](https://github.com/abdelrahmannasr/yadflow/commit/1bc0b7b3747b2b348319a3a9cebcbb86de315ea6))
+* **update:** review round 2 — the team's rule is a line the committed ignore file holds ([#555](https://github.com/abdelrahmannasr/yadflow/issues/555)) ([38795e9](https://github.com/abdelrahmannasr/yadflow/commit/38795e9c7c4e3a4c04fa2c71f7e8b85f45793624))
+* **update:** review round 3 — the committed ignore file is read as git reads it ([#555](https://github.com/abdelrahmannasr/yadflow/issues/555)) ([b315bc0](https://github.com/abdelrahmannasr/yadflow/commit/b315bc00e14ece84700588fae822addf0804bc79))
+* **update:** review round 4 — an ignore file's lines read by one helper that trims as git does ([#555](https://github.com/abdelrahmannasr/yadflow/issues/555)) ([989bcd6](https://github.com/abdelrahmannasr/yadflow/commit/989bcd63cedd3d2386ed4550f31d50f7104933b5))
+
+
+### Features
+
+* **brand:** every page yad makes wears the Product's brand (E184, [#553](https://github.com/abdelrahmannasr/yadflow/issues/553)) ([924dd18](https://github.com/abdelrahmannasr/yadflow/commit/924dd184399e4b6580285e0b61857753048ed643))
+* **doctor:** the local setup notice after a pull, in this clone (E185, part 4) ([d9cb264](https://github.com/abdelrahmannasr/yadflow/commit/d9cb264e2cf75087307163f8758e25760d3fa151))
+* **doctor:** the local setup steps waiting on this machine, and a record it cannot read (E185, part 2) ([0043520](https://github.com/abdelrahmannasr/yadflow/commit/0043520b8aaef00a56053c13c87ab803996122e0))
+* **guide:** local setup steps waiting for this machine ride the upkeep, and the local-setup rule (E185, part 2) ([eef939c](https://github.com/abdelrahmannasr/yadflow/commit/eef939ca18c54a14d66dd524f61cf10576e47712))
+* **local-setup:** a one-line notice after a pull brings new local setup steps (E185, part 4) ([84b9860](https://github.com/abdelrahmannasr/yadflow/commit/84b9860b05964ecb4c11a59a0f6c168de3861806))
+* **local-setup:** a step stays readable, and text that holds a secret is found (E185, part 3) ([5acc495](https://github.com/abdelrahmannasr/yadflow/commit/5acc4955550dbb23343c363b06fa6fd5cb3a71ea))
+* **local-setup:** the agent proposes the project's own steps; the machine section says how to add them (E185, part 3) ([5fd8742](https://github.com/abdelrahmannasr/yadflow/commit/5fd8742682f4e7fa3c1b5f895b9bbfd330906048))
+* **local-setup:** the local setup script and yad local-setup list (E185) ([97715bb](https://github.com/abdelrahmannasr/yadflow/commit/97715bbf92653e191b2f408750859ef7b0888eea))
+* **local-setup:** this machine's record, and yad local-setup done and skip (E185, part 2) ([ce9226b](https://github.com/abdelrahmannasr/yadflow/commit/ce9226ba056021ac46120f7f21448bcdcae51eca))
+* **local-setup:** yad local-setup add and remove, for the team's own steps (E185, part 3) ([c745184](https://github.com/abdelrahmannasr/yadflow/commit/c7451846cfc208da184ed7445e00fe9c2246e3f4))
+
 # [4.11.0](https://github.com/abdelrahmannasr/yadflow/compare/v4.10.0...v4.11.0) (2026-11-14)
 
 
