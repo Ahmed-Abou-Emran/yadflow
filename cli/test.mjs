@@ -27263,6 +27263,75 @@ test('E1 only cli/lib.mjs writes a JSON answer to stdout', () => {
   assert.deepEqual(offenders, []);
 });
 
+// ---- E125 b: a Product file is parsed only after a plain read (EP-factory-safety-S02) -----------------
+
+// Anyone who can commit to the Product controls its files, so a JSON file yad reads there goes through the plain
+// read in cli/lib.mjs (`readPlainFile`, `readPlainJSON`, `readJSON`): a link or a folder is never opened, and a
+// link to /dev/zero never hangs a command. A direct `JSON.parse(fs.readFileSync(…))` skips that. Each file
+// below reads something that is not the Product's, and says what; `count` pins how many such reads it has, so
+// a NEW direct read in one of them fails this test too. A read that keeps the text first and parses it later
+// (`const t = fs.readFileSync(p); JSON.parse(t)`), or one split over two lines, is not seen here: review
+// catches that shape. Any module name before `.readFileSync(` counts (`nodeFs.readFileSync(`), and so does a
+// `String(…)` around it; `.toString()` after it changes nothing the match looks at.
+const DIRECT_JSON_READ = /\b(?:JSON\.parse|parseJSON)\(\s*(?:String\(\s*)?(?:[A-Za-z_$][\w$]*\.)?readFileSync\(/;
+const DIRECT_JSON_READ_ALLOWED = [
+  { file: 'cli/lib.mjs', count: 0, reason: 'the plain read itself lives here' },
+  { file: 'cli/manifest.mjs', count: 1, reason: 'the engine\'s own package.json, found through import.meta.url' },
+  { file: 'cli/docs.mjs', count: 1, reason: 'the engine\'s own docs app package.json, found through import.meta.url' },
+  { file: 'cli/lifecycle.mjs', count: 1, reason: 'the engine\'s own lifecycle defaults, found through import.meta.url' },
+  { file: 'cli/claims.mjs', count: 1, reason: 'the capture\'s per-clone state, inside the git folder (never committed)' },
+  { file: 'cli/owners.mjs', count: 1, reason: 'the capture\'s per-clone state, inside the git folder (never committed)' },
+  { file: 'cli/members.mjs', count: 1, reason: 'the members access cache, inside the git folder (never committed)' },
+  { file: 'cli/local-setup-record.mjs', count: 1, reason: 'this machine\'s local setup answers, inside the git folder (never committed)' },
+  { file: 'cli/worktree-record.mjs', count: 1, reason: 'a worktree\'s own record, inside its git folder (never committed)' },
+  { file: 'cli/build.mjs', count: 1, reason: 'a code repo\'s .specify/feature.json, checked with lstat just before the read' },
+  { file: 'cli/map-view.mjs', count: 1, reason: 'the map\'s side file in this machine\'s reports folder, outside the Product' },
+];
+
+test('E125 b the matcher sees each direct shape, and none of the plain reads', () => {
+  for (const line of ["JSON.parse(fs.readFileSync(p, 'utf8'))", "JSON.parse(readFileSync(p, 'utf8'))", "parseJSON(fs.readFileSync(dest, 'utf8'))", "x = JSON.parse( fs.readFileSync(p))",
+    "JSON.parse(nodeFs.readFileSync(p, 'utf8'))", 'JSON.parse(String(fs.readFileSync(p)))', 'JSON.parse(fs.readFileSync(p).toString())', "JSON.parse($fs.readFileSync(p, 'utf8'))"]) {
+    assert.ok(DIRECT_JSON_READ.test(line), line);
+  }
+  for (const line of ['readPlainJSON(p)', "JSON.parse(readPlainFile(p) ?? '{}')", 'parseJSON(readPlainFile(p))', 'JSON.parse(text)', "parseFrontmatter(fs.readFileSync(file, 'utf8'))",
+    'JSON.parse(String(readPlainBytes(p)))', 'JSON.parse(readPlainBytes(p).toString())']) {
+    assert.ok(!DIRECT_JSON_READ.test(line), line);
+  }
+});
+
+// Every engine source file under cli/, in every subfolder: not a test file, not the tests' own fixtures, and
+// not the third-party browser bundles in a `vendor/` folder.
+function engineSources(dir = 'cli') {
+  const out = [];
+  for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+    const rel = `${dir}/${e.name}`;
+    if (e.isDirectory()) { if (e.name !== 'fixtures' && e.name !== 'vendor' && e.name !== 'node_modules') out.push(...engineSources(rel)); continue; }
+    if (/\.m?js$/.test(e.name) && !e.name.startsWith('test')) out.push(rel);
+  }
+  return out;
+}
+
+test('E125 b only the listed files parse a direct readFileSync, each as often as listed', () => {
+  const allowed = new Map(DIRECT_JSON_READ_ALLOWED.map((a) => [a.file, a]));
+  const hits = new Map();
+  const offenders = [];
+  const sources = engineSources();
+  assert.ok(sources.some((f) => f.startsWith('cli/brain/')) && sources.some((f) => f.startsWith('cli/map/')), 'the subfolders are scanned');
+  for (const rel of sources) {
+    fs.readFileSync(path.join(ROOT, rel), 'utf8').split('\n').forEach((line, i) => {
+      if (/^\s*\/\//.test(line) || !DIRECT_JSON_READ.test(line)) return;
+      hits.set(rel, (hits.get(rel) || 0) + 1);
+      if (!allowed.has(rel)) offenders.push(`${rel}:${i + 1}: ${line.trim()}`);
+    });
+  }
+  assert.deepEqual(offenders, [], 'read a Product file with readPlainFile / readPlainJSON / readJSON (cli/lib.mjs), or list a file that is not the Product\'s here with its reason');
+  for (const a of DIRECT_JSON_READ_ALLOWED) {
+    assert.ok(a.reason, `${a.file}: every entry says why`);
+    assert.ok(fs.existsSync(path.join(ROOT, a.file)), `${a.file}: an entry for a file that is gone`);
+    assert.equal(hits.get(a.file) || 0, a.count, `${a.file}: ${hits.get(a.file) || 0} direct reads, ${a.count} listed — a new one must be a plain read, or the entry updated with its reason`);
+  }
+});
+
 test('E1 bin/yad.mjs: every refusal and odd case is one envelope on stdout, prose on stderr', () => {
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-e1-'));
   const yad = (...args) => spawnSync('node', [path.join(ROOT, 'bin/yad.mjs'), ...args, '--dir', T], {
@@ -31071,6 +31140,61 @@ test('E122: preferring / productConfigPath read the new name first, the old as a
     assert.deepEqual(productDrift(T, ['epics/EP-x']).map((d) => d.canonical), ['.sdlc/product.json', 'epics/EP-x/.sdlc/product-prs.json']);
     fs.rmSync(h);
     assert.equal(mirrorDrift(p, h), false, 'one name alone is no drift');
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b mirrorDrift: a name that is a link or a folder is never opened, and counts as different', { skip: E125B_SKIP }, async () => {
+  const { mirrorDrift } = await import('./manifest.mjs');
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-e125-mirror-'));
+  try {
+    const sdlc = path.join(T, '.sdlc');
+    fs.mkdirSync(sdlc);
+    const p = path.join(sdlc, 'product.json');
+    const h = path.join(sdlc, 'hub.json');
+    fs.writeFileSync(p, '{}\n');
+    // A link to the very same bytes: still not a plain file, so not the same file.
+    fs.writeFileSync(path.join(T, 'same.json'), '{}\n');
+    fs.symlinkSync(path.join(T, 'same.json'), h);
+    assert.equal(mirrorDrift(p, h), true);
+    assert.equal(mirrorDrift(h, p), true);
+    fs.rmSync(h);
+    fs.mkdirSync(h);
+    assert.equal(mirrorDrift(p, h), true, 'a folder too');
+    fs.rmSync(h, { recursive: true });
+    fs.writeFileSync(h, '{}\n');
+    assert.equal(mirrorDrift(p, h), false, 'two plain files with the same bytes are still one file');
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b mirrorDrift: a .sdlc/hub.json that links to /dev/zero stops no command — it is refused at once', { skip: DEV_ZERO_SKIP }, () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-e125-mirror-zero-'));
+  try {
+    fs.mkdirSync(path.join(T, '.sdlc'));
+    fs.writeFileSync(path.join(T, '.sdlc/product.json'), '{"platform":"github"}\n');
+    fs.symlinkSync('/dev/zero', path.join(T, '.sdlc/hub.json'));
+    const got = inChildWithLimit(`const { productDriftPairs } = await import(${cliUrl('./epic-state.mjs')});
+const { describeDrift } = await import(${cliUrl('./migrate.mjs')});
+const root = process.argv[1];
+const pairs = productDriftPairs(root).map((x) => x.canonical);
+process.stdout.write(JSON.stringify([pairs, describeDrift(root + '/.sdlc/product.json', root + '/.sdlc/hub.json')]));`, [T]);
+    assert.deepEqual(got, [['.sdlc/product.json'], ['hub.json is a link or not a plain file, so it was not read']]);
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'bin/yad.mjs'), 'status', '--json', '--dir', T], { encoding: 'utf8', timeout: 20000, env: { ...process.env, YAD_NO_UPDATE_NOTIFIER: '1', YAD_NO_REPORT: '1' } });
+    assert.equal(r.signal, null, `yad status did not end: ${r.stderr}`);
+    assert.match(r.stdout, /YAD-STATE-008/);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b writeMirrored: a product.json that links to /dev/zero is replaced at once, never read', { skip: DEV_ZERO_SKIP }, () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-e125-mirrored-'));
+  try {
+    fs.mkdirSync(path.join(T, '.sdlc'));
+    fs.symlinkSync('/dev/zero', path.join(T, '.sdlc/product.json'));
+    fs.writeFileSync(path.join(T, '.sdlc/hub.json'), '{"platform":"github"}\n');
+    const got = inChildWithLimit(`const { writeProductConfig } = await import(${cliUrl('./lib.mjs')});
+process.stdout.write(JSON.stringify(writeProductConfig(process.argv[1], { platform: 'github' })));`, [T]);
+    assert.deepEqual(got, ['.sdlc/product.json', '.sdlc/hub.json']);
+    assert.ok(fs.lstatSync(path.join(T, '.sdlc/product.json')).isFile(), 'the link is replaced by a plain file');
+    assert.equal(fs.readFileSync(path.join(T, '.sdlc/product.json'), 'utf8'), fs.readFileSync(path.join(T, '.sdlc/hub.json'), 'utf8'));
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
