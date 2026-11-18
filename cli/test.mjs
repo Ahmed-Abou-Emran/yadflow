@@ -29898,6 +29898,326 @@ test('E81 review 15: the solo people count runs no git in a folder the Product s
   } finally { fs.rmSync(T, { recursive: true, force: true }); fs.rmSync(marker, { force: true }); }
 });
 
+// ---------- E125: every command that loops over the registered repos judges them first ----------
+// A Product beside one real checkout (backend), committing a folder shaped like a bare repo (`bare`) whose
+// config runs a command; and a git on PATH that logs where each call runs before it runs the real git. A
+// call that names `bare` (its folder, or `-C bare`) is the hole E125 closes: git would read that config.
+function e125Workspace(T) {
+  const { ws, product, backend } = e80Workspace(T);
+  const marker = path.join(T, 'fsmonitor-ran');
+  const bare = path.join(product, 'bare');
+  for (const d of ['objects', 'refs']) fs.mkdirSync(path.join(bare, d), { recursive: true });
+  fs.writeFileSync(path.join(bare, 'HEAD'), 'ref: refs/heads/main\n');
+  fs.writeFileSync(path.join(bare, 'config'), `[core]\n\tbare = true\n\tfsmonitor = touch '${marker}'\n`);
+  const regFile = path.join(product, '.sdlc', 'repos.json');
+  const reg = JSON.parse(fs.readFileSync(regFile, 'utf8'));
+  reg.repos.push({ name: 'bare', path: 'bare', default_branch: 'main', syncedHead: 'abc', contextPack: '.sdlc/code-context/bare/pack.md' });
+  fs.writeFileSync(regFile, JSON.stringify(reg));
+  const bin = path.join(T, 'bin');
+  const log = path.join(T, 'git-calls.log');
+  fs.mkdirSync(bin);
+  const realGit = execFileSync('sh', ['-c', 'command -v git']).toString().trim();
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nprintf '%s\\t%s\\n' "$(pwd -P)" "$*" >> "$YAD_GIT_LOG"\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+  // gh and glab are never signed in here: no check reaches the network.
+  for (const cli of ['gh', 'glab']) fs.writeFileSync(path.join(bin, cli), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const env = { PATH: `${bin}${path.delimiter}${process.env.PATH}`, YAD_GIT_LOG: log };
+  const listing = (dir) => fs.readdirSync(dir, { recursive: true }).sort().map((f) => {
+    const p = path.join(dir, f);
+    return fs.statSync(p).isFile() ? `${f}:${fs.readFileSync(p, 'utf8')}` : f;
+  });
+  const before = listing(bare);
+  return {
+    ws, product, backend, bare, regFile, env,
+    // Every git call that ran in the bare-shaped folder, or named it.
+    gitInBare: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').split('\n').filter((l) => l.includes(bare)),
+    // The bare-shaped folder is exactly as the Product committed it, and its config never ran.
+    untouched: () => { assert.deepEqual(listing(bare), before, 'nothing was written in the refused folder'); assert.ok(!fs.existsSync(marker), 'its fsmonitor never ran'); },
+    // Run `fn` in this process with the logging git first on PATH.
+    withShim: async (fn) => {
+      const saved = { PATH: process.env.PATH, YAD_GIT_LOG: process.env.YAD_GIT_LOG };
+      Object.assign(process.env, env);
+      try { return await fn(); } finally {
+        process.env.PATH = saved.PATH;
+        if (saved.YAD_GIT_LOG === undefined) delete process.env.YAD_GIT_LOG; else process.env.YAD_GIT_LOG = saved.YAD_GIT_LOG;
+      }
+    },
+  };
+}
+const E125_SKIP = process.platform === 'win32' && 'a shell script as git';
+
+test('E125: judgedRepos keeps the entries git may run in and names the others; codeRepoFor refuses a registered folder yad runs no git in', { skip: E125_SKIP }, async () => {
+  const { judgedRepos, codeRepoFor } = await import('./workspace.mjs');
+  const T = e79Tmp();
+  try {
+    const f = e125Workspace(T);
+    const reg = JSON.parse(fs.readFileSync(f.regFile, 'utf8'));
+    const j = judgedRepos(f.product, reg);
+    assert.deepEqual(j.ok.map((x) => [x.repo.name, x.target]), [['backend', f.backend]]);
+    assert.deepEqual(j.skipped.map((x) => x.repo.name), ['bare']);
+    assert.match(j.skipped[0].why, /exists and is not a git repo/);
+    // A repo not cloned here is acted on as before (`present: false`), unless a folder on its way holds HEAD.
+    const odd = judgedRepos(f.product, { repos: [null, { name: 'api\u001b[2J', path: '../api', git_url: 'https://git.example/u.git' }, { name: 'under', path: 'bare/new', git_url: 'https://git.example/u.git' }] });
+    assert.deepEqual(odd.ok.map((x) => [x.repo.path, x.present]), [['../api', false]]);
+    assert.equal(odd.ok[0].j.name, 'api [2J', 'the name to print is cleaned');
+    assert.deepEqual(odd.skipped.map((x) => x.why), ['this entry in repos.json is not an object', 'a folder on its way holds an entry named HEAD, so git could take it for a bare repo and read its config']);
+    assert.equal(j.ok[0].present, true);
+    assert.deepEqual(judgedRepos(f.product, { repos: 5 }), { ok: [], skipped: [] }, 'a list that is not a list: nothing');
+    // The code repo a code-repo command works in.
+    assert.equal(codeRepoFor(f.product, { repo: 'backend' }).repoRoot, f.backend);
+    assert.match(codeRepoFor(f.product, { repo: 'bare' }).error, /^repo bare \(bare\): the folder exists and is not a git repo .* — yad runs no git there$/);
+    assert.match(codeRepoFor(f.product, { repo: 'ghost' }, { strict: true }).error, /'ghost' is not in \.sdlc\/repos\.json/);
+    assert.equal(codeRepoFor(f.product, { repo: 'ghost', dir: '../backend' }).repoRoot, f.backend, 'not strict: the folder it runs in');
+    f.untouched();
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 review: a folder named `head` beside a monorepo folder is an ordinary folder; a file named HEAD, in any case git reads, is not', { skip: E125_SKIP }, async () => {
+  const { judgeRepo } = await import('./workspace.mjs');
+  const T = e79Tmp();
+  try {
+    const { product } = e80Workspace(T);
+    e79Git(T, product, 'init', '-q', '-b', 'main');
+    fs.mkdirSync(path.join(product, 'apps', 'web'), { recursive: true });
+    fs.mkdirSync(path.join(product, 'apps', 'head'), { recursive: true });
+    fs.writeFileSync(path.join(product, 'apps', 'head', 'x.js'), 'x');
+    assert.equal(judgeRepo(product, { name: 'web', path: 'apps/web' }).state, 'present', 'a folder named head is not HEAD');
+    // A folder named exactly HEAD still counts, and so does a file or link that git's own open of HEAD reads.
+    fs.mkdirSync(path.join(product, 'libs', 'a', 'HEAD'), { recursive: true });
+    assert.equal(judgeRepo(product, { name: 'a', path: 'libs/a' }).state, 'refused');
+    fs.mkdirSync(path.join(product, 'libs', 'b'), { recursive: true });
+    fs.writeFileSync(path.join(product, 'libs', 'b', 'head'), 'ref: refs/heads/main\n');
+    const ignoresCase = fs.existsSync(path.join(product, 'libs', 'b', 'HEAD'));
+    assert.equal(judgeRepo(product, { name: 'b', path: 'libs/b' }).state, ignoresCase ? 'refused' : 'present', 'a file named head counts where the disk ignores case');
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125: yad open-pr and yad review refuse a registered folder yad runs no git in, and never fall back to the folder they run in', { skip: E125_SKIP }, () => {
+  const T = e79Tmp();
+  try {
+    const f = e125Workspace(T);
+    for (const args of [['open-pr', '--repo', 'bare', '--title', 'feat: x'], ['review', 'context', '--repo', 'bare'], ['review', 'trailer', '--repo', 'bare', '--pr', '1', '--body', 'x']]) {
+      const r = e79Yad(T, f.product, args, f.env);
+      assert.equal(r.status, 1, `${args.join(' ')}: ${r.stdout}${r.stderr}`);
+      assert.match(r.stdout + r.stderr, /repo bare \(bare\): the folder exists and is not a git repo .* yad runs no git there/, args.join(' '));
+    }
+    // An unknown name: `review` refuses it; `open-pr` works in the folder it runs in, as before.
+    assert.match(e79Yad(T, f.product, ['review', 'context', '--repo', 'ghost'], f.env).stdout, /'ghost' is not in \.sdlc\/repos\.json/);
+    assert.deepEqual(f.gitInBare(), []);
+    f.untouched();
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125: yad risk-map and yad codeowners skip a registered folder yad runs no git in, by name, by path and in the list of every repo', { skip: E125_SKIP }, () => {
+  const T = e79Tmp();
+  try {
+    const f = e125Workspace(T);
+    for (const args of [['risk-map', 'check'], ['risk-map', 'draft'], ['codeowners', 'check']]) {
+      const r = e79Yad(T, f.product, args, f.env);
+      assert.match(r.stdout + r.stderr, /bare \(bare\): the folder exists and is not a git repo .* — skipped/, args.join(' '));
+    }
+    const json = JSON.parse(e79Yad(T, f.product, ['risk-map', 'check', '--json'], f.env).stdout);
+    assert.deepEqual(json.repos.map((r) => r.name), ['backend'], 'the real checkout is still checked');
+    assert.ok(json.warnings.some((w) => /bare \(bare\).* — skipped/.test(w)));
+    for (const args of [['risk-map', 'check', 'bare'], ['risk-map', 'draft', 'bare'], ['codeowners', 'check', 'bare']]) {
+      const r = e79Yad(T, f.product, args, f.env);
+      assert.equal(r.status, 1, `${args.join(' ')}: ${r.stdout}${r.stderr}`);
+      assert.match(r.stdout + r.stderr, /bare \(bare\): the folder exists and is not a git repo .* — yad runs no git there/, args.join(' '));
+    }
+    assert.deepEqual(f.gitInBare(), []);
+    f.untouched();
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 review: yad risk-map judges a path the registry does not name, whatever its letters\' case', { skip: E125_SKIP }, () => {
+  const T = e79Tmp();
+  try {
+    const f = e125Workspace(T);
+    // A second bare-shaped folder the registry never names, and the registered one written in other case.
+    const other = path.join(f.product, 'other');
+    fs.cpSync(f.bare, other, { recursive: true });
+    const args = [['risk-map', 'check', 'other'], ['risk-map', 'draft', 'other'], ['codeowners', 'check', 'other']];
+    if (fs.existsSync(path.join(f.product, 'BARE'))) args.push(['risk-map', 'draft', 'BARE']);
+    for (const a of args) {
+      const r = e79Yad(T, f.product, a, f.env);
+      assert.equal(r.status, 1, `${a.join(' ')}: ${r.stdout}${r.stderr}`);
+      assert.match(r.stdout + r.stderr, /exists and is not a git repo .* — yad runs no git there/, a.join(' '));
+    }
+    const log = fs.existsSync(f.env.YAD_GIT_LOG) ? fs.readFileSync(f.env.YAD_GIT_LOG, 'utf8').toLowerCase() : '';
+    for (const dir of [other, f.bare]) assert.ok(!log.includes(dir.toLowerCase()), `git never ran in ${dir}`);
+    assert.deepEqual(fs.readdirSync(other).sort(), fs.readdirSync(f.bare).sort(), 'nothing was written in the unregistered folder');
+    f.untouched();
+    // A real checkout named by its path is still checked.
+    assert.equal(e79Yad(T, f.product, ['risk-map', 'check', '../backend'], f.env).status, 0);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125: packRepo writes a pack only under .sdlc/code-context/, and yad setup wires no registered folder yad runs no git in', { skip: E125_SKIP }, async () => {
+  const { packRepo } = await import('./setup.mjs');
+  const T = e79Tmp();
+  try {
+    const f = e125Workspace(T);
+    for (const contextPack of ['../escape/pack.md', '.sdlc/code-context/../../escape/pack.md', '.sdlc/hub.json', '', undefined]) {
+      let packed;
+      const said = await grab(() => { packed = packRepo(f.product, { name: 'backend', path: '../backend', contextPack }); });
+      assert.equal(packed, false, String(contextPack));
+      assert.match(said, /backend: the pack path .* is not under \.sdlc\/code-context\/ in the Product — skipped repomix pack/);
+    }
+    assert.ok(!fs.existsSync(path.join(f.ws, 'escape')), 'nothing written outside .sdlc/code-context/');
+    const setup = e79Yad(T, f.product, ['setup', '--solo', '--brownfield', '--separate', '--no-tools', '--no-git-init', '--ide-targets', '.claude', '--platform', 'github', '--connect', 'none', '--coderabbit', 'all'], f.env);
+    const out = setup.stdout + setup.stderr;
+    assert.match(out, /bare \(bare\): the folder exists and is not a git repo .* — skipped/);
+    assert.ok(fs.existsSync(path.join(f.backend, '.coderabbit.yaml')), `the real checkout is wired: ${out}`);
+    assert.ok(fs.existsSync(path.join(f.backend, 'checks')), 'and gets its gates');
+    assert.deepEqual(f.gitInBare(), []);
+    f.untouched();
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 review: connecting a repo by flag or by answer runs no git in a bare-shaped folder', { skip: E125_SKIP }, async () => {
+  const { registerRepo } = await import('./setup.mjs');
+  const T = e79Tmp();
+  try {
+    const f = e125Workspace(T);
+    // The default answer's folder (`demo-repos/<name>`), committed by the Product shaped as a bare repo.
+    const api = path.join(f.product, 'demo-repos', 'api');
+    fs.mkdirSync(path.dirname(api), { recursive: true });
+    fs.cpSync(f.bare, api, { recursive: true });
+    const r = e79Yad(T, f.product, ['setup', '--solo', '--brownfield', '--separate', '--no-tools', '--no-git-init', '--ide-targets', '.claude', '--platform', 'github', '--connect', 'none', '--add-repo', 'api=demo-repos/api'], f.env);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout + r.stderr, /demo-repos\/api is not a git repository yad may run git in \(the folder exists and is not a git repo/);
+    const registry = { repos: [] };
+    let repo;
+    const said = await f.withShim(() => grab(() => { repo = registerRepo(f.product, registry, { name: 'api', rpath: 'demo-repos/api' }); }));
+    assert.equal(repo, null);
+    assert.deepEqual(registry.repos, [], 'nothing registered');
+    assert.match(said, /demo-repos\/api is not a git repository yad may run git in/);
+    assert.deepEqual(f.gitInBare(), []);
+    const log = fs.existsSync(f.env.YAD_GIT_LOG) ? fs.readFileSync(f.env.YAD_GIT_LOG, 'utf8') : '';
+    assert.ok(!log.includes(api), 'git never ran in the answer\'s folder');
+    f.untouched();
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125: yad check and yad check --fix skip a bare-shaped folder, and still wire a checkout and a repo not cloned yet', { skip: E125_SKIP }, () => {
+  const T = e79Tmp();
+  try {
+    const f = e125Workspace(T);
+    // A repo registered but not cloned on this machine: wired as before E125 (no folder there can carry a config).
+    const reg = JSON.parse(fs.readFileSync(f.regFile, 'utf8'));
+    reg.repos.push({ name: 'api', path: '../api', platform: 'github', default_branch: 'main' });
+    fs.writeFileSync(f.regFile, JSON.stringify(reg));
+    const check = e79Yad(T, f.product, ['check'], f.env);
+    assert.match(check.stdout + check.stderr, /bare \(bare\): the folder exists and is not a git repo .* — skipped/);
+    const fix = e79Yad(T, f.product, ['check', '--fix'], f.env);
+    assert.match(fix.stdout + fix.stderr, /bare \(bare\).* — skipped/);
+    assert.ok(fs.existsSync(path.join(f.backend, 'checks')), `the real checkout is still wired: ${fix.stdout}${fix.stderr}`);
+    assert.ok(fs.existsSync(path.join(f.ws, 'api', 'checks')), 'the repo not cloned yet is wired, as before');
+    assert.doesNotMatch(fix.stdout + fix.stderr, /api \(\.\.\/api\).* — skipped/);
+    assert.deepEqual(f.gitInBare(), []);
+    f.untouched();
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125: the docs staleness and yad usage --repos run git only in a judged checkout; usage skips an absolute path', { skip: E125_SKIP }, async () => {
+  const { repoHeadsFor } = await import('./docs.mjs');
+  const { deriveEvents } = await import('./usage.mjs');
+  const T = e79Tmp();
+  try {
+    const f = e125Workspace(T);
+    const reg = JSON.parse(fs.readFileSync(f.regFile, 'utf8'));
+    const head = e79Git(T, f.backend, 'rev-parse', 'HEAD');
+    await f.withShim(async () => {
+      assert.deepEqual(repoHeadsFor(f.product, ['backend', 'bare', 'ghost'], reg), { backend: head, bare: null });
+      let events;
+      await grab(() => { events = deriveEvents(f.product, { repos: true }); });
+      const committed = events.filter((e) => e.action === 'committed');
+      assert.deepEqual(committed.map((e) => e.repo), ['backend']);
+      // The same checkout recorded by its absolute path (inside the workspace, so judgeRepo alone accepts it).
+      fs.writeFileSync(f.regFile, JSON.stringify({ repos: [{ name: 'backend', path: f.backend }] }));
+      const said = await grab(() => { events = deriveEvents(f.product, { repos: true }); });
+      assert.deepEqual(events.filter((e) => e.action === 'committed'), [], 'an absolute path is never read');
+      assert.match(said, /an absolute path — its commits are not counted/);
+    });
+    assert.deepEqual(f.gitInBare(), []);
+    f.untouched();
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125: yad map and its live view run git only in a checkout yad may run git in', { skip: E125_SKIP }, async () => {
+  const { buildMap, startMapServer } = await import('./map-view.mjs');
+  const T = e79Tmp();
+  let srv;
+  try {
+    const f = e125Workspace(T);
+    const calls = [];
+    const runner = (cmd, args, o) => { calls.push([cmd, ...args, o?.cwd ?? ''].join(' ')); return spawnSync(cmd, args, o); };
+    const { model } = buildMap(f.product, { runner, env: { ...process.env, YAD_REPORTS_DIR: path.join(T, 'r') } });
+    assert.ok(JSON.stringify(model).includes('backend'), 'the real checkout is still on the map');
+    srv = await startMapServer(f.product, { live: true, runner, env: { ...process.env, YAD_REPORTS_DIR: path.join(T, 'r') } });
+    assert.ok(srv.watchable > 0, 'the Product and the real checkout are still watched');
+    assert.ok(calls.some((l) => l.includes(f.backend)), 'git ran in the real checkout');
+    assert.deepEqual(calls.filter((l) => l.includes(f.bare)), [], 'never in the bare-shaped folder');
+    f.untouched();
+  } finally { if (srv) await srv.close(); fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125: the repos yad update commits in are judged: never a bare-shaped folder or a link inside a repo\'s tree', { skip: process.platform === 'win32' && 'symlinks need privileges on Windows' }, async () => {
+  const { updateTargets } = await import('./update-commit.mjs');
+  const T = e79Tmp();
+  try {
+    const f = e125Workspace(T);
+    // A link the Product commits, to the real checkout: it has a `.git`, so a bare existence test passed it.
+    fs.symlinkSync('../backend', path.join(f.product, 'evil'));
+    const reg = JSON.parse(fs.readFileSync(f.regFile, 'utf8'));
+    reg.repos.push({ name: 'evil', path: 'evil' }, { name: 'away', path: '../away', git_url: 'https://git.example/u.git' });
+    fs.writeFileSync(f.regFile, JSON.stringify(reg));
+    assert.deepEqual(updateTargets(f.product).map((t) => t.name), ['product', 'backend']);
+    f.untouched();
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 review: a connected repo\'s folder is judged again right before yad update commits or opens a PR/MR in it', { skip: E125_SKIP }, async () => {
+  const { commitAndPush, openUpdatePr } = await import('./update-commit.mjs');
+  const T = e79Tmp();
+  try {
+    const f = e125Workspace(T);
+    // As if a pull made by an earlier group's push had turned the folder into a bare-shaped one.
+    const group = { root: f.bare, paths: ['config'], items: [] };
+    let a, b;
+    await f.withShim(() => grab(() => {
+      a = commitAndPush(group, { productRoot: f.product, push: true });
+      b = openUpdatePr(group, { productRoot: f.product, defaultBranch: 'main', platform: 'github', creator: () => { throw new Error('never opened'); } });
+    }));
+    assert.equal(a.skipped, true);
+    assert.equal(b.skipped, true);
+    assert.deepEqual(f.gitInBare(), []);
+    f.untouched();
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125: yad doctor reads no file and runs no git in a registered folder yad runs no git in', { skip: E125_SKIP }, () => {
+  const T = e79Tmp();
+  try {
+    const f = e125Workspace(T);
+    // What an older release left, in the refused folder: every file check below would name it.
+    fs.writeFileSync(path.join(f.product, '.sdlc', 'hub.json'), JSON.stringify({ platform: 'github', default_branch: 'main', git_url: 'https://github.com/o/product.git' }));
+    const reg = JSON.parse(fs.readFileSync(f.regFile, 'utf8'));
+    reg.repos.find((r) => r.name === 'bare').platform = 'gitlab';
+    fs.writeFileSync(f.regFile, JSON.stringify(reg));
+    for (const [rel, body] of [['.sdlc/verified-authors', 'a\n'], ['checks/verified-commits.sh', 'ALLOWLIST=x\n'], ['checks/contract-check.sh', '#!/bin/sh\n'], ['.gitlab/ci/yad-checks.yml', 'x: 1\n'], ['.sdlc/product-link.json', '{}']]) {
+      fs.mkdirSync(path.dirname(path.join(f.bare, rel)), { recursive: true });
+      fs.writeFileSync(path.join(f.bare, rel), body);
+    }
+    const doc = JSON.parse(e79Yad(T, f.product, ['doctor', '--json'], f.env).stdout);
+    assert.match(doc.checks.find((c) => c.id === 'repo:bare').message, /exists and is not a git repo/, 'named once, with its reason');
+    // The protection and token checks ask the platform by the recorded address, never the folder.
+    const byFolder = doc.checks.filter((c) => c.id !== 'repo:bare' && !/^(protection|product-token):/.test(c.id) && /\bbare\b/.test(`${c.message} ${c.hint}`));
+    assert.deepEqual(byFolder.map((c) => c.id), [], 'no other check read a file in it');
+    assert.deepEqual(f.gitInBare(), []);
+    assert.ok(!fs.existsSync(path.join(T, 'fsmonitor-ran')));
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
 test('E81 review 16: refresh never writes through a .gitignore the Product commits as a link', { skip: process.platform === 'win32' && 'symlinks need privileges on Windows' }, async () => {
   const { ensurePackIgnored } = await import('./setup.mjs');
   const T = e79Tmp();

@@ -26,6 +26,7 @@ import { c, log, ok, info, warn, fail, hand, run, pushWithRebase, samePath } fro
 import { VERSION, PROJECT_FILES, MANAGED_LEDGER, productConfigPath } from './manifest.mjs';
 import { parseVersion, compare as compareVersions } from './toolbox.mjs';
 import { productGit, resolveDefaultBranch } from './productcommit.mjs';
+import { judgedRepos, judgeRepo, runnable } from './workspace.mjs';
 
 // Collapse whitespace/newline runs to a single space — keeps a stray path or hostile value from
 // breaking the one-line subject or injecting a fake trailer line.
@@ -232,6 +233,12 @@ function quietGit(root) {
   return (...args) => run('git', args, { cwd: root, env });
 }
 
+// A connected repo's folder is judged again right before git runs in it (E125): an earlier group's push
+// pulls with a rebase, and a pulled commit could have added a bare-shaped folder (`HEAD`, `config`) on its
+// way. Only a checkout with its own `.git` that the judgement accepts; the Product itself always.
+const stillACheckout = (productRoot, root, isProduct) => isProduct || !productRoot
+  || (fs.existsSync(path.join(root, '.git')) && runnable(judgeRepo(productRoot, { name: 'repo', path: root })));
+
 // Commit (and, with push, push) one repo group. `defaultBranch` is the repo's configured default
 // (the Product's default_branch / repo.default_branch); falls back to origin/HEAD then 'main'. Returns a small
 // result object; never throws. On any hard error it sets process.exitCode so the CLI reports failure.
@@ -242,6 +249,10 @@ export function commitAndPush(group, { push = false, allowBranch = false, produc
   // shares (E124 review 1).
   const isProduct = root === (productRoot ?? root);
   const git = productGit(root);
+  if (!stillACheckout(productRoot, root, isProduct)) {
+    warn(`${label}: not its own git repo that yad may run git in (missing/renamed clone, or not a checkout) — skipped (changes left in the working tree)`);
+    return { label, product: isProduct, committed: false, pushed: false, skipped: true, error: false };
+  }
 
   // `root` must be the TOP of its OWN git repo — not merely "inside a work tree". A registered repo
   // whose clone is missing (reconcile's apply() happily recreates the wiring files) but whose path
@@ -381,8 +392,9 @@ export function buildUpdatePrBody({ version = VERSION, items = [] } = {}) {
 export function updateTargets(productRoot) {
   const settings = readJSONSafe(productConfigPath(productRoot)) ?? {};
   const registry = readJSONSafe(path.join(productRoot, '.sdlc/repos.json'));
-  const repos = (Array.isArray(registry?.repos) ? registry.repos : [])
-    .filter((x) => typeof x?.path === 'string' && x.path)
+  // Judged first (E125): only a checkout yad may run git in — never one reached through a link inside a
+  // repo's tree, outside the workspace, or through a .git folder.
+  const repos = judgedRepos(productRoot, registry).ok.filter((o) => o.present).map((o) => o.repo)
     .map((x) => ({ root: path.resolve(productRoot, x.path), name: typeof x.name === 'string' ? x.name : x.path, defaultBranch: x.default_branch ?? null, platform: x.platform ?? null, file: MANAGED_LEDGER }))
     .filter((x) => x.root !== productRoot && fs.existsSync(path.join(x.root, '.git')));
   // `file`: where each records the yadflow version that last wrote it.
@@ -483,6 +495,10 @@ export function openUpdatePr(group, { productRoot, defaultBranch, platform, crea
   const isProduct = root === (productRoot ?? root);
   const git = productGit(root);
   const out = (o) => ({ label, product: isProduct, branch: null, committed: false, pushed: false, opened: false, pr: null, skipped: false, error: false, ...o });
+  if (!stillACheckout(productRoot, root, isProduct)) {
+    warn(`${label}: not its own git repo that yad may run git in (missing/renamed clone, or not a checkout) — skipped`);
+    return out({ skipped: true, reason: 'not-a-checkout' });
+  }
   // `checked`: reconcile already asked, before it wrote anything; asking again would be a second network read.
   const blocked = checked ? null : updatePrBlocker(root, { defaultBranch, version, productRoot: productRoot ?? root });
   if (blocked) {

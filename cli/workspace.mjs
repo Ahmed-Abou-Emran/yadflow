@@ -34,7 +34,7 @@ import { err } from './errors.mjs';
 import { productConfigPath, PROJECT_FILES } from './manifest.mjs';
 import { runSetup, insideWorkspace, throughGitDir, selectIdeTargets, assertSetupAnswered, ideTargetsQuestion, checkSetupFlags } from './setup.mjs';
 import { moduleActions, gitHookActions, agentFileActions, localSetupNoticeActions } from './plan.mjs';
-import { writeWorkspaceFile, WORKSPACE_FILE } from './find-product.mjs';
+import { writeWorkspaceFile, WORKSPACE_FILE, registryEntryFor } from './find-product.mjs';
 import { offerToolbox } from './toolbox.mjs';
 import { localSetupActions, localSetupSection } from './local-setup.mjs';
 import { runMemberAdd } from './members.mjs';
@@ -229,6 +229,69 @@ export function judgeRepo(productRoot, repo) {
   return { ...at, state: 'missing', url: src.url, urlKind: src.kind };
 }
 
+// Why yad runs no git in a judged entry that is not `runnable`, in one short phrase.
+export const notRunnableWhy = (j) => (j.state === 'missing' ? 'not cloned on this machine'
+  : j.linked ? 'reached through a link inside a repo\'s tree' : j.reason || 'not a checkout yad can use');
+
+// EVERY REGISTRY ENTRY, JUDGED ONCE (E125). For a command that loops over the registered repos and runs
+// git in them, reads their files or writes into them. `ok` holds the entries it may act on; `skipped`
+// holds the others, with `why` to show. Each item keeps the entry as recorded (`repo`: match and key on
+// `repo.name`) beside its judgement (`j`: print `j.name` and `j.path`, which are cleaned for the
+// terminal), and `target` is the folder.
+//
+// A repo not cloned here stays in `ok` with `present: false`, acted on as before E125: no
+// folder there can carry a config git would read, so `yad check --fix` may still make it and write its CI
+// files. Except when a folder on its way holds an entry named HEAD: git run in the new folder would walk
+// up into that one and read its config, and the write would land inside it. A checkout is `present: true`.
+export function judgedRepos(productRoot, registry) {
+  const out = { ok: [], skipped: [] };
+  for (const repo of Array.isArray(registry?.repos) ? registry.repos : []) {
+    const j = judgeRepo(productRoot, repo);
+    if (runnable(j)) { out.ok.push({ repo, j, target: j.target, present: true }); continue; }
+    // Not cloned here: missing, or refused only for its git_url (none, or not a clone address), which is the
+    // clone step's concern, not this one's — every other test passes with an address put in.
+    const notCloned = j.state === 'missing' || (j.state === 'refused' && judgeRepo(productRoot, { ...repo, git_url: 'https://git.invalid/x.git' }).state === 'missing');
+    if (notCloned && headAbove(productRoot, j.target)) out.skipped.push({ repo, j, why: HEAD_ON_WAY });
+    else if (notCloned) out.ok.push({ repo, j, target: j.target, present: false });
+    else out.skipped.push({ repo, j, why: notRunnableWhy(j) });
+  }
+  return out;
+}
+const HEAD_ON_WAY = 'a folder on its way holds an entry named HEAD, so git could take it for a bare repo and read its config';
+// An entry named HEAD in `target` or a folder above it, below the workspace folder.
+function headAbove(productRoot, target) {
+  const root = path.resolve(productRoot);
+  const workspace = path.dirname(root) === root ? root : path.dirname(root);
+  for (let cur = target; cur.startsWith(workspace + path.sep); cur = path.dirname(cur)) if (hasHead(cur)) return true;
+  return false;
+}
+
+// The code repo `yad open-pr` and `yad review` work in (E125): `--repo <name>` from the registry, judged
+// first, else the checkout of `--dir` (or the folder it runs in). `product` (E80) is the Product found
+// from a code repo beside it: the registry is read there, and a repo run without --repo is looked up in
+// it by its path, so its platform and default branch are the recorded ones. A registered entry yad runs
+// no git in is an `error`, never a fall back to the current folder. A name the registry does not hold is
+// an `error` too when `strict` (`yad review`: never act on the wrong repo); `yad open-pr` uses the folder.
+// → { repoRoot, meta, productRoot } or { error }.
+export function codeRepoFor(root, { repo, dir, product } = {}, { strict = false } = {}) {
+  const productRoot = product || root;
+  if (repo) {
+    const reg = readJSON(path.join(productRoot, PROJECT_FILES.reposRegistry), { repos: [] });
+    const found = (Array.isArray(reg?.repos) ? reg.repos : []).find((r) => r?.name === repo);
+    if (found) {
+      const hit = judgedRepos(productRoot, { repos: [found] });
+      if (!hit.ok.length) return { error: `repo ${hit.skipped[0].j.name} (${hit.skipped[0].j.path}): ${hit.skipped[0].why} — yad runs no git there` };
+      return { repoRoot: hit.ok[0].target, meta: found, productRoot };
+    }
+    if (strict) return { error: `repo '${shown(repo)}' is not in .sdlc/repos.json — connect it first (yad-connect-repos)` };
+  }
+  const here = path.resolve(root, dir || '.');
+  // The checkout it runs in, when that checkout is a registered repo or a git worktree of one (#515): worked
+  // at its own top, from any folder inside it. A nested repo stays exactly where it is, with no entry.
+  const hit = registryEntryFor(product, here);
+  return { repoRoot: hit ? hit.top : here, meta: hit ? hit.meta : null, productRoot };
+}
+
 // The nearest folder above `target`, below the workspace folder, that holds `.git`: the checkout git
 // finds from `target`. Null when there is none.
 function enclosingCheckout(productRoot, target) {
@@ -243,10 +306,16 @@ function enclosingCheckout(productRoot, target) {
 // Git takes a folder for a bare repo only when it holds `HEAD` — then `objects/` and `refs/` may come
 // from anywhere (a `commondir` file points elsewhere), and `HEAD` may be a link that points nowhere
 // (E81 review 2 made git run a command both ways). So the one sound test is the part git always needs:
-// ANY entry named `HEAD`, of any kind, read with `lstat` so a dangling link counts. The file system
-// matches the name as git's own lookup does (without case on macOS and Windows). From `target` up to,
-// not including, the checkout `top`.
-const hasHead = (dir) => { try { fs.lstatSync(path.join(dir, 'HEAD')); return true; } catch { return false; } };
+// ANY entry named exactly `HEAD`, of any kind, read with `lstat` so a dangling link counts. On a disk that
+// ignores case (macOS, Windows) git's own open of `HEAD` also reads a FILE or link named `head`, so that
+// counts too; a FOLDER named `head` never does (git cannot read a folder as HEAD, and `apps/head/` beside
+// `apps/web` is an ordinary folder). From `target` up to, not including, the checkout `top`.
+const hasHead = (dir) => {
+  let st;
+  try { st = fs.lstatSync(path.join(dir, 'HEAD')); } catch { return false; }
+  if (!st.isDirectory()) return true;
+  try { return fs.readdirSync(dir).includes('HEAD'); } catch { return true; }
+};
 function headOnWay(target, top) {
   for (let cur = target; cur !== top && cur.startsWith(top + path.sep); cur = path.dirname(cur)) {
     if (hasHead(cur)) return true;

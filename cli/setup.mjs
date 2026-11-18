@@ -24,6 +24,7 @@ import { readAllowList } from './agent-rules.mjs';
 import { PREAPPROVED } from './agent-guard.mjs';
 import { repoGitUrl } from './protection.mjs';
 import { hostFromGitUrl, plainHost } from './platform.mjs';
+import { judgedRepos, codeContextPathOk, CODE_CONTEXT_DIR } from './workspace.mjs';
 
 // Parse a comma/space separated list into a clean, deduped array of trimmed tokens.
 export function parseList(s) {
@@ -123,6 +124,16 @@ export function buildReconfiguredProductConfig(cur, fields) {
   return { ...(cur || {}), ...fields };
 }
 
+// Why yad may not run git at `rpath` (E125): null for a checkout the judgement accepts, else the reason.
+// Asked before ANY git call on a path the connect flow is given — a flag, an answer, or a folder found beside
+// the Product — so a folder the Product commits shaped as a bare repo (`demo-repos/api/{HEAD,config,…}`)
+// never has its config read.
+function notCheckoutWhy(root, rpath) {
+  const x = judgedRepos(root, { repos: [{ name: String(rpath), path: rpath }] });
+  if (x.ok[0]?.present) return null;
+  return x.ok[0] ? 'nothing is there yet' : x.skipped[0].why;
+}
+
 // Validate + record one code repo into the registry (the testable half of the connect loop).
 // A path that is not a git repository is rejected and NOTHING is written — a registry entry with
 // syncedHead:null would only surface later as an unexplained "unknown status" in the CI gates.
@@ -132,6 +143,8 @@ export function registerRepo(root, registry, { name, rpath, platform, default_br
     warn(`${rpath} resolves outside the workspace (the project root's parent) — skipped`);
     return null;
   }
+  const why = notCheckoutWhy(root, rpath);
+  if (why) { warn(`${forTerminal(rpath)} is not a git repository yad may run git in (${why}) — skipped`); return null; }
   const repoRoot = path.resolve(root, rpath);
   const head = gitHead(repoRoot);
   if (head === null) { warn(`${rpath} is not a git repository (or has no commits) — skipped`); return null; }
@@ -377,8 +390,10 @@ export function setupQuestions(root, opts = {}) {
     // does not.
     given: has_(opts.connect) || (!found.length && (opts.addRepo || []).length > 0),
   });
-  const noCr = reposAfter(root, opts).filter((r) => !exists(path.join(path.resolve(root, r.rpath), '.coderabbit.yaml'))).map((r) => r.name);
-  if (noCr.length) add({ id: 'coderabbit', text: `Wire CodeRabbit (an advisory AI review of each PR/MR) in: ${noCr.join(', ')}?`, choices: ['all', 'none', noCr.join(',')], default: 'none', flag: '--coderabbit <all|none|name,name>', given: has_(opts.coderabbit) });
+  // Only a repo the CodeRabbit step would write into: judged first (E125), as that step judges it.
+  const noCr = reposAfter(root, opts).filter((r) => judgedRepos(root, { repos: [{ name: r.name, path: r.rpath }] }).ok.length)
+    .filter((r) => !exists(path.join(path.resolve(root, r.rpath), '.coderabbit.yaml'))).map((r) => r.name);
+  if (noCr.length) add({ id: 'coderabbit', text: `Wire CodeRabbit (an advisory AI review of each PR/MR) in: ${forTerminal(noCr.join(', '))}?`, choices: ['all', 'none', noCr.join(',')], default: 'none', flag: '--coderabbit <all|none|name,name>', given: has_(opts.coderabbit) });
   return qs;
 }
 
@@ -413,6 +428,8 @@ export function checkSetupFlags(root, opts = {}) {
     if (r.platform && !['github', 'gitlab'].includes(r.platform)) throw setupFlagError(`--add-repo ${spec}: platform ${r.platform} — expected github or gitlab`);
     if (r.default_branch && !branchOk(r.default_branch)) throw setupFlagError(`--add-repo ${spec}: ${r.default_branch} is not a plain branch name`);
     // What `registerRepo` refuses, refused here first: a skipped repo would change which one a monorepo connects.
+    const why = notCheckoutWhy(root, r.rpath);
+    if (why) throw setupFlagError(`--add-repo ${spec}: ${r.rpath} is not a git repository yad may run git in (${why})`);
     if (gitHead(path.resolve(root, r.rpath)) === null) throw setupFlagError(`--add-repo ${spec}: ${r.rpath} is not a git repository`);
   }
   if (has_(opts.coderabbit) && !['all', 'none'].includes(opts.coderabbit)) {
@@ -760,6 +777,8 @@ export async function runSetup(root, opts = {}) {
   // `yad init` (E79) found these beside the Product: one yes/no each, with what git already knows about
   // them — the platform from `origin`, the default branch from origin/HEAD or the branch it is on.
   for (const d of (opts.discovered || []).filter((x) => !known.has(x.name))) {
+    const notHere = notCheckoutWhy(root, d.rpath);
+    if (notHere) { warn(`${forTerminal(d.name)} (${forTerminal(d.rpath)}): ${notHere} — skipped`); continue; }
     const repoRoot = path.resolve(root, d.rpath);
     const remote = run('git', ['remote', 'get-url', 'origin'], { cwd: repoRoot });
     const platform = detectPlatform(remote.ok ? remote.stdout : '') || 'github';
@@ -779,6 +798,8 @@ export async function runSetup(root, opts = {}) {
   // repos were answered by flag (`--connect` or `--add-repo`).
   for (const r of (opts.addRepo || []).map(parseAddRepo)) {
     if (known.has(r.name)) { warn(`${r.name} already registered — skipping`); continue; }
+    const notHere = notCheckoutWhy(root, r.rpath);
+    if (notHere) { warn(`${forTerminal(r.rpath)} is not a git repository yad may run git in (${notHere}) — skipped`); continue; }
     const detected = run('git', ['remote', 'get-url', 'origin'], { cwd: path.resolve(root, r.rpath) });
     const platform = r.platform || detectPlatform(detected.ok ? detected.stdout : '') || 'github';
     const repo = registerRepo(root, registry, { name: r.name, rpath: r.rpath, platform, default_branch: r.default_branch || 'main', today: opts.today ?? null, pack: !greenfield });
@@ -799,6 +820,8 @@ export async function runSetup(root, opts = {}) {
       const rpath = await ask('    path (relative to project root, e.g. ../backend)', `demo-repos/${name}`);
       if (throughGitDir(root, rpath)) { warn(`${rpath} runs through a .git folder — not a code repo, skipped`); continue; }
       if (!insideWorkspace(root, rpath)) { warn(`${rpath} resolves outside the workspace (the project root's parent) — skipped`); continue; }
+      const notHere = notCheckoutWhy(root, rpath);
+      if (notHere) { warn(`${forTerminal(rpath)} is not a git repository yad may run git in (${notHere}) — skipped`); continue; }
       const detected = run('git', ['remote', 'get-url', 'origin'], { cwd: path.resolve(root, rpath) });
       const platform = (await ask('    platform (github/gitlab)', detectPlatform(detected.ok ? detected.stdout : '') || 'github')).toLowerCase();
       const default_branch = await ask('    default branch', 'main');
@@ -833,13 +856,17 @@ export async function runSetup(root, opts = {}) {
     log(`    ${c.dim(`never: ${PREAPPROVED.never}`)}`);
     allowListShown = true;
   };
-  for (const repo of registry.repos) {
-    log(`  ${c.bold(repo.name)} ${c.dim(`(${repo.platform})`)}`);
+  // Judged before anything is written into a repo (E125): an entry yad runs no git in (a folder the Product
+  // shaped as a bare repo, a link inside a repo's tree, a repo not cloned here) is skipped, with why.
+  const judged = judgedRepos(root, registry);
+  for (const x of judged.skipped) warn(`${x.j.name} (${x.j.path}): ${x.why} — skipped`);
+  for (const { repo, j } of judged.ok) {
+    log(`  ${c.bold(j.name)} ${c.dim(`(${forTerminal(String(repo.platform))})`)}`);
     // Migrate renamed wired CI (marker-owned sdlc-*.yml -> yad-*.yml); a user-authored same-named file is
     // never touched, and an edited one is kept without its new name beside it (E123, `withoutKeptRenames`).
     const repoLegacy = legacyRepoActions(root, repo);
     const repoWiring = withoutKeptRenames([...repoActions(root, repo), ...repoLegacy]).filter((a) => !repoLegacy.includes(a));
-    showAllowList(repo.name, repoWiring);
+    showAllowList(j.name, repoWiring);
     applyActions(repoWiring, { force: true });
     wired.push(...repoWiring);
     applyActions(repoLegacy, { force: true });
@@ -925,12 +952,13 @@ export async function runSetup(root, opts = {}) {
   // Optional CodeRabbit
   S('AI review (CodeRabbit)');
   guide(['Advisory AI first-pass on PRs — never the authority. Opt in per repo; safe to skip.']);
-  for (const repo of registry.repos) {
-    const cr = path.join(path.resolve(root, repo.path), '.coderabbit.yaml');
-    if (exists(cr)) { info(`${repo.name}: .coderabbit.yaml present`); continue; }
-    if (connects(opts.coderabbit, repo.name) ?? await askYesNo(`Wire CodeRabbit (advisory) in ${repo.name}?`, false)) {
+  // Only in a repo the wiring step judged one yad may write into (E125); the others were named there.
+  for (const { repo, j, target } of judged.ok) {
+    const cr = path.join(target, '.coderabbit.yaml');
+    if (exists(cr)) { info(`${j.name}: .coderabbit.yaml present`); continue; }
+    if (connects(opts.coderabbit, repo.name) ?? await askYesNo(`Wire CodeRabbit (advisory) in ${j.name}?`, false)) {
       fs.writeFileSync(cr, 'reviews:\n  high_level_summary: true\n  poem: false\n');
-      ok(`${repo.name}: wrote .coderabbit.yaml`);
+      ok(`${j.name}: wrote .coderabbit.yaml`);
     }
   }
 
@@ -1035,11 +1063,14 @@ export function ensurePackIgnored(root) {
 // Deterministic repomix pack (code-map generation itself is an AI step, handed off).
 export function packRepo(root, repo) {
   const repoRoot = path.resolve(root, repo.path);
-  const out = path.join(root, repo.contextPack);
   // Printed through `forTerminal` (E81 review 12): the name and pack path come from the shared registry,
   // and repomix's error line from a run in a registered folder.
   const nm = forTerminal(repo.name);
+  // The pack path comes from the shared registry: written only under .sdlc/code-context/ in the Product, with
+  // no `..`, `.git` part or link on the way (E125) — the rule `yad repo refresh` keeps.
+  if (!codeContextPathOk(root, repo.contextPack)) { warn(`${nm}: the pack path ${forTerminal(String(repo.contextPack ?? ''))} is not under ${CODE_CONTEXT_DIR}/ in the Product — skipped repomix pack`); return false; }
   if (!has('npx')) { warn(`${nm}: npx missing — skipped repomix pack`); return false; }
+  const out = path.join(root, repo.contextPack);
   fs.mkdirSync(path.dirname(out), { recursive: true });
   ensurePackIgnored(root); // keep the pack out of git before it is (re)written — see repo-publish.mjs invariant 1
   info(`${nm}: packing with repomix …`);
