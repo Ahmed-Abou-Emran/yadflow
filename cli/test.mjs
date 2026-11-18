@@ -1831,6 +1831,63 @@ test('E125 b: writeJSON over a link replaces the link and leaves the file it poi
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
+const { readPlainJSON, readPlainFile, readPlainBytes, NOT_PLAIN_FILE } = await import('./lib.mjs');
+// Runs a module script in a child with a time limit, and returns the JSON it printed last: a read that
+// never ends (a link to /dev/zero) must fail the test, not freeze the whole run.
+const DEV_ZERO_SKIP = process.platform === 'win32' && 'no /dev/zero on Windows';
+const cliUrl = (f) => JSON.stringify(new URL(f, import.meta.url).href);
+function inChildWithLimit(script, args = []) {
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script, ...args], { encoding: 'utf8', timeout: 20000, env: { ...process.env, YAD_NO_UPDATE_NOTIFIER: '1' } });
+  assert.equal(r.signal, null, `the read did not end: ${r.stderr}`);
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout.trim().split('\n').pop());
+}
+
+test('E125 b readPlainJSON: a missing file, a link, a folder and a broken file each throw their own error; a plain file reads raw', { skip: E125B_SKIP }, () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-plain5-'));
+  try {
+    const sdlc = path.join(T, '.sdlc');
+    fs.mkdirSync(sdlc);
+    assert.equal(NOT_PLAIN_FILE, 'YAD_NOT_PLAIN_FILE');
+    assert.throws(() => readPlainJSON(path.join(sdlc, 'absent.json')), (e) => e.code === 'ENOENT');
+    // A link to a valid file: refused, so the caller can tell it from a missing file.
+    fs.writeFileSync(path.join(T, 'outside.json'), '{"secret":1}');
+    fs.symlinkSync(path.join(T, 'outside.json'), path.join(sdlc, 'repos.json'));
+    assert.throws(() => readPlainJSON(path.join(sdlc, 'repos.json')), (e) => e.code === NOT_PLAIN_FILE && e.kind === 'link' && /repos\.json is not a plain file/.test(e.message));
+    fs.mkdirSync(path.join(sdlc, 'state.json'));
+    assert.throws(() => readPlainJSON(path.join(sdlc, 'state.json')), (e) => e.code === NOT_PLAIN_FILE && e.kind === 'dir');
+    fs.writeFileSync(path.join(sdlc, 'approvals.json'), '{ broken');
+    assert.throws(() => readPlainJSON(path.join(sdlc, 'approvals.json')), SyntaxError);
+    // Under .sdlc/, readJSON stamps a shape; readPlainJSON gives the file as it is.
+    fs.writeFileSync(path.join(sdlc, 'product.json'), '{"name":"x"}');
+    assert.deepEqual(readPlainJSON(path.join(sdlc, 'product.json')), { name: 'x' });
+    // The bytes form: a Buffer, byte for byte, and every failure thrown. readPlainFile keeps null for no file.
+    fs.writeFileSync(path.join(T, 'crlf.md'), 'a\r\nb');
+    const bytes = readPlainBytes(path.join(T, 'crlf.md'));
+    assert.ok(Buffer.isBuffer(bytes));
+    assert.deepEqual([...bytes], [...Buffer.from('a\r\nb')]);
+    assert.throws(() => readPlainBytes(path.join(T, 'absent.md')), (e) => e.code === 'ENOENT');
+    assert.throws(() => readPlainBytes(path.join(sdlc, 'repos.json')), (e) => e.code === NOT_PLAIN_FILE);
+    assert.equal(readPlainFile(path.join(T, 'absent.md')), null);
+    assert.equal(readPlainFile(path.join(T, 'crlf.md')), 'a\r\nb');
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b readPlainJSON: a link to /dev/zero is refused at once', { skip: DEV_ZERO_SKIP }, () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-plain6-'));
+  try {
+    const p = path.join(T, 'repos.json');
+    fs.symlinkSync('/dev/zero', p);
+    const got = inChildWithLimit(`const { readPlainJSON, readPlainBytes } = await import(${cliUrl('./lib.mjs')});
+const code = (f) => { try { f(); return 'read'; } catch (e) { return e.code; } };
+process.stdout.write(JSON.stringify([code(() => readPlainJSON(process.argv[1])), code(() => readPlainBytes(process.argv[1]))]));`, [p]);
+    assert.deepEqual(got, ['YAD_NOT_PLAIN_FILE', 'YAD_NOT_PLAIN_FILE']);
+    let kind;
+    try { readPlainJSON(p); } catch (e) { kind = e.kind; }
+    assert.equal(kind, 'link', 'refused on lstat, before any open');
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
 // ---------------------------------------------------------------------------------------------
 // lib.mjs — schemaVersion, the file-shape stamp (roadmap Part 2, rules 1 and 2)
 // ---------------------------------------------------------------------------------------------
@@ -15057,6 +15114,36 @@ test('usage: a corrupt ledger warns and is skipped, never throws or under-counts
   fs.rmSync(T, { recursive: true, force: true });
 });
 
+test('E125 b usage: an approvals.json that is a link is skipped with a warning, not read', { skip: E125B_SKIP }, () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-usage-link-'));
+  try {
+    fs.mkdirSync(path.join(T, '.sdlc'), { recursive: true });
+    fs.writeFileSync(path.join(T, '.sdlc/hub.json'), JSON.stringify({ platform: 'github' }));
+    fs.mkdirSync(path.join(T, 'epics/EP-x/.sdlc'), { recursive: true });
+    // A valid ledger outside the Product: a read that followed the link would count ann's approval.
+    fs.writeFileSync(path.join(T, 'outside.json'), JSON.stringify([{ artifact: 'epic.md', step: 'epic-review', approver: 'ann', role: 'owner', status: 'approved', date: '2026-06-01' }]));
+    fs.symlinkSync(path.join(T, 'outside.json'), path.join(T, 'epics/EP-x/.sdlc/approvals.json'));
+    let model;
+    const said = grabErr(() => { model = buildModel(T, {}); });
+    assert.deepEqual(model.members.map((m) => m.name), []);
+    assert.match(said, /skipped unreadable ledger EP-x\/approvals\.json: it is a link or not a plain file, so it was not read/);
+    assert.ok(!said.includes(T), 'no absolute path in the warning');
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b usage: an approvals.json that links to /dev/zero is skipped at once', { skip: DEV_ZERO_SKIP }, () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-usage-zero-'));
+  try {
+    fs.mkdirSync(path.join(T, '.sdlc'), { recursive: true });
+    fs.writeFileSync(path.join(T, '.sdlc/hub.json'), JSON.stringify({ platform: 'github' }));
+    fs.mkdirSync(path.join(T, 'epics/EP-x/.sdlc'), { recursive: true });
+    fs.symlinkSync('/dev/zero', path.join(T, 'epics/EP-x/.sdlc/approvals.json'));
+    const got = inChildWithLimit(`const { buildModel } = await import(${cliUrl('./usage.mjs')});
+process.stdout.write('\\n' + JSON.stringify(buildModel(process.argv[1], {}).members.length));`, [T]);
+    assert.equal(got, 0);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
 test('usage: runUsage --out creates missing parent directories', () => {
   const T = usageFixture();
   const dest = path.join(T, 'nested/deep/report.html');
@@ -25513,6 +25600,59 @@ test('E19 indexFreshness: none, missing, current, behind, unreadable', () => {
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
+test('E125 b readInput and indexFreshness: a link is never read, a folder keeps EISDIR', { skip: E125B_SKIP }, async () => {
+  const { readInput } = await import('./product-index.mjs');
+  const T = indexFixture({ 'outside.md': 'secret', 'crlf.md': 'a\r\nb' });
+  try {
+    fs.mkdirSync(path.join(T, '.sdlc'));
+    fs.symlinkSync(path.join(T, 'outside.md'), path.join(T, '.sdlc', 'repos.json'));
+    assert.deepEqual(readInput(path.join(T, '.sdlc', 'repos.json')), { error: 'it is a link or not a plain file' });
+    assert.deepEqual(readInput(path.join(T, '.sdlc')), { error: 'EISDIR' });
+    assert.deepEqual(readInput(path.join(T, 'absent.md')), { absent: true });
+    assert.equal(readInput(path.join(T, 'crlf.md')).bytes.toString(), 'a\nb');
+    // A current index, moved out and linked back: it is not read, so it cannot be called current.
+    fs.mkdirSync(path.join(T, 'epics', 'EP-a', '.sdlc'), { recursive: true });
+    fs.writeFileSync(path.join(T, 'epics', 'EP-a', '.sdlc', 'state.json'), JSON.stringify(E19_STATE()));
+    writeIndex(T);
+    assert.deepEqual(indexFreshness(T), { state: 'current' });
+    fs.renameSync(indexPath(T), path.join(T, 'index-outside.json'));
+    fs.symlinkSync(path.join(T, 'index-outside.json'), indexPath(T));
+    assert.deepEqual(indexFreshness(T), { state: 'unreadable', why: '.sdlc/index.json is a link or not a plain file, so it was not read' });
+    // Writing it again puts a plain file in place of the link, and leaves the linked file as it was.
+    fs.writeFileSync(path.join(T, 'index-outside.json'), '{"outside":true}');
+    assert.equal(writeIndex(T), true);
+    assert.ok(fs.lstatSync(indexPath(T)).isFile());
+    assert.equal(fs.readFileSync(path.join(T, 'index-outside.json'), 'utf8'), '{"outside":true}');
+    assert.deepEqual(indexFreshness(T), { state: 'current' });
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b: a .sdlc/repos.json that links to /dev/zero stops neither the brain inputs, the index check nor the live map', { skip: DEV_ZERO_SKIP }, () => {
+  const T = indexFixture({ 'epics/EP-a/.sdlc/state.json': E19_STATE(), '.sdlc/hub.json': { platform: 'github' } });
+  try {
+    fs.symlinkSync('/dev/zero', path.join(T, '.sdlc', 'repos.json'));
+    fs.symlinkSync('/dev/zero', path.join(T, '.sdlc', 'index.json'));
+    const got = inChildWithLimit(`const { readInput, indexFreshness, writeIndex } = await import(${cliUrl('./product-index.mjs')});
+const { startMapServer } = await import(${cliUrl('./map-view.mjs')});
+const fs = await import('node:fs');
+const root = process.argv[1];
+const input = readInput(root + '/.sdlc/repos.json');
+const fresh = indexFreshness(root);
+const srv = await startMapServer(root, { live: true });
+const wrote = writeIndex(root);
+const plain = fs.lstatSync(root + '/.sdlc/index.json').isFile();
+process.stdout.write(JSON.stringify({ input, fresh, watchable: srv.watchable, wrote, plain }) + '\\n');
+process.exit(0);`, [T]);
+    assert.deepEqual(got, {
+      input: { error: 'it is a link or not a plain file' },
+      fresh: { state: 'unreadable', why: '.sdlc/index.json is a link or not a plain file, so it was not read' },
+      watchable: 2,
+      wrote: true,
+      plain: true,
+    });
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
 // `yad index`: the default branch only on a local Product; nothing written on a verified one; --json is a
 // read on any branch. Every arm is pinned, because each is a twin of another (local/verified, the default
 // branch/another, write/read).
@@ -25855,7 +25995,7 @@ test('E19 review: the summary format is in the hash, and a hand-edited index rea
   const { indexHash } = await import('./product-index.mjs');
   const parts = [{ name: 'x', input: { bytes: Buffer.from('y') } }];
   assert.notEqual(indexHash(parts, 'e19-2'), indexHash(parts), 'a new summary format must read the old file as behind');
-  const T = indexFixture({ 'epics/EP-a/.sdlc/state.json': E19_STATE() });
+  const T = indexFixture({ 'epics/EP-a/.sdlc/state.json': E19_STATE(), '.sdlc/hub.json': { platform: 'github' } });
   try {
     writeIndex(T);
     const onDisk = JSON.parse(fs.readFileSync(indexPath(T), 'utf8'));
@@ -26590,6 +26730,31 @@ test('E20 review: readSteps and itemHistory say why the steps cannot be read', (
     }
     fs.mkdirSync(file);
     assert.deepEqual(readState(T, 'EP-old'), { why: 'it is a folder' });
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b: history never reads a state.json that is a link', { skip: E125B_SKIP }, () => {
+  const T = historyProduct();
+  const file = path.join(T, 'epics/EP-old/.sdlc/state.json');
+  try {
+    // The link points at the epic's own valid state: a read that followed it would give its steps.
+    fs.renameSync(file, path.join(T, 'outside-state.json'));
+    fs.symlinkSync(path.join(T, 'outside-state.json'), file);
+    const why = 'it is a link or not a plain file, so it was not read';
+    assert.deepEqual(readState(T, 'EP-old'), { why });
+    assert.deepEqual(itemHistory(T, { id: 'EP-old' }).stepsWhy, why);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b: history answers at once for a state.json that links to /dev/zero', { skip: DEV_ZERO_SKIP }, () => {
+  const T = historyProduct();
+  try {
+    const file = path.join(T, 'epics/EP-old/.sdlc/state.json');
+    fs.rmSync(file);
+    fs.symlinkSync('/dev/zero', file);
+    const got = inChildWithLimit(`const { readState } = await import(${cliUrl('./history.mjs')});
+process.stdout.write(JSON.stringify(readState(process.argv[1], 'EP-old')));`, [T]);
+    assert.deepEqual(got, { why: 'it is a link or not a plain file, so it was not read' });
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
@@ -28237,6 +28402,40 @@ test('E47 readOwnerFile: a broken file says why; the step must be the file\'s ow
     for (const [text, want] of cases) { fs.writeFileSync(f, text); assert.match(ownersMod.readOwnerFile(f, 'architecture').error, want, text); }
     fs.writeFileSync(f, '{"step":"architecture","owner":"ann-lee"}');
     assert.deepEqual(ownersMod.readOwnerFile(f, 'architecture').record, { step: 'architecture', owner: 'ann-lee', name: 'ann-lee', assignedBy: null, date: null });
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b readOwnerFile and readState: a link or a folder in place of the file is not read', { skip: E125B_SKIP }, () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-owners-link-'));
+  try {
+    // Both links point at valid files: a read that followed them would give a record and a state.
+    const outsideOwner = path.join(T, 'owner.json');
+    fs.writeFileSync(outsideOwner, '{"step":"architecture","owner":"ann-lee"}');
+    const owners = path.join(T, 'epics', 'EP-x', '.sdlc', 'owners');
+    fs.mkdirSync(owners, { recursive: true });
+    fs.symlinkSync(outsideOwner, path.join(owners, 'architecture.json'));
+    const refused = { error: 'is a link or not a plain file, so it was not read' };
+    assert.deepEqual(ownersMod.readOwnerFile(path.join(owners, 'architecture.json'), 'architecture'), refused);
+    fs.mkdirSync(path.join(owners, 'epic.json'));
+    assert.deepEqual(ownersMod.readOwnerFile(path.join(owners, 'epic.json'), 'epic'), refused);
+    const outsideState = path.join(T, 'state.json');
+    fs.writeFileSync(outsideState, '{"steps":[]}');
+    fs.symlinkSync(outsideState, path.join(T, 'epics', 'EP-x', '.sdlc', 'state.json'));
+    assert.equal(ownersMod.readState(T, 'EP-x'), null);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b readOwnerFile and readState: a link to /dev/zero is refused at once', { skip: DEV_ZERO_SKIP }, () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-owners-zero-'));
+  try {
+    const sdlc = path.join(T, 'epics', 'EP-x', '.sdlc');
+    fs.mkdirSync(path.join(sdlc, 'owners'), { recursive: true });
+    fs.symlinkSync('/dev/zero', path.join(sdlc, 'owners', 'architecture.json'));
+    fs.symlinkSync('/dev/zero', path.join(sdlc, 'state.json'));
+    const got = inChildWithLimit(`const o = await import(${cliUrl('./owners.mjs')});
+const [root, file] = process.argv.slice(1);
+process.stdout.write(JSON.stringify([o.readOwnerFile(file, 'architecture'), o.readState(root, 'EP-x')]));`, [T, path.join(sdlc, 'owners', 'architecture.json')]);
+    assert.deepEqual(got, [{ error: 'is a link or not a plain file, so it was not read' }, null]);
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
@@ -30510,6 +30709,49 @@ test('E125: the repos yad update commits in are judged: never a bare-shaped fold
     fs.writeFileSync(f.regFile, JSON.stringify(reg));
     assert.deepEqual(updateTargets(f.product).map((t) => t.name), ['product', 'backend']);
     f.untouched();
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b: a .sdlc/repos.json that is a link is not read by yad update or the live map', { skip: E125B_SKIP }, async () => {
+  const { updateTargets } = await import('./update-commit.mjs');
+  const { startMapServer } = await import('./map-view.mjs');
+  const T = e79Tmp();
+  let srv;
+  try {
+    const f = e125Workspace(T);
+    const env = { ...process.env, YAD_REPORTS_DIR: path.join(T, 'r') };
+    srv = await startMapServer(f.product, { live: true, env });
+    const watchedWithFile = srv.watchable;
+    await srv.close();
+    // The same registry, moved out of the Product and linked back: a read that followed the link would
+    // still find the backend.
+    fs.renameSync(f.regFile, path.join(T, 'registry-outside.json'));
+    fs.symlinkSync(path.join(T, 'registry-outside.json'), f.regFile);
+    assert.deepEqual(updateTargets(f.product).map((t) => t.name), ['product']);
+    srv = await startMapServer(f.product, { live: true, env });
+    assert.ok(srv.watchable < watchedWithFile, `the backend is no longer watched (${srv.watchable} < ${watchedWithFile})`);
+  } finally { if (srv) await srv.close(); fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b: the guide, yad brand and yad doctor never read a Product file that is a link', { skip: E125B_SKIP }, async () => {
+  const { installState } = await import('./guide.mjs');
+  const { brandFromDesign } = await import('./brand-cmd.mjs');
+  const { mirrorChecks } = await import('./doctor.mjs');
+  // Not a git repo, so the guide reads the version stamp from the working tree, not from HEAD.
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-plain-misc-'));
+  try {
+    fs.mkdirSync(path.join(T, '.sdlc'));
+    // Each link points at a valid file: a read that followed it would show in the answer.
+    fs.writeFileSync(path.join(T, 'version-outside.json'), '{"version":"4.0.0"}');
+    fs.symlinkSync(path.join(T, 'version-outside.json'), path.join(T, '.sdlc', 'cli-version.json'));
+    assert.equal(installState(T, '4.7.0').project, null, 'no version is read through the link');
+    fs.writeFileSync(path.join(T, 'product-outside.json'), '{"name":"Secret Product","schemaVersion":3}');
+    fs.symlinkSync(path.join(T, 'product-outside.json'), path.join(T, '.sdlc', 'product.json'));
+    assert.equal(brandFromDesign(T, '').brand.name, path.basename(T), 'the name is not read through the link');
+    // product.json alone, on shape 3, would be a half-made pair; through a link it is skipped like a broken file.
+    const checks = [];
+    mirrorChecks(checks, T);
+    assert.deepEqual(checks.filter((x) => x.status === 'warn'), []);
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
