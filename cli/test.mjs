@@ -1734,6 +1734,104 @@ test('writeJSON failure leaves a pre-existing target intact and cleans up the tm
 });
 
 // ---------------------------------------------------------------------------------------------
+// lib.mjs — a JSON file yad reads must be a plain file of its own (E125 b)
+// ---------------------------------------------------------------------------------------------
+const E125B_SKIP = process.platform === 'win32' && 'making a link needs admin rights on Windows';
+const { readJSON: readJSONPlain, readJSONStrict: readJSONStrictPlain } = await import('./lib.mjs');
+const { YadError: YadErrorPlain } = await import('./errors.mjs');
+// Capture what was printed on stderr while running fn.
+function grabErr(fn) {
+  const orig = console.error;
+  const out = [];
+  console.error = (...a) => out.push(a.map(String).join(' '));
+  try { fn(); } finally { console.error = orig; }
+  return out.join('\n');
+}
+
+test('E125 b: a .sdlc/repos.json that links to another file is refused without reading it', { skip: E125B_SKIP }, () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-plain1-'));
+  try {
+    // The link points at a valid JSON file outside the Product: any read of it would show in the answer.
+    const outside = path.join(T, 'outside.json');
+    fs.writeFileSync(outside, JSON.stringify({ repos: [{ name: 'secret' }] }));
+    const p = path.join(T, 'product', '.sdlc', 'repos.json');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.symlinkSync(outside, p);
+    let got;
+    const said = grabErr(() => { got = readJSONPlain(p, { repos: [] }); });
+    assert.deepEqual(got, { repos: [] }, 'the fallback, not the linked file');
+    assert.match(said, /repos\.json is not a plain file \(a link, a folder or a device\), so yad did not read it/);
+    // Named once per run, not on every read.
+    assert.equal(grabErr(() => readJSONPlain(p, null)), '');
+    assert.throws(() => readJSONStrictPlain(p, []), (e) => e instanceof YadErrorPlain && e.code === 'YAD-STATE-001' && /repos\.json is not a plain file/.test(e.message) && /git checkout/.test(e.hint));
+    // A link that points nowhere is refused too (existsSync said "no file" for it before).
+    const dangling = path.join(T, 'product', '.sdlc', 'approvals.json');
+    fs.symlinkSync(path.join(T, 'nowhere.json'), dangling);
+    assert.throws(() => readJSONStrictPlain(dangling, []), /approvals\.json is not a plain file/);
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b: a .sdlc/repos.json that links to /dev/zero returns at once instead of hanging', { skip: process.platform === 'win32' && 'no /dev/zero on Windows' }, () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-plain2-'));
+  try {
+    const p = path.join(T, '.sdlc', 'repos.json');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.symlinkSync('/dev/zero', p);
+    // In a child with a time limit: a read that never ends must fail this test, not freeze the whole run.
+    const script = `const { readJSON, readJSONStrict } = await import(${JSON.stringify(new URL('./lib.mjs', import.meta.url).href)});
+const lenient = readJSON(process.argv[1], 'fallback');
+let strict; try { readJSONStrict(process.argv[1]); strict = 'read'; } catch (e) { strict = e.code; }
+process.stdout.write(JSON.stringify({ lenient, strict }));`;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', script, p], { encoding: 'utf8', timeout: 20000 });
+    assert.equal(r.signal, null, `the read did not end: ${r.stderr}`);
+    assert.deepEqual(JSON.parse(r.stdout), { lenient: 'fallback', strict: 'YAD-STATE-001' });
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b: a folder in place of the file is refused; a missing file reads as before', () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-plain3-'));
+  try {
+    const p = path.join(T, 'repos.json');
+    fs.mkdirSync(p);
+    let got;
+    const said = grabErr(() => { got = readJSONPlain(p, 'fallback'); });
+    assert.equal(got, 'fallback');
+    assert.match(said, /repos\.json is not a plain file/);
+    assert.throws(() => readJSONStrictPlain(p, []), (e) => e.code === 'YAD-STATE-001' && /repos\.json is not a plain file/.test(e.message));
+    // Missing: the fallback, with nothing said and nothing thrown.
+    const none = path.join(T, 'absent.json');
+    assert.equal(grabErr(() => { got = readJSONPlain(none, 'fallback'); }), '');
+    assert.equal(got, 'fallback');
+    assert.deepEqual(readJSONStrictPlain(none, []), []);
+    assert.deepEqual(readJSONStrictPlain(path.join(T, 'no-dir', 'absent.json'), null), null);
+    // A plain file still reads.
+    fs.writeFileSync(path.join(T, 'plain.json'), '{"a":1}');
+    assert.deepEqual(readJSONPlain(path.join(T, 'plain.json')), { a: 1 });
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b: writeJSON over a link replaces the link and leaves the file it pointed at unchanged', { skip: E125B_SKIP }, () => {
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'sdlc-plain4-'));
+  try {
+    const outside = path.join(T, 'outside.json');
+    // The same bytes writeJSON would write: a compare that followed the link would skip the write.
+    fs.writeFileSync(outside, '{\n  "a": 1\n}\n');
+    const p = path.join(T, 'state.json');
+    fs.symlinkSync(outside, p);
+    writeJSON(p, { a: 1 });
+    assert.ok(fs.lstatSync(p).isFile(), 'the link is replaced by a plain file');
+    assert.equal(fs.readFileSync(p, 'utf8'), '{\n  "a": 1\n}\n');
+    assert.equal(fs.readFileSync(outside, 'utf8'), '{\n  "a": 1\n}\n', 'the linked file is untouched');
+    // And with other content: the linked file still keeps its own.
+    fs.rmSync(p); fs.symlinkSync(outside, p);
+    writeJSON(p, { b: 2 });
+    assert.ok(fs.lstatSync(p).isFile());
+    assert.equal(fs.readFileSync(outside, 'utf8'), '{\n  "a": 1\n}\n');
+    assert.deepEqual(readJSONPlain(p), { b: 2 });
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------------------------
 // lib.mjs — schemaVersion, the file-shape stamp (roadmap Part 2, rules 1 and 2)
 // ---------------------------------------------------------------------------------------------
 const { readJSON: readJSONShape, readJSONStrict: readJSONStrictShape } = await import('./lib.mjs');
@@ -30216,6 +30314,35 @@ test('E125: packRepo writes a pack only under .sdlc/code-context/, and yad setup
     assert.ok(fs.existsSync(path.join(f.backend, 'checks')), 'and gets its gates');
     assert.deepEqual(f.gitInBare(), []);
     f.untouched();
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('E125 b: packRepo runs npx from an empty folder of its own, names the npm registry, and passes absolute paths', { skip: E125_SKIP }, async () => {
+  const { packRepo } = await import('./setup.mjs');
+  const T = e79Tmp();
+  try {
+    const { product, backend } = e80Workspace(T);
+    // A `.npmrc` committed to the code repo and to the Product: npm would read either one from where it runs.
+    for (const dir of [backend, product]) fs.writeFileSync(path.join(dir, '.npmrc'), 'registry=https://evil.example/\n');
+    // An npx on PATH that logs where it ran, what was in that folder, and each argument on its own line.
+    const bin = path.join(T, 'npx-bin');
+    const log = path.join(T, 'npx-calls.log');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'npx'), `#!/bin/sh\n{ pwd -P; ls -A | tr '\\n' ','; echo; for a in "$@"; do printf '%s\\n' "$a"; done; } > '${log}'\n`, { mode: 0o755 });
+    const saved = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${saved}`;
+    let packed;
+    try { await grab(() => { packed = packRepo(product, { name: 'backend', path: '../backend', contextPack: '.sdlc/code-context/backend/pack.md' }); }); } finally { process.env.PATH = saved; }
+    assert.equal(packed, true);
+    const [cwd, entries, ...args] = fs.readFileSync(log, 'utf8').trim().split('\n');
+    const real = (p) => fs.realpathSync(p);
+    assert.ok(cwd.startsWith(path.join(real(os.tmpdir()), 'yad-repomix-')), `npx ran in a temp folder of its own: ${cwd}`);
+    assert.ok(!cwd.startsWith(real(T)), 'not in the workspace, the Product or the repo');
+    assert.equal(entries, 'package.json,', 'only its own package.json (npm stops there): no .npmrc and no repomix config');
+    assert.ok(!fs.existsSync(cwd), 'and it is removed afterwards');
+    const out = path.join(product, '.sdlc', 'code-context', 'backend', 'pack.md');
+    assert.deepEqual(args, ['--registry=https://registry.npmjs.org/', `repomix@${(await import('./toolbox.mjs')).REPOMIX_VERSION}`, backend, '--compress', '--include-logs', '--style', 'markdown', '-o', out]);
+    assert.ok(path.isAbsolute(args[2]) && path.isAbsolute(args.at(-1)));
   } finally { fs.rmSync(T, { recursive: true, force: true }); }
 });
 
