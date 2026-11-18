@@ -1061,20 +1061,17 @@ export function ensurePackIgnored(root) {
   return true;
 }
 
-// Deterministic repomix pack (code-map generation itself is an AI step, handed off).
-export function packRepo(root, repo) {
-  const repoRoot = path.resolve(root, repo.path);
-  // Printed through `forTerminal` (E81 review 12): the name and pack path come from the shared registry,
-  // and repomix's error line from a run in a registered folder.
-  const nm = forTerminal(repo.name);
-  // The pack path comes from the shared registry: written only under .sdlc/code-context/ in the Product, with
-  // no `..`, `.git` part or link on the way (E125) — the rule `yad repo refresh` keeps.
-  if (!codeContextPathOk(root, repo.contextPack)) { warn(`${nm}: the pack path ${forTerminal(String(repo.contextPack ?? ''))} is not under ${CODE_CONTEXT_DIR}/ in the Product — skipped repomix pack`); return false; }
-  if (!has('npx')) { warn(`${nm}: npx missing — skipped repomix pack`); return false; }
-  const out = path.resolve(root, repo.contextPack);
-  fs.mkdirSync(path.dirname(out), { recursive: true });
-  ensurePackIgnored(root); // keep the pack out of git before it is (re)written — see repo-publish.mjs invariant 1
-  info(`${nm}: packing with repomix …`);
+// Run Repomix on one code repo, safely: the one place yad starts it (`yad setup`, `yad repo refresh`,
+// `yad repo pack`). `repoRoot` and `out` are absolute; `out` is a file, or '-' for stdout, where the pack
+// goes straight to yad's own stdout (never held in memory: a pack is often bigger than a captured buffer).
+// `include` is Repomix's own `--include` text (globs, comma-separated); `logs` adds the recent git log.
+// `report`: to a file, Repomix's own summary (its secret check included) is shown on stderr, not dropped.
+// `place` (`yad repo pack -o <file>`): Repomix writes into its temp folder, and the pack is then put at `out`
+// without following a link there (see `placeFile`).
+// Returns run()'s result, or `{ ok: false, noWork: <why> }` when the temporary folder could not be made.
+export function runRepomix(repoRoot, { include = null, logs = false, out, report = false, place = false }) {
+  const odd = launcherUnsafe([repoRoot, include, out]);
+  if (odd !== null) return { ok: false, stderr: `${odd} holds a %, which the Windows shell npx runs through would read as a variable` };
   // npx runs from a fresh empty folder of the person's own, never from the code repo (E125 b). npm reads a
   // `.npmrc` in the folder it runs from and its parents, so one committed to the repo or the Product could
   // send npm to another registry, whose "repomix" would then run here. Repomix also loads its config
@@ -1088,15 +1085,62 @@ export function packRepo(root, repo) {
     fs.writeFileSync(path.join(work, 'package.json'), '{ "private": true }\n');
   } catch (e) {
     if (work) fs.rmSync(work, { recursive: true, force: true });
-    warn(`${nm}: could not make a temporary folder for repomix (${forTerminal(e.message)}) — skipped repomix pack`);
-    return false;
+    return { ok: false, stderr: '', noWork: e.message };
   }
-  let r;
+  const args = [repoRoot, '--compress', ...(include ? ['--include', include] : []), ...(logs ? ['--include-logs'] : []), '--style', 'markdown',
+    ...(out === '-' ? ['--stdout'] : ['-o', place ? path.join(work, 'pack.md') : out])];
   try {
     // The vetted version, never `@latest` (E88): a new Repomix release reaches users only once it is vetted.
     // `--registry` goes before the package: npx passes anything after it to Repomix.
-    r = runLauncher('npx', [`--registry=${DEFAULT_REGISTRY}/`, `repomix@${REPOMIX_VERSION}`, repoRoot, '--compress', '--include-logs', '--style', 'markdown', '-o', out], { cwd: work });
+    // To stdout, Repomix's output is passed straight through; its errors are still read.
+    const stdio = out === '-' ? ['ignore', 'inherit', 'pipe'] : report ? ['ignore', 2, 'pipe'] : undefined;
+    const r = runLauncher('npx', [`--registry=${DEFAULT_REGISTRY}/`, `repomix@${REPOMIX_VERSION}`, ...args],
+      { cwd: work, ...(stdio ? { stdio } : {}) });
+    if (!r.ok || !place || out === '-') return r;
+    const why = placeFile(path.join(work, 'pack.md'), out);
+    return why ? { ...r, ok: false, stderr: why } : r;
   } finally { fs.rmSync(work, { recursive: true, force: true }); }
+}
+
+// On Windows npx runs through a shell string (`launcherInvocation`), where `%NAME%` is replaced by a
+// variable's value. The first of `values` with a `%` there, or null. `platform` is for tests.
+export function launcherUnsafe(values, platform = process.platform) {
+  if (platform !== 'win32') return null;
+  return values.find((v) => typeof v === 'string' && v.includes('%')) ?? null;
+}
+
+// Put the file `from` at `to` without following a link at `to`: copied to a new name beside it (made fresh,
+// so never through a link), then renamed over `to` — a rename replaces a link, never writes through it.
+// The reason it could not, or null.
+export function placeFile(from, to) {
+  const tmp = path.join(path.dirname(to), `.${path.basename(to)}.yad-${process.pid}-${Date.now()}`);
+  try {
+    fs.copyFileSync(from, tmp, fs.constants.COPYFILE_EXCL);
+    fs.renameSync(tmp, to);
+    return null;
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    return `could not write ${to} (${e.message})`;
+  }
+}
+
+// Deterministic repomix pack (code-map generation itself is an AI step, handed off). `report`: show
+// Repomix's own summary on stderr (`yad repo pack`); setup and refresh keep it quiet.
+export function packRepo(root, repo, { report = false } = {}) {
+  const repoRoot = path.resolve(root, repo.path);
+  // Printed through `forTerminal` (E81 review 12): the name and pack path come from the shared registry,
+  // and repomix's error line from a run in a registered folder.
+  const nm = forTerminal(repo.name);
+  // The pack path comes from the shared registry: written only under .sdlc/code-context/ in the Product, with
+  // no `..`, `.git` part or link on the way (E125) — the rule `yad repo refresh` keeps.
+  if (!codeContextPathOk(root, repo.contextPack)) { warn(`${nm}: the pack path ${forTerminal(String(repo.contextPack ?? ''))} is not under ${CODE_CONTEXT_DIR}/ in the Product — skipped repomix pack`); return false; }
+  if (!has('npx')) { warn(`${nm}: npx missing — skipped repomix pack`); return false; }
+  const out = path.resolve(root, repo.contextPack);
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  ensurePackIgnored(root); // keep the pack out of git before it is (re)written — see repo-publish.mjs invariant 1
+  info(`${nm}: packing with repomix …`);
+  const r = runRepomix(repoRoot, { logs: true, out, report });
+  if (r.noWork) { warn(`${nm}: could not make a temporary folder for repomix (${forTerminal(r.noWork)}) — skipped repomix pack`); return false; }
   if (r.ok) { ok(`${nm}: cached ${forTerminal(repo.contextPack)}`); hand(`${nm}: generate the code-map in your AI agent (yad-connect-repos)`); return true; }
   fail(`${nm}: repomix failed — ${forTerminal(r.stderr.split('\n')[0]) || 'unknown error'}`);
   return false;
